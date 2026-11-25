@@ -159,6 +159,7 @@ a GitHub release for that tag — see [Releases and tags](#releases-and-tags).
 src/                 React shell — App.tsx, components/, lib/ (ipc, sessions, crew, settings)
 src-tauri/src/       Rust backend — agent/ (Nova pipe + CLI harnesses), commands/, workspace.rs
 src-tauri/src/commands/terminal.py   ConPTY helper spawned for each terminal session
+src/assets/harness/ Vendor-published agent marks (see SOURCES.md for provenance)
 scripts/             Maintenance: sync the model catalogue and slash-command list
 screenshots/         Images referenced by this README
 ```
@@ -166,6 +167,26 @@ screenshots/         Images referenced by this README
 The frontend never touches the filesystem, the shell or the network directly: every
 action is a Tauri command, and `WorkspaceGuard` canonicalises and confines every path
 to the open folder before it is used.
+
+## Third-party marks
+
+The agent marks in the app are the ones each vendor publishes — a favicon, brand file or
+repository symbol — kept byte-for-byte and never recoloured. `src/assets/harness/SOURCES.md`
+lists the exact source URL for every file:
+
+| Mark | Harness | From |
+| --- | --- | --- |
+| Claude spark | Claude Code | `claude.ai` favicon |
+| OpenAI blossom | Codex | `openai.com` favicon |
+| OpenCode logo | OpenCode | OpenCode brand page (transparent, dark) |
+| CommandCode symbol | CommandCode | CommandCode brand page symbol |
+| Pi pixel mark | Pi Agent | `pi-mono` app favicon |
+| Hermes icon | Hermes | `hermes-agent` app icon |
+| Nova spark | Nova Desktop | drawn for this project |
+
+Each mark is a trademark of its owner and appears here only to identify the tool it
+belongs to. Nova Desktop is not affiliated with, endorsed by or sponsored by these
+projects.
 
 ## How it is put together
 

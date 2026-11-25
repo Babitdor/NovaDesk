@@ -2276,11 +2276,8 @@ code {
 .agent-mark-glyph {
   width: 19px;
   height: 19px;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  object-fit: contain;
+  /* The published marks bring their own colours; never tint them. */
 }
 .agent-mark[data-chip='true'] .agent-mark-glyph {
   width: 21px;
