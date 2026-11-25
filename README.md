@@ -11,6 +11,7 @@ Tauri 2 + React 19 · Windows-first · one workspace, many agents
 
 [![CI](https://github.com/Babitdor/NovaDesk/actions/workflows/ci.yml/badge.svg)](https://github.com/Babitdor/NovaDesk/actions/workflows/ci.yml)
 [![Release](https://github.com/Babitdor/NovaDesk/actions/workflows/release.yml/badge.svg)](https://github.com/Babitdor/NovaDesk/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/Babitdor/NovaDesk?label=latest&color=b891f7)](https://github.com/Babitdor/NovaDesk/releases/latest)
 
 </div>
 
@@ -97,6 +98,34 @@ Artifacts land in `src-tauri/target/release/`:
 Close a running copy of the app before rebuilding: Windows keeps the release exe
 locked and the copy step fails with `Access is denied. (os error 5)`.
 
+## Releases and tags
+
+Releases are cut from tags, and the installers are built by CI rather than by hand.
+The tag is the version: bump `version` in `src-tauri/tauri.conf.json` first, then tag
+the commit you want to ship — `v0.1.0` for version `0.1.0`.
+
+```powershell
+git tag -a v0.1.0 -m "Nova Desktop 0.1.0"
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` then runs on `windows-latest`, builds the MSI and NSIS
+bundles with `tauri-apps/tauri-action`, and publishes a GitHub release named after the
+tag with both installers attached:
+
+| Asset | What it is |
+| --- | --- |
+| `Nova Desktop_<version>_x64-setup.exe` | NSIS installer (per-user, no admin) |
+| `Nova Desktop_<version>_x64_en-US.msi` | MSI package for managed installs |
+
+The workflow can also be started by hand (`workflow_dispatch`) from the Actions tab.
+`concurrency` keeps one release build at a time — a second tag waits instead of
+cancelling the first, so no run is left half-published.
+
+Tags are plain `v<version>` — `git tag -l` lists them, and `gh release list` shows what
+shipped with each one. Nothing in the app depends on a release existing; the portable
+`novacode-desktop.exe` from a local build is the same binary.
+
 ## Checks
 
 ```powershell
@@ -113,12 +142,12 @@ Releases are built and attached automatically: bump `version` in
 `src-tauri/tauri.conf.json`, then push a matching tag.
 
 ```powershell
-git tag v0.1.0
+git tag -a v0.1.0 -m "Nova Desktop 0.1.0"
 git push origin v0.1.0
 ```
 
-That runs `.github/workflows/release.yml`, which publishes the MSI and NSIS installers to
-a **draft** GitHub release for you to review and publish.
+That runs `.github/workflows/release.yml`, which publishes the MSI and NSIS installers as
+a GitHub release for that tag — see [Releases and tags](#releases-and-tags).
 
 ## Layout
 

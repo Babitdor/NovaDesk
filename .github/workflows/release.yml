@@ -1,6 +1,6 @@
 name: Release
 
-# Tagging a version builds the Windows bundles and attaches them to a draft
+# Tagging a version builds the Windows bundles and publishes them as that tag's
 # release. Bump the version in src-tauri/tauri.conf.json first — tauri-action
 # names the artifacts after it, and the tag must match v<version>.
 on:
@@ -52,5 +52,7 @@ jobs:
             Requires the WebView2 runtime (bundled with Windows 11) and Python 3 on
             `PATH` for the terminal dock. The agent CLIs you intend to use have to be
             installed and authenticated separately.
-          releaseDraft: true
+          # Published, not a draft: a tag is the release decision. Flip to true if a
+          # release should wait for a human to press publish.
+          releaseDraft: false
           prerelease: false
