@@ -6,6 +6,7 @@ import {
   ACCENTS, AGENTS, type AgentId, type AgentStatus, type ColorTheme, type Preferences,
 } from '../lib/settings'
 import type { WorkspaceInfo } from '../lib/events'
+import { AgentMark } from './AgentMark'
 import { Markdown } from './Markdown'
 import { CREW, crewRoles, systemPrompt } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
@@ -243,7 +244,7 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                     <div key={id}>
                       <button className="settings-row agent-status" type="button" aria-expanded={selectedAgent === id}
                         onClick={() => selectAgent(selectedAgent === id ? null : id)}>
-                        <span className="agent-title"><span className="agent-monogram" aria-hidden="true">{AGENTS[id].name[0]}</span>
+                        <span className="agent-title"><AgentMark id={id} chip />
                           <strong>{AGENTS[id].name}</strong></span>
                         <span className="agent-indicator" data-installed={found?.installed}>
                           {found?.installed ? found.version ?? 'Installed' : found ? 'Not found' : 'Checking…'}
@@ -263,7 +264,8 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
             {tab === 'Providers' && <Group title="Provider setup">
               <p className="settings-help">Desktop uses each agent’s existing login and provider settings.</p>
               {agentIds.map((id) => <div className="settings-row" key={id}>
-                <span><strong>{AGENTS[id].name}</strong><small>{AGENTS[id].setup}</small></span>
+                <span className="agent-title"><AgentMark id={id} />
+                  <span><strong>{AGENTS[id].name}</strong><small>{AGENTS[id].setup}</small></span></span>
                 <button type="button" onClick={async () => {
                   try { await openProviderSetup(id); setStatus('Complete setup in the terminal window.') }
                   catch (err) { setStatus(errorText(err)) }

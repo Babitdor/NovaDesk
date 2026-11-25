@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { SlashCommand } from '../lib/slash'
 import { AGENTS, type AgentId, type ModelSelection, type Preferences } from '../lib/settings'
+import { AgentMark } from './AgentMark'
 import { ModelPicker } from './ModelPicker'
 import { CREW, addressedCrew, crewRoles, crewTargets, type CrewMode } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
@@ -195,6 +196,7 @@ export function Composer({
             aria-label="Choose agent and model" aria-haspopup="dialog" aria-expanded={modelOpen}
             aria-controls={modelOpen ? modelId : undefined} title={model ? backend + ' · ' + model : backend + ' · Harness default'}
             onClick={() => { if (modelOpen) closeModels(); else openModels() }}>
+            <AgentMark id={agent} />
             <span className="model-trigger-agent">{backend}</span>
             {model && <span className="model-trigger-name">{model}</span>}
             <span aria-hidden="true">⌄</span>

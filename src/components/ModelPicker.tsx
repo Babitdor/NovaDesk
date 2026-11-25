@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import { invoke } from '@tauri-apps/api/core'
 import novaModels from '../lib/nova-models.json'
 import { AGENTS, type AgentId, type ModelSelection, type Preferences } from '../lib/settings'
+import { AgentMark } from './AgentMark'
 
 type Model = { id: string; label: string; context?: string | null; efforts?: string[] | null }
 type Row = ModelSelection & { label: string; context?: string | null }
@@ -187,6 +188,7 @@ export function ModelPicker({ id, anchor, agent, model, effort, recent, configur
           <button type="button" aria-pressed={scope === 'recent'} onClick={() => chooseScope('recent')}>Recent</button>
           <button type="button" aria-pressed={scope === 'all'} onClick={() => chooseScope('all')}>All models</button>
           {agents.map((id) => <button key={id} type="button" aria-pressed={scope === id} onClick={() => chooseScope(id)}>
+            <AgentMark id={id} />
             {AGENTS[id].name}
           </button>)}
         </nav>
@@ -197,7 +199,9 @@ export function ModelPicker({ id, anchor, agent, model, effort, recent, configur
               aria-pressed={row.agent === agent && row.model === (model ?? null)} onClick={() => choose(row)}>
               <span><strong>{row.label}</strong>
                 {(scope === 'all' || scope === 'recent' || row.model !== row.label) && <small>
-                  {scope === 'all' || scope === 'recent' ? AGENTS[row.agent].name : row.model}
+                  {scope === 'all' || scope === 'recent'
+                    ? <><AgentMark id={row.agent} /> {AGENTS[row.agent].name}</>
+                    : row.model}
                 </small>}
               </span>
               {row.context && <span className="model-context" title="Context window">{windowLabel(row.context)}</span>}

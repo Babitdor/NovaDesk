@@ -2006,6 +2006,12 @@ code {
   overscroll-behavior: contain;
 }
 .model-picker-harnesses { border-right: 1px solid var(--line); }
+.model-picker-harnesses button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.model-picker-harnesses .agent-mark-glyph { width: 16px; height: 16px; }
 .model-picker :is(.model-picker-harnesses, .model-picker-results, .model-picker-effort) button {
   padding: 5px 7px;
   font-size: 11px;
@@ -2252,15 +2258,33 @@ code {
   border-radius: 50%;
 }
 .agent-indicator[data-installed='true']::before { background: var(--accent); border-color: var(--accent); }
-.agent-monogram {
-  display: grid;
+/* A harness glyph: inline everywhere a name appears, framed only in a settings row. */
+.agent-mark {
+  display: inline-grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  font: 12px var(--f-mono);
+  flex: none;
   color: var(--accent);
+  vertical-align: -3px;
+}
+.agent-mark[data-chip='true'] {
+  width: 30px;
+  height: 30px;
+  vertical-align: 0;
   border: 1px solid var(--settings-rule);
-  border-radius: 5px;
+  border-radius: 6px;
+}
+.agent-mark-glyph {
+  width: 19px;
+  height: 19px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.agent-mark[data-chip='true'] .agent-mark-glyph {
+  width: 21px;
+  height: 21px;
 }
 .agent-detail { background: var(--settings-surface); padding: 8px 15px 12px; overflow-wrap: anywhere; }
 .agent-detail p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
