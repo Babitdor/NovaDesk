@@ -7,9 +7,9 @@ const SPAN = 6 // stays inside the 7px --coin-edge in styles.css
 const BODY = Array.from({ length: 18 }, (_, index) => (index / 17 - 0.5) * SPAN)
 
 /// The standing emblem, earned rather than printed: two faces, a milled body and
-/// one slow turn. It turns on its own so the empty plate is not a still frame,
-/// and dragging it by hand pauses the idle turn and picks up from the angle the
-/// hand left it at — the paused animation resumes in place, so nothing jumps.
+/// a tilt so the rim always reads. It stands still — unattended motion reads as
+/// "still loading" — and turns only when a hand drags it, coming to rest at the
+/// hand left it at — resting exactly where the hand stopped.
 export function NovaCoin() {
   const coin = useRef<HTMLDivElement>(null)
   const hand = useRef({ angle: 0, from: 0, dragging: false })

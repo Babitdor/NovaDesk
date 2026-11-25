@@ -20,3 +20,20 @@ createRoot(root).render(
     )}
   </StrictMode>,
 )
+
+/// The boot curtain in index.html lifts on evidence, not on a timer: two frames
+/// means React has painted the first screen, and the fonts promise is what keeps
+/// the wordmark from swapping type in front of the user. The timeout is only for
+/// a font host that never answers - a stuck load must not hold the window.
+const boot = document.getElementById('boot')
+if (boot) {
+  const painted = new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  })
+  const type = document.fonts?.ready ?? Promise.resolve()
+  const patience = new Promise<void>((resolve) => setTimeout(resolve, 1500))
+  void Promise.all([painted, Promise.race([type, patience])]).then(() => {
+    boot.dataset.done = 'true'
+    setTimeout(() => boot.remove(), 380)
+  })
+}

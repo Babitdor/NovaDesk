@@ -9,8 +9,67 @@
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030e3e" />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fad9b6" />
     <title>Nova Desktop</title>
+    <!--
+      The boot curtain is inline on purpose: it has to paint before the bundle, the
+      fonts and the first React commit, or the window opens on an empty plate. It is
+      removed by src/main.tsx once a frame is actually on screen.
+    -->
+    <style>
+      html, body { margin: 0; height: 100%; background: #050a2a; }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 22px;
+        background:
+          radial-gradient(120% 80% at 50% 32%, #22306f 0%, #101a4d 46%, #050a2a 100%);
+        color: #f6e9da;
+        font-family: ui-serif, "Iowan Old Style", Georgia, serif;
+        transition: opacity 340ms ease, visibility 340ms;
+      }
+      #boot[data-done="true"] { opacity: 0; visibility: hidden; }
+      .boot-mark { position: relative; width: 84px; height: 84px; display: grid; place-items: center; }
+      .boot-mark svg { width: 34px; height: 34px; fill: #f7b98a; animation: boot-breathe 2.4s ease-in-out infinite; }
+      .boot-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: conic-gradient(from 0deg, rgba(247, 185, 138, 0) 0deg, rgba(247, 185, 138, 0.9) 300deg, rgba(247, 185, 138, 0) 360deg);
+        -webkit-mask: radial-gradient(circle, transparent 60%, #000 61%);
+        mask: radial-gradient(circle, transparent 60%, #000 61%);
+        animation: boot-ring 1.5s linear infinite;
+      }
+      .boot-word { margin: 0; font-size: 21px; letter-spacing: 0.34em; text-transform: uppercase; text-indent: 0.34em; }
+      .boot-hint { margin: 0; font: 11px ui-monospace, monospace; letter-spacing: 0.16em; text-transform: uppercase; color: #9fb0e6; }
+      .boot-bar { width: 148px; height: 1px; background: rgba(159, 176, 230, 0.22); overflow: hidden; }
+      .boot-bar i { display: block; width: 40%; height: 100%; background: #f7b98a; animation: boot-bar 1.25s ease-in-out infinite; }
+      @keyframes boot-ring { to { transform: rotate(360deg); } }
+      @keyframes boot-breathe { 0%, 100% { opacity: 0.65; transform: scale(0.94); } 50% { opacity: 1; transform: scale(1); } }
+      @keyframes boot-bar { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+      @media (prefers-color-scheme: light) {
+        html, body { background: #fad9b6; }
+        #boot { background: radial-gradient(120% 80% at 50% 32%, #fff3e4 0%, #fad9b6 55%, #f0c39a 100%); color: #3a2418; }
+        .boot-hint { color: #8a6544; }
+        .boot-bar { background: rgba(138, 101, 68, 0.25); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-ring, .boot-mark svg, .boot-bar i { animation-duration: 0s; animation-iteration-count: 1; }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot" role="status" aria-label="Starting Nova Desktop">
+      <div class="boot-mark">
+        <span class="boot-ring" aria-hidden="true"></span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6 13.9 9.6 21.4 12 13.9 14.4 12 21.4 10.1 14.4 2.6 12 10.1 9.6Z" /></svg>
+      </div>
+      <p class="boot-word">Nova</p>
+      <div class="boot-bar" aria-hidden="true"><i></i></div>
+      <p class="boot-hint">Opening your workspace</p>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

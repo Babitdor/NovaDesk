@@ -40,14 +40,21 @@ impl ProcessRunner {
             return Err(AppError::Spawn("empty program name".into()));
         }
 
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(args)
             .current_dir(guard.root())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // Safety net: if this future is dropped, the child dies with it.
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        // A console child gets its own console window unless told not to, and this is
+        // the runner the Changes pane uses: opening a workspace ran four git commands
+        // and flashed four black windows over the app.
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let mut child = command
             .spawn()
             .map_err(|e| AppError::Spawn(format!("{program}: {e}")))?;
 

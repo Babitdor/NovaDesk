@@ -71,20 +71,28 @@ pub async fn start_terminal(
             "Close a terminal before opening another one".into(),
         ));
     }
-    let mut child = cli::terminal_python()?
-        .args([
-            "-I",
-            "-u",
-            "-c",
-            include_str!("terminal.py"),
-            &rows.to_string(),
-            &cols.to_string(),
-            shell.unwrap_or_default().name(),
-        ])
+    let rows = rows.to_string();
+    let cols = cols.to_string();
+    let mut command = cli::terminal_python()?;
+    command.args([
+        "-I",
+        "-u",
+        "-c",
+        include_str!("terminal.py"),
+        &rows,
+        &cols,
+        shell.unwrap_or_default().name(),
+    ]);
+    command
         .current_dir(workspace.root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The helper drives a ConPTY whose picture comes back over stdout; its own
+    // console window would only flash on screen.
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let mut child = command
         .spawn()
         .map_err(|err| AppError::Spawn(err.to_string()))?;
     let mut stderr = child.stderr.take().expect("piped stderr");

@@ -242,16 +242,10 @@ button.stop:hover:not(:disabled) {
   position: absolute;
   inset: 0;
   transform-style: preserve-3d;
-  animation: coin-spin 19s linear infinite;
 }
 
-/* A hand on the coin wins: the animation pauses in place, so releasing it
-   resumes the turn from the exact angle the hand left behind. */
-.coin[data-dragging='true'] .coin-spin { animation-play-state: paused; }
-
-@keyframes coin-spin {
-  to { transform: rotateY(360deg); }
-}
+/* It stays still until a hand turns it: the coin is a mark, not a screensaver,
+   and a plate that moves on its own reads as a loading state that never ends. */
 
 /* Both faces are the same strike, so the coin reads whichever way it lands. */
 .coin-face {
@@ -286,10 +280,7 @@ button.stop:hover:not(:disabled) {
   background: linear-gradient(180deg, #f7d6ad 4%, #b3794d 62%, #7c4a2c);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  /* Unattended motion is the part to drop; the coin keeps its face to the room. */
-  .coin-spin { animation: none; }
-}
+
 
 .root {
   flex: 1;
