@@ -7,6 +7,7 @@ import { PanelRail } from './components/PanelRail'
 import { RightPanel } from './components/RightPanel'
 import { Settings, type Section } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
+import { Sky } from './components/Sky'
 import { TerminalDock, type Dock } from './components/TerminalDock'
 import { appendUser } from './lib/chat'
 import { CREW, addressedCrew, crewPrompt, ralphRetry, systemPrompt, teamOrder, type CrewMode, type CrewRole, type Handoff } from './lib/crew'
@@ -467,6 +468,7 @@ export default function App() {
           onSettings={() => openSettings()} folderBusy={folderBusy || Boolean(running)} />
 
         <main className="main">
+          {preferences.wallpaper && <Sky still={preferences.still} />}
           <ChatLog key={active.id} items={active.items} busy={busy}
             markdown={preferences.markdown} backend={backendName} workspaceReady={!!workspace} />
           {interrupt && <Interrupt key={interrupt.interruptId} request={interrupt} pending={replyPending}

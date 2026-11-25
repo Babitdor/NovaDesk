@@ -2,11 +2,11 @@
 
 One file per harness, fetched from that vendor's own brand page or public
 repository on 2026-11-25. They are kept byte-for-byte as published (only the
-`nova.svg` spark is ours), so nothing here is redrawn or recoloured.
+`/nova.webp` portrait is ours), so nothing here is redrawn or recoloured.
 
 | File | Harness | Source |
 | --- | --- | --- |
-| `nova.svg` | Nova (this app) | drawn here |
+| — (uses `/nova.webp`) | Nova (this app) | the app's own portrait, the same image the coin is struck from |
 | `pi.svg` | Pi Agent (`pi`, pi-mono) | https://raw.githubusercontent.com/earendil-works/pi/main/apps/p2/public/icons/favicon.svg |
 | `claude.svg` | Claude Code | https://claude.ai/favicon.svg |
 | `openai.svg` | Codex (OpenAI) | https://openai.com/favicon.svg |

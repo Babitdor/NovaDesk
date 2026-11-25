@@ -41,6 +41,10 @@ keystroke away from the conversation that caused it.
   Bash) rooted in the workspace, up to eight at a time.
 - **Browser pane.** A native child webview for checking the thing you just built,
   plus a list of local dev servers to jump to.
+- **A sky that answers the hand.** The empty plate is a canvas starfield: three depth
+  layers that lean with the pointer, the stars nearest the cursor brighten, a click
+  throws a burst of sparks, and meteors cross every few seconds. `Still sky` in
+  Appearance freezes it to one frame, and reduced-motion does the same on its own.
 - **Slash commands and models.** `/model`, `/new`, `/stop`, `/terminal`, `/theme`,
   `/mcp`, `/auth` and the full Nova command set autocomplete in the composer.
 - **Settings that persist.** Appearance (dark/light/system), nine accents, imported

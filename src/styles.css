@@ -974,12 +974,15 @@ code {
   min-width: 0;
 }
 .reply-speaker small { display: block; color: var(--muted); font-size: 11px; }
+/* Big enough to tell the four apart: the crew are characters, and a 36px thumbnail
+   of a character is just a smudge. */
 .crew-portrait {
   display: inline-block;
   flex: none;
-  width: var(--portrait-size, 36px);
-  height: var(--portrait-size, 36px);
+  width: var(--portrait-size, 46px);
+  height: var(--portrait-size, 46px);
   border: 1px solid var(--line);
+  border-radius: 6px;
   background: var(--screen) url('/nova-team.png') var(--portrait-x, 0%) 12% / 400% auto no-repeat;
 }
 .crew-portrait[data-portrait='serena'] { --portrait-x: 33.333%; }
@@ -990,7 +993,7 @@ code {
   align-items: center;
   gap: 5px;
   flex: none;
-  --portrait-size: 28px;
+  --portrait-size: 34px;
 }
 .crew-select select {
   min-height: var(--conversation-control);
@@ -1005,7 +1008,7 @@ code {
   gap: 10px;
   padding: 13px;
   border-bottom: 1px solid var(--line);
-  --portrait-size: 44px;
+  --portrait-size: 64px;
 }
 .crew-profile p { margin: 0; color: var(--muted); font-size: 12px; }
 .crew-profile label { display: grid; min-width: 0; gap: 4px; font-size: 12px; }
@@ -1803,24 +1806,34 @@ code {
 .rail-settings span { font-size: 16px; line-height: 1; }
 .rail.is-closed .rail-settings { margin: 0 4px 10px; justify-content: center; padding-inline: 0; }
 
+/* The sky itself is a canvas (components/Sky.tsx): stars, drift and meteors cannot be
+   drawn by a tiled gradient. This layer is only the light behind them. */
 :root[data-wallpaper="true"] .main { position: relative; isolation: isolate; }
 :root[data-wallpaper="true"] .main::before {
   content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: -1;
+  z-index: -2;
   background-image:
-    radial-gradient(circle at 65% 75%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 56%),
-    radial-gradient(circle at 24px 40px, var(--muted) 0.6px, transparent 1.2px),
-    radial-gradient(circle at 52px 27px, var(--accent) 0.5px, transparent 1px);
-  background-size: auto, 111px 113px, 157px 137px;
-  animation: nova-wallpaper 75s linear infinite alternate;
-  opacity: 0.7;
+    radial-gradient(circle at 64% 78%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 54%),
+    radial-gradient(circle at 22% 18%, color-mix(in srgb, #6f8cff 20%, transparent), transparent 46%);
+  animation: nova-glow 26s ease-in-out infinite alternate;
+  opacity: 0.55;
 }
 :root[data-still="true"] .main::before { animation-play-state: paused; }
-@keyframes nova-wallpaper {
-  to { background-position: 0 0, 111px 113px, 157px 137px; }
+@keyframes nova-glow {
+  from { opacity: 0.42; }
+  to { opacity: 0.78; }
+}
+.sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 @media (prefers-reduced-motion: reduce) {
   :root[data-wallpaper="true"] .main::before { animation: none; }
@@ -1890,7 +1903,7 @@ code {
   font: 12px/1.45 'Segoe UI', system-ui, sans-serif;
 }
 .slash-menu button code { color: var(--accent); }
-.mention-code { display: flex; align-items: center; gap: 7px; --portrait-size: 22px; }
+.mention-code { display: flex; align-items: center; gap: 7px; --portrait-size: 26px; }
 .message-recipient { display: block; color: var(--accent); margin-bottom: 4px; }
 .slash-menu button small { color: var(--muted); }
 .slash-menu button[aria-selected='true'] { background: var(--wash); border-color: var(--accent); }
@@ -2258,21 +2271,25 @@ code {
   vertical-align: -3px;
 }
 .agent-mark[data-chip='true'] {
-  width: 30px;
-  height: 30px;
+  /* Big enough to recognise the agent, not just its colour: a 38px disc with the
+     mark filling it. */
+  width: 38px;
+  height: 38px;
   vertical-align: 0;
   border: 1px solid var(--settings-rule);
-  border-radius: 6px;
+  border-radius: 50%;
+  overflow: hidden;
 }
 .agent-mark-glyph {
-  width: 19px;
-  height: 19px;
+  width: 20px;
+  height: 20px;
   object-fit: contain;
   /* The published marks bring their own colours; never tint them. */
 }
 .agent-mark[data-chip='true'] .agent-mark-glyph {
-  width: 21px;
-  height: 21px;
+  width: 30px;
+  height: 30px;
+  object-fit: cover;
 }
 .agent-detail { background: var(--settings-surface); padding: 8px 15px 12px; overflow-wrap: anywhere; }
 .agent-detail p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }

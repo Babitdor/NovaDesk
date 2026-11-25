@@ -77,9 +77,13 @@ pub async fn agent_models(agent: String, app: AppHandle) -> Result<Vec<Model>, A
 
     let args: &[&str] = match agent.as_str() {
         "pi" => &["--list-models", "--no-extensions", "--no-mcp"],
+        // documented: "models -- Lists every available model."
         "opencode" => &["models"],
+        // CHANGELOG 1.x: "--list-models shows every selectable model id".
         "commandcode" => &["--list-models"],
-        "hermes" => &["config", "get", "model", "--json"],
+        // Hermes keeps its catalog in config at providers.list-models.models,
+        // and `config get` resolves dotted keys (docs/user-guide/configuration).
+        "hermes" => &["config", "get", "providers.list-models.models", "--json"],
         _ => {
             return Err(AppError::Agent(
                 "This agent has no CLI model catalog".into(),
@@ -95,17 +99,33 @@ pub async fn agent_models(agent: String, app: AppHandle) -> Result<Vec<Model>, A
     } else {
         std::env::temp_dir()
     };
-    let output = list(&agent, args, &cwd).await?;
+    // A missing key is a normal answer from `config get` (exit 1), not a failure:
+    // an unconfigured harness simply has no models to offer yet.
+    let output = match list(&agent, args, &cwd).await {
+        Ok(output) => output,
+        Err(_) if agent == "hermes" => String::new(),
+        Err(error) => return Err(error),
+    };
     if agent == "hermes" {
-        let model = serde_json::from_str::<Value>(&output)
-            .map_err(|_| AppError::Agent("Could not read the Hermes model configuration".into()))?;
-        return Ok(model
-            .as_str()
-            .or_else(|| model["default"].as_str())
-            .filter(|id| valid_id(id))
-            .map(Model::new)
-            .into_iter()
-            .collect());
+        let catalog = serde_json::from_str::<Value>(&output)
+            .ok()
+            .map(|value| hermes_models(&value))
+            .unwrap_or_default();
+        if !catalog.is_empty() {
+            let mut models = catalog;
+            models.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+            models.dedup_by(|a, b| a.id == b.id);
+            return Ok(models);
+        }
+        // No curated list: fall back to whatever model is resolved right now, so a
+        // working install still shows its current selection.
+        let current = match list(&agent, &["config", "get", "model", "--json"], &cwd).await {
+            Ok(output) => output,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let value = serde_json::from_str::<Value>(&current)
+            .unwrap_or(Value::String(current.trim().to_owned()));
+        return Ok(hermes_models(&value).into_iter().take(1).collect());
     }
     let mut models = terminal_models(&agent, &output);
     models.sort_unstable_by(|a, b| a.id.cmp(&b.id));
@@ -146,6 +166,61 @@ async fn list(agent: &str, args: &[&str], cwd: &Path) -> Result<String, AppError
         return Err(AppError::Agent("The CLI could not list its models".into()));
     }
     Ok(String::from_utf8_lossy(&data).into_owned())
+}
+
+/// Hermes answers with its catalog as an object keyed by model id (each value
+/// carries label/context detail), but a resolved single model comes back as a
+/// string or as a `{ default: ... }` mapping — accept all three shapes.
+fn hermes_models(value: &Value) -> Vec<Model> {
+    let mut models = Vec::new();
+    match value {
+        Value::Object(map) => {
+            // `{ default: "provider/model" }` is the resolved-current shape, not a
+            // catalog: treat a lone `default` as one model.
+            let looks_resolved = map.len() == 1 && map.contains_key("default");
+            if looks_resolved {
+                if let Some(id) = map["default"].as_str().filter(|id| valid_id(id)) {
+                    models.push(Model::new(id));
+                }
+                return models;
+            }
+            for (id, detail) in map {
+                if !valid_id(id) {
+                    continue;
+                }
+                let mut model = Model::new(id);
+                if let Some(label) = detail.get("label").and_then(Value::as_str) {
+                    if !label.is_empty() {
+                        model.label = label.to_owned();
+                    }
+                }
+                model.context = detail
+                    .get("context_length")
+                    .and_then(Value::as_u64)
+                    .map(|n| n.to_string());
+                models.push(model);
+            }
+        }
+        Value::Array(rows) => {
+            for row in rows {
+                let id = row
+                    .get("id")
+                    .or_else(|| row.get("model"))
+                    .and_then(Value::as_str);
+                if let Some(id) = id.filter(|id| valid_id(id)) {
+                    models.push(Model::new(id));
+                }
+            }
+        }
+        Value::String(id) => {
+            let id = id.trim();
+            if valid_id(id) {
+                models.push(Model::new(id));
+            }
+        }
+        _ => {}
+    }
+    models
 }
 
 fn codex_models(catalog: &Value) -> Vec<Model> {

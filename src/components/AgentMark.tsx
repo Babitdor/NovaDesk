@@ -3,18 +3,17 @@ import type { AgentId } from '../lib/settings'
 import claudeMark from '../assets/harness/claude.svg'
 import commandcodeMark from '../assets/harness/commandcode.svg'
 import hermesMark from '../assets/harness/hermes.png'
-import novaMark from '../assets/harness/nova.svg'
 import openaiMark from '../assets/harness/openai.svg'
 import opencodeMark from '../assets/harness/opencode.svg'
 import piMark from '../assets/harness/pi.svg'
 
 /// Each harness shows the mark its vendor publishes — the favicon, brand file or
 /// symbol from their own site or repository — so a list of agents is recognisable
-/// at a glance instead of reading as seven letters. src/assets/harness/SOURCES.md
-/// records where every file came from; the marks identify the tools they belong
-/// to and nothing more.
+/// at a glance instead of reading as seven letters. Nova is the exception: it is
+/// the same portrait the coin is struck from, so the app's own agent looks like
+/// the app. src/assets/harness/SOURCES.md records where every file came from.
 const MARKS: Record<AgentId, string> = {
-  nova: novaMark,
+  nova: '/nova.webp',
   pi: piMark,
   claude: claudeMark,
   codex: openaiMark,
