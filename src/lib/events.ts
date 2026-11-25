@@ -1,0 +1,31 @@
+export type OutputStream = 'stdout' | 'stderr'
+
+export type FinishReason = 'completed' | 'cancelled' | 'failed'
+
+/// Mirrors `AgentEvent` in src-tauri/src/events.rs. Events carry no turn id: each
+/// turn owns its own channel, so the caller already knows which turn it is on.
+export type AgentEvent =
+  | { type: 'turnStarted' }
+  | { type: 'session'; id: string }
+  | { type: 'usage'; input: number; output: number }
+  | { type: 'messageDelta'; text: string }
+  | { type: 'messagePreview'; text: string }
+  | { type: 'messageFinal'; text: string; author?: string | null; replacePreview: boolean; plain: boolean }
+  | { type: 'textDiscard' }
+  | { type: 'toolCall'; callId: string; name: string; input: string }
+  | { type: 'toolResult'; callId: string; ok: boolean; output: string }
+  | { type: 'fileEdit'; path: string; diff: string }
+  | { type: 'approvalRequired'; interruptId: string; kind: string; payload: unknown }
+  | { type: 'notice'; level: string; message: string }
+  | { type: 'processOutput'; stream: OutputStream; chunk: string }
+  | { type: 'turnError'; message: string; kind?: string }
+  | { type: 'turnFinished'; reason: FinishReason }
+
+export type WorkspaceInfo = { root: string; name: string }
+
+export type DirEntry = { path: string; name: string; isDir: boolean }
+
+export type InterruptReply =
+  | { kind: 'tool'; approve: boolean }
+  | { kind: 'plan'; approve: boolean; feedback?: string }
+  | { kind: 'question'; answer: string; selectedIndex: number | null }

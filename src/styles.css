@@ -1,0 +1,2519 @@
+/* Nova Desktop — Phosphor.
+   The app wears the same plate as the site: navy ground, cream ink, one amber
+   accent. Light uses the same typography and spacing. */
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/geist-mono-var.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Instrument Serif';
+  src: url('/fonts/instrument-serif-400-normal.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Instrument Serif';
+  src: url('/fonts/instrument-serif-400-italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  --ground: #030e3e;
+  --panel: #131b5d;
+  --ink: #fad9b6;
+  --muted: rgba(250, 217, 182, 0.72);
+  --line: rgba(250, 217, 182, 0.26);
+  --accent: #f7b98a;
+  --on-accent: #030e3e;
+  --accent-wash: #2a1a38;
+  --proof: #b96f6e;
+  --proof-ink: #d89593;
+  --proof-wash: rgba(185, 111, 110, 0.14);
+  --live: #b3a7ac;
+  --wash: rgba(250, 217, 182, 0.06);
+  --screen: #0a1215;
+  --screen-ink: #fad9b6;
+  --scroll-thumb: #3d203c;
+  --scroll-track: #030e3e;
+
+  --f-disp: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --f-mono: 'Geist Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-state: cubic-bezier(0.4, 0, 0.2, 1);
+
+  color-scheme: dark;
+  font-family: var(--f-mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--ground);
+}
+
+:root[data-appearance="light"] {
+  --ground: #fad9b6;
+  --panel: #ffffff;
+  --ink: #0a1215;
+  --muted: rgba(10, 20, 22, 0.74);
+  --line: rgba(10, 20, 22, 0.22);
+  --accent: #9e4a52;
+  --on-accent: #fad9b6;
+  --accent-wash: #ffe9cf;
+  --proof: #7a2f3a;
+  --proof-ink: #7a2f3a;
+  --proof-wash: rgba(122, 47, 58, 0.1);
+  --live: #6b5b7a;
+  --wash: rgba(10, 20, 22, 0.05);
+  --screen: #fff7ec;
+  --screen-ink: #0a1215;
+  --scroll-thumb: #817494;
+  --scroll-track: #fad9b6;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
+
+body,
+#root {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--ground);
+}
+
+/* Browser surfaces belong to the palette too: nothing here ships a default. */
+::selection {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scroll-track);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* controls ---------------------------------------------------------- */
+button {
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 11px;
+  transition:
+    color 140ms var(--ease-state),
+    background-color 140ms var(--ease-state),
+    border-color 140ms var(--ease-state);
+}
+
+button:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.primary,
+button.send,
+button.approve {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+button.primary:hover:not(:disabled),
+button.send:hover:not(:disabled),
+button.approve:hover:not(:disabled) {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-accent);
+}
+
+button.ghost {
+  border-color: transparent;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  padding: 3px 6px;
+}
+
+button.ghost:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: transparent;
+}
+
+button.stop {
+  border-color: var(--proof);
+  color: var(--proof-ink);
+}
+
+button.stop:hover:not(:disabled) {
+  background: var(--proof-wash);
+  border-color: var(--proof);
+  color: var(--proof-ink);
+}
+
+.app {
+  /* Flex, not fixed grid rows: the notice bar is conditional, and positional
+     rows would leave the 1fr row empty whenever it is absent. */
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* The emblem's disc is its own contour, so it is the one circle in the plate. */
+.mark {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+}
+
+/* Struck large above the wordmark, the way the boot plate carries it — but
+   struck, not printed: the emblem is a coin with two faces, a body of real
+   thickness and one slow turn, so the empty plate holds something alive. */
+.coin {
+  --coin-size: clamp(148px, 18vw, 216px);
+  /* A milled medal, not a puck: the body is thin enough to read as struck metal. */
+  --coin-edge: 7px;
+  --coin-turn: 0deg;
+  position: relative;
+  width: var(--coin-size);
+  height: var(--coin-size);
+  margin: 0 auto 28px;
+  perspective: 900px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.coin[data-dragging='true'] { cursor: grabbing; }
+
+/* The halo sets the coin on the plate instead of letting it float: a contact
+   shadow rather than a glow, so it reads on the navy ground and on cream. */
+.coin::before {
+  content: '';
+  position: absolute;
+  inset: 70% 17% -5%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.5), transparent);
+  filter: blur(9px);
+}
+
+.coin-body {
+  position: relative;
+  height: 100%;
+  transform-style: preserve-3d;
+  /* Tipped a little: a coin held dead flat shows no body at all, and the tilt is
+     what tells the eye this is an object rather than a circle. */
+  transform: rotateX(-14deg) rotateY(var(--coin-turn));
+}
+
+.coin-spin {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  animation: coin-spin 19s linear infinite;
+}
+
+/* A hand on the coin wins: the animation pauses in place, so releasing it
+   resumes the turn from the exact angle the hand left behind. */
+.coin[data-dragging='true'] .coin-spin { animation-play-state: paused; }
+
+@keyframes coin-spin {
+  to { transform: rotateY(360deg); }
+}
+
+/* Both faces are the same strike, so the coin reads whichever way it lands. */
+.coin-face {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  backface-visibility: hidden;
+}
+
+.coin-face img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* A draggable image starts a native drag on pointerdown, which cancels the
+     gesture before the hand can turn the coin. */
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+/* The faces sit just proud of the stack: coplanar layers z-fight, and the body
+   would otherwise paint over the strike at the resting angle. */
+.coin-obverse { transform: translateZ(calc(var(--coin-edge) / 2 + 0.5px)); }
+.coin-reverse { transform: rotateY(180deg) translateZ(calc(var(--coin-edge) / 2 + 0.5px)); }
+
+/* The milled body, lit from above: seen edge-on the stack of circles grades from
+   a lit crown to a shaded belly, which is what makes the thickness read. */
+.coin-edge {
+  position: absolute;
+  inset: 0.6%;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #f7d6ad 4%, #b3794d 62%, #7c4a2c);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Unattended motion is the part to drop; the coin keeps its face to the room. */
+  .coin-spin { animation: none; }
+}
+
+.root {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  width: var(--conversation-size);
+  min-height: var(--conversation-control);
+  margin: 0 auto 10px;
+  padding: 4px 9px 4px 12px;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--proof-ink);
+  background: var(--proof-wash);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--proof);
+  overflow-wrap: anywhere;
+}
+
+.notice button { flex: none; min-height: 26px; }
+
+/* shell ------------------------------------------------------------ */
+.shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 42px auto;
+  height: 100vh;
+  padding: 8px;
+}
+
+/* resize handles ---------------------------------------------------- */
+/* Each handle sits inside the pane it sizes and measures that pane, so the pane
+   can stay content-sized until someone drags it. */
+.splitter {
+  position: absolute;
+  z-index: 4;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+  transition: background-color 120ms var(--ease-state);
+}
+
+.splitter-x {
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+}
+
+.splitter-y {
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+}
+
+.rail > .splitter-x {
+  right: -4px;
+}
+
+.right > .splitter-x {
+  left: -4px;
+}
+
+.dock > .splitter-y {
+  top: -4px;
+}
+
+.splitter:hover,
+.splitter:focus-visible {
+  outline: none;
+  background: var(--accent);
+}
+
+/* task rail -------------------------------------------------------- */
+.rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Sized to a chat title; the transcript keeps a readable measure at the 900px
+     floor. The shell overrides this once a handle has been dragged. */
+  width: clamp(180px, 18vw, 260px);
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+/* Collapsed, the rail keeps its head: there is always a way back. */
+.rail.is-closed {
+  width: 34px;
+}
+
+.rail.is-closed .rail-head {
+  justify-content: center;
+  padding: 10px 0;
+}
+
+.rail.is-closed .mark,
+.rail.is-closed .wordmark,
+.rail.is-closed .new-task,
+.rail.is-closed .rail-filter,
+.rail.is-closed .rail-list,
+.rail.is-closed .rail-foot {
+  display: none;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  padding: 11px 12px 10px;
+  font-family: var(--f-disp);
+  font-size: 17px;
+  line-height: 1;
+  border-bottom: 1px solid var(--line);
+}
+
+.wordmark {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-head .collapse {
+  flex: none;
+  padding: 2px 3px;
+}
+
+.new-task {
+  flex: none;
+  margin: 10px 10px 6px;
+  padding: 8px 10px;
+  text-align: left;
+  letter-spacing: 0.1em;
+}
+
+.rail-filter {
+  flex: none;
+  margin: 0 10px 8px;
+  padding: 6px 8px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: var(--screen);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  outline: none;
+}
+
+.rail-filter::placeholder {
+  color: var(--muted);
+}
+
+.rail-filter:focus {
+  border-color: var(--accent);
+}
+
+.rail-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 2px 6px 12px;
+  overflow-y: auto;
+}
+
+/* A chat is a row of type, not a card: the active one is marked with a rule and
+   the accent wash, the way every other selected thing in the plate is. */
+.chat-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.chat-row:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--wash);
+  border-color: transparent;
+}
+
+.chat-row.is-active {
+  color: var(--accent);
+  background: var(--accent-wash);
+  border-color: var(--line);
+}
+
+.chat-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Row actions ------------------------------------------------------ */
+/* The row stays a full-width target; the kebab only covers the stamp, and it is
+   only there when the row is hovered, active or its menu is open. */
+.chat-item {
+  position: relative;
+}
+
+.chat-item .chat-row {
+  padding-right: 24px;
+}
+
+.chat-more {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  padding: 2px 5px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  opacity: 0;
+  transition: opacity 120ms var(--ease-state), color 120ms var(--ease-state);
+}
+
+.chat-item:hover .chat-more,
+.chat-more:focus-visible,
+.chat-more[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.chat-more:hover {
+  color: var(--accent);
+  border-color: var(--line);
+}
+
+/* A dot, not a badge: pinned only means "higher in this list". */
+.chat-pin {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  margin-right: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  transform: translateY(-2px);
+}
+
+.chat-rename {
+  width: 100%;
+  padding: 6px 8px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--screen);
+  border: 1px solid var(--accent);
+}
+
+/* Clicks outside the menu land here first, so a stray click closes rather than
+   selecting the row underneath. */
+.rail-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+}
+
+.chat-menu {
+  position: absolute;
+  top: 100%;
+  right: 2px;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  min-width: 156px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 24px rgba(3, 14, 62, 0.45);
+}
+
+.chat-menu button {
+  padding: 6px 8px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-align: left;
+  text-transform: none;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.chat-menu button:hover {
+  color: var(--accent);
+  background: var(--wash);
+  border-color: var(--line);
+}
+
+.chat-menu button.is-danger {
+  color: var(--proof-ink);
+}
+
+.chat-menu button.is-danger:hover {
+  color: var(--proof-ink);
+  background: var(--proof-wash);
+  border-color: var(--proof);
+}
+
+.chat-stamp {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.rail-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.rail-foot button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* pane rail -------------------------------------------------------- */
+/* The strip of controls between the transcript and the panel. It is the only
+   way to close the panel, which is why it never hides with it. */
+.panel-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  align-self: center;
+  justify-self: center;
+  width: 34px;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.rail-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--line);
+}
+
+.rail-btn.is-on {
+  color: var(--accent);
+  background: var(--accent-wash);
+  border-color: var(--line);
+}
+
+.rail-glyph {
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.rail-rule {
+  width: 18px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line);
+}
+
+/* right panel ------------------------------------------------------ */
+.right {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: clamp(300px, 30vw, 460px);
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+/* Closed, the panel is behind the rail: no width, and every pane stays mounted
+   so the browser keeps its page and the diff keeps its scroll. */
+.right.is-closed {
+  width: 0;
+  border-width: 0;
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  padding: 6px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  padding: 5px 9px;
+  font: 500 11px var(--f-mono);
+  letter-spacing: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.tab:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.tab.is-active {
+  color: var(--accent);
+  background: var(--wash);
+  border-color: var(--line);
+}
+
+/* Every pane stays mounted and is hidden here: the terminal keeps its output and
+   the browser keeps its page across tab switches. */
+.pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane.is-hidden {
+  display: none;
+}
+
+.pane-head,
+.console-head,
+.preview-head {
+  white-space: nowrap;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 11px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.hint {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+/* file tree -------------------------------------------------------- */
+.tree {
+  overflow: auto;
+  padding: 4px 0 20px;
+  min-height: 0;
+}
+
+.tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+  color: var(--ink);
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.tree-row:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: transparent;
+  background: var(--wash);
+}
+
+.tree-row.is-selected {
+  background: var(--accent-wash);
+  color: var(--accent);
+  border-color: var(--line);
+}
+
+.tree-icon {
+  width: 9px;
+  flex: none;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-loading,
+.tree-error {
+  margin: 0;
+  padding: 3px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.tree-error {
+  color: var(--proof-ink);
+}
+
+/* chat ------------------------------------------------------------- */
+.main {
+  /* A column, not a grid: the approval bar, the notice and the terminal dock all
+     come and go, and the transcript is whatever is left. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  margin-inline-start: 8px;
+  border: 1px solid var(--line);
+  --conversation-width: 804px;
+  --conversation-gutter: clamp(12px, 2vw, 24px);
+  --conversation-size: min(calc(100cqw - 2 * var(--conversation-gutter)), var(--conversation-width));
+  --conversation-control: 34px;
+  container-type: inline-size;
+  background: color-mix(in srgb, var(--panel) 35%, var(--ground));
+}
+
+.chat-log {
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.chat-area {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.chat-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100%;
+  width: var(--conversation-size);
+  margin-inline: auto;
+  padding: 22px 0 24px;
+}
+
+.jump-to-latest {
+  position: absolute;
+  inset: auto auto 10px 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border-color: var(--accent);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.empty {
+  margin: auto;
+  max-width: 46ch;
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty h2 {
+  margin: 0 0 10px;
+  font-family: var(--f-disp);
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.empty p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.75;
+}
+
+.desktop-required {
+  padding: 48px 20px;
+}
+
+code {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+
+.msg {
+  padding: 10px 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  font: 14px/1.65 'Segoe UI', system-ui, sans-serif;
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--accent-wash);
+  border: 1px solid var(--line);
+  max-width: min(85%, 68ch);
+  font-family: var(--f-mono);
+}
+
+.msg-assistant {
+  align-self: stretch;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 15px;
+  font: 14px/1.6 var(--f-mono);
+}
+
+.reply-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  gap: 8px;
+  margin-bottom: 8px;
+  font: 11px var(--f-mono);
+  color: var(--muted);
+}
+
+.reply-head strong { color: var(--accent); overflow-wrap: anywhere; }
+.reply-speaker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.reply-speaker small { display: block; color: var(--muted); font-size: 11px; }
+.crew-portrait {
+  display: inline-block;
+  flex: none;
+  width: var(--portrait-size, 36px);
+  height: var(--portrait-size, 36px);
+  border: 1px solid var(--line);
+  background: var(--screen) url('/nova-team.png') var(--portrait-x, 0%) 12% / 400% auto no-repeat;
+}
+.crew-portrait[data-portrait='serena'] { --portrait-x: 33.333%; }
+.crew-portrait[data-portrait='ralph'] { --portrait-x: 66.667%; }
+.crew-portrait[data-portrait='nora'] { --portrait-x: 100%; }
+.crew-select {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  --portrait-size: 28px;
+}
+.crew-select select {
+  min-height: var(--conversation-control);
+  padding: 3px 5px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font: 11px var(--f-mono);
+}
+.crew-profile {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border-bottom: 1px solid var(--line);
+  --portrait-size: 44px;
+}
+.crew-profile p { margin: 0; color: var(--muted); font-size: 12px; }
+.crew-profile label { display: grid; min-width: 0; gap: 4px; font-size: 12px; }
+.crew-profile-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; }
+.reply-copy { flex-shrink: 0; }
+.reply-plain { white-space: pre-wrap; }
+
+.msg-error {
+  align-self: stretch;
+  color: var(--proof-ink);
+  background: var(--proof-wash);
+  border-left: 1px solid var(--proof);
+}
+
+/* status lines and the approval bar -------------------------------- */
+.notice-line {
+  align-self: center;
+  max-width: 70ch;
+  padding: 2px 0;
+  font-size: 11.5px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.notice-warning {
+  color: var(--accent);
+}
+
+.notice-error {
+  color: var(--proof-ink);
+}
+
+/* A pending decision is blocking the turn, so it sits above the composer
+   rather than scrolling away inside the transcript. It arrives as a plate
+   being struck — the one authored motion in the app. */
+.approval {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: var(--conversation-size);
+  margin: 0 auto 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--accent);
+  background: var(--panel);
+  flex: none;
+  animation: strike 220ms var(--ease-out) both;
+}
+
+.approval-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
+
+.approval-text strong {
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.approval-text code {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.approval-actions button {
+  min-height: var(--conversation-control);
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.msg-tool {
+  align-self: stretch;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+
+.tool-name {
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.badge {
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.badge.ok {
+  color: var(--live);
+}
+
+.badge.bad {
+  color: var(--proof-ink);
+}
+
+.tool-output {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--screen);
+  color: var(--screen-ink);
+  line-height: 1.55;
+}
+
+@keyframes strike {
+  from {
+    transform: translateY(-4px) scaleY(1.02);
+  }
+  60% {
+    transform: translateY(1px) scaleY(0.996);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* terminal dock ---------------------------------------------------- */
+/* The terminal sits under the transcript rather than in the panel, so a dev
+   server can run while the diff beside it is read. */
+.dock {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  height: clamp(148px, 35%, 360px);
+  max-height: 60%;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 0 0 8px 8px;
+}
+
+.dock.is-closed {
+  display: none;
+}
+
+.dock.is-max {
+  flex: 0 0 64%;
+  min-height: 0;
+  max-height: none;
+}
+
+.dock-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dock-symbol {
+  margin-inline: 4px;
+  color: var(--muted);
+}
+
+.dock-tabs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 3px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.dock-spacer {
+  flex: 1;
+}
+
+.dock-shell-picker { position: relative; flex: none; }
+.dock-shell-options {
+  position: absolute;
+  z-index: 6;
+  inset: calc(100% + 4px) 0 auto auto;
+  display: grid;
+  width: max-content;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.dock-shell-options button {
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* Mounted while closed: the console keeps its scrollback. */
+.dock-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 0 0 8px 8px;
+}
+
+/* composer --------------------------------------------------------- */
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: none;
+  width: var(--conversation-size);
+  margin: 0 auto 12px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.composer textarea {
+  width: 100%;
+  resize: none;
+  font-family: var(--f-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: var(--ground);
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  max-height: min(180px, 24vh);
+  outline: none;
+}
+
+.composer textarea::placeholder {
+  color: var(--muted);
+}
+
+.composer textarea:focus {
+  border-color: var(--accent);
+}
+
+/* The meta row names what will answer: the badge is the backend id Rust reports,
+   not a label the frontend invented. */
+.composer-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.composer-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.composer-workspace {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.composer button {
+  flex: none;
+  min-height: var(--conversation-control);
+  padding: 5px 10px;
+}
+
+.composer .model-trigger {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: 7px;
+  min-width: 0;
+  max-width: 42ch;
+  border-color: var(--line);
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.model-trigger-agent, .model-trigger-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-trigger-agent { flex: 0 0 auto; }
+.model-trigger-name { color: var(--ink); }
+
+.composer-activity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.activity-meter {
+  display: inline-flex;
+  gap: 3px;
+  flex: none;
+  color: var(--accent);
+}
+
+.activity-meter i {
+  width: 4px;
+  height: 9px;
+  background: currentColor;
+  opacity: 0.36;
+  transform-origin: bottom;
+  animation: activity-strike 1.35s var(--ease-state) infinite;
+}
+
+.activity-meter i:nth-child(2) { animation-delay: 120ms; }
+.activity-meter i:nth-child(3) { animation-delay: 240ms; }
+.composer-activity[data-waiting='true'] .activity-meter i { animation: none; }
+.composer-activity[data-waiting='true'] .activity-meter i:first-child { opacity: 1; }
+
+@keyframes activity-strike {
+  0%, 42%, 100% { opacity: 0.36; transform: scaleY(0.65); }
+  17%, 26% { opacity: 1; transform: scaleY(1); }
+}
+
+/* changes ---------------------------------------------------------- */
+.changes {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The totals line: the plate's one place for a count that is not a label. */
+.diff-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+  padding: 7px 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-scope {
+  color: var(--ink);
+}
+
+.diff-total {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.diff-branch {
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.stat-add {
+  color: var(--accent);
+}
+
+.stat-del {
+  color: var(--proof-ink);
+}
+
+.file-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+
+.file-group {
+  border-bottom: 1px solid var(--line);
+}
+
+.file-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.file-row:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--wash);
+  border-color: transparent;
+}
+
+.file-row.is-open {
+  color: var(--accent);
+}
+
+.file-chevron {
+  flex: none;
+  align-self: center;
+  color: var(--muted);
+}
+
+.file-name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.file-row .diff-total {
+  flex: none;
+  margin-left: 0;
+}
+
+/* Two gutters and the code. `pre` would scroll as one long line, so each row is
+   its own flex line and the code is the part that scrolls. */
+.diff-body {
+  max-height: 46vh;
+  overflow: auto;
+  padding: 4px 0 8px;
+  background: var(--screen);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.diff-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-right: 10px;
+  white-space: pre;
+  color: var(--screen-ink);
+}
+
+.diff-line.is-add {
+  background: var(--accent-wash);
+}
+
+.diff-line.is-del {
+  background: var(--proof-wash);
+}
+
+.diff-line.is-hunk {
+  display: block;
+  margin: 6px 0 2px;
+  padding-left: 10px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+
+.diff-gutter {
+  flex: none;
+  width: 3ch;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+
+.diff-line.is-add .diff-gutter,
+.diff-line.is-del .diff-gutter {
+  color: inherit;
+}
+
+.diff-code {
+  flex: 1;
+  min-width: 0;
+  overflow: visible;
+}
+
+/* browser ---------------------------------------------------------- */
+.browser {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.browser-bar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 30px;
+  padding: 4px 5px;
+}
+
+/* The field and its go button are one control: the arrow belongs inside the
+   address the way it does in every browser this one is compared to. */
+.url-field {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  padding-right: 2px;
+  background: var(--screen);
+  border: 1px solid var(--line);
+  min-height: 34px;
+}
+
+.url-field:focus-within {
+  border-color: var(--accent);
+}
+
+.browser-url {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  outline: none;
+}
+
+.browser-url::placeholder {
+  color: var(--muted);
+}
+
+.url-go {
+  flex: none;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  padding: 8px 11px 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.browser-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.browser-home {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.server-list {
+  min-height: 0;
+  margin: 0;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.server-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.server-row:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--wash);
+  border-color: var(--accent);
+}
+
+/* A live port is a phosphor dot, not a pill: the plate has no badge for "up". */
+.server-dot {
+  flex: none;
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  background: var(--live);
+  border-radius: 50%;
+}
+
+.server-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-chevron {
+  flex: none;
+  color: var(--muted);
+}
+
+.server-empty {
+  margin: 0;
+  padding: 10px 9px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+/* The rectangle the native child is placed over. It stays empty by design:
+   anything drawn inside it would be covered by the webview. */
+.browser-stage {
+  position: absolute;
+  inset: 0 3px 3px;
+  pointer-events: none;
+}
+
+.browser-stage[data-loaded='true'] {
+  background: var(--screen);
+}
+
+/* console & preview ------------------------------------------------ */
+.console,
+.preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.console-status,
+.preview-path {
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-input {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.console-input input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: var(--screen);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 7px 9px;
+  outline: none;
+}
+
+.console-input input::placeholder {
+  color: var(--muted);
+}
+
+.console-input input:focus {
+  border-color: var(--accent);
+}
+
+.console-output,
+.preview-body {
+  flex: 1;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--screen-ink);
+  background: var(--screen);
+  caret-color: var(--accent);
+}
+
+.console-output .stderr {
+  color: var(--proof-ink);
+}
+
+/* The plate states it has nothing yet rather than sitting blank. */
+.console-idle {
+  color: var(--muted);
+}
+
+.panel-error {
+  margin: 0;
+  padding: 12px;
+  color: var(--proof-ink);
+  background: var(--proof-wash);
+  border-left: 1px solid var(--proof);
+  font-size: 11.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .approval {
+    animation: none;
+  }
+
+  button {
+    transition: none;
+  }
+}
+
+.shell[hidden] { display: none; }
+
+.rail-settings {
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  margin: 0 9px 10px;
+  padding: 8px;
+  color: var(--muted);
+}
+.rail-settings span { font-size: 16px; line-height: 1; }
+.rail.is-closed .rail-settings { margin: 0 4px 10px; justify-content: center; padding-inline: 0; }
+
+:root[data-wallpaper="true"] .main { position: relative; isolation: isolate; }
+:root[data-wallpaper="true"] .main::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background-image:
+    radial-gradient(circle at 65% 75%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 56%),
+    radial-gradient(circle at 24px 40px, var(--muted) 0.6px, transparent 1.2px),
+    radial-gradient(circle at 52px 27px, var(--accent) 0.5px, transparent 1px);
+  background-size: auto, 111px 113px, 157px 137px;
+  animation: nova-wallpaper 75s linear infinite alternate;
+  opacity: 0.7;
+}
+:root[data-still="true"] .main::before { animation-play-state: paused; }
+@keyframes nova-wallpaper {
+  to { background-position: 0 0, 111px 113px, 157px 137px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-wallpaper="true"] .main::before { animation: none; }
+}
+
+.markdown {
+  white-space: normal;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1, .markdown h2, .markdown h3 { line-height: 1.2; }
+.markdown a { color: var(--accent); text-underline-offset: 0.2em; }
+.markdown code { font-family: var(--f-mono); background: var(--wash); }
+.markdown :not(pre) > code { padding: 0.1em 0.25em; }
+.markdown pre, .approval-detail {
+  text-align: left;
+  background: var(--screen);
+  color: var(--screen-ink);
+  border: 1px solid var(--line);
+  padding: 12px 14px;
+  overflow: auto;
+}
+.markdown pre > code { background: transparent; }
+.markdown blockquote {
+  margin-inline: 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--accent);
+  color: var(--muted);
+}
+.markdown table { border-collapse: collapse; display: block; overflow: auto; }
+.markdown td, .markdown th { border: 1px solid var(--line); padding: 5px 9px; }
+.msg-tool summary { cursor: pointer; color: var(--muted); }
+.msg-tool summary .badge { margin-inline-start: 9px; }
+.msg-tool[open] summary { margin-bottom: 8px; }
+.msg-tool .tool-output + .tool-output { margin-top: 7px; }
+.terminal-command { overflow-wrap: anywhere; }
+.slash-trigger {
+  border-color: var(--line);
+  color: var(--accent);
+}
+.slash-menu {
+  position: absolute;
+  z-index: 4;
+  inset: auto 18px calc(100% + 4px) 18px;
+  max-height: min(340px, 42vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px #0004;
+}
+.slash-menu ul { list-style: none; margin: 0; padding: 4px; }
+.slash-menu p { margin: 8px 12px; color: var(--muted); }
+.slash-menu button {
+  display: grid;
+  grid-template-columns: minmax(105px, max-content) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  border-color: transparent;
+  font: 12px/1.45 'Segoe UI', system-ui, sans-serif;
+}
+.slash-menu button code { color: var(--accent); }
+.mention-code { display: flex; align-items: center; gap: 7px; --portrait-size: 22px; }
+.message-recipient { display: block; color: var(--accent); margin-bottom: 4px; }
+.slash-menu button small { color: var(--muted); }
+.slash-menu button[aria-selected='true'] { background: var(--wash); border-color: var(--accent); }
+.approval.approval-input {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(44vh, 380px);
+  gap: 10px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+.approval-input h2 {
+  margin: 0;
+  color: var(--ink);
+  font: 400 22px/1.15 var(--f-disp);
+  overflow-wrap: anywhere;
+}
+.approval-detail { max-height: min(30vh, 260px); margin: 0; white-space: pre-wrap; }
+.approval-field { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
+.approval-field input {
+  border: 1px solid var(--line);
+  background: var(--screen);
+  color: var(--screen-ink);
+  font: inherit;
+  min-height: var(--conversation-control);
+  padding: 6px 8px;
+  width: 100%;
+}
+.approval-options {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  max-height: min(23vh, 205px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+}
+.approval-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  min-height: var(--conversation-control);
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.approval-option + .approval-option { border-top: 1px solid var(--line); }
+.approval-option:is(:hover, :focus-within, :has(:checked)) { background: var(--wash); }
+.approval-option:has(:checked) { box-shadow: inset 2px 0 var(--accent); }
+.approval-option input { margin: 3px 0 0; accent-color: var(--accent); }
+.approval-actions { flex-wrap: wrap; }
+
+.model-picker {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--accent);
+  font: 12px/1.45 var(--f-mono);
+}
+.model-picker:popover-open {
+  display: flex;
+  flex-direction: column;
+  animation: strike 180ms var(--ease-out) both;
+}
+.model-picker-search {
+  display: flex;
+  gap: 5px;
+  padding: 7px;
+  border-bottom: 1px solid var(--line);
+}
+.model-picker-search input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--conversation-control);
+  padding: 5px 8px;
+  color: var(--ink);
+  background: var(--screen);
+  border: 1px solid var(--line);
+  font: inherit;
+}
+.model-picker-search input::placeholder { color: var(--muted); }
+.model-picker-body {
+  display: grid;
+  grid-template-columns: minmax(108px, 0.43fr) minmax(0, 1fr);
+  min-height: 0;
+}
+.model-picker-harnesses, .model-picker-results {
+  min-height: 0;
+  max-height: 320px;
+  padding: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.model-picker-harnesses { border-right: 1px solid var(--line); }
+.model-picker :is(.model-picker-harnesses, .model-picker-results, .model-picker-effort) button {
+  padding: 5px 7px;
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+  border-color: transparent;
+  background: transparent;
+}
+.model-picker :is(.model-picker-harnesses, .model-picker-results) button {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.model-picker .model-picker-results button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.model-picker button:is([aria-pressed='true'], :hover, :focus-visible) {
+  color: var(--accent);
+  border-color: var(--line);
+  background: var(--wash);
+  outline-offset: -2px;
+}
+.model-picker-results button > span:first-child { min-width: 0; }
+.model-picker-results :is(strong, small) { display: block; overflow-wrap: anywhere; }
+.model-picker-results strong { font-weight: 500; }
+.model-picker-results p { margin: 7px; font-size: 11px; color: var(--muted); }
+.model-picker small, .model-context { font-size: 11px; color: var(--muted); }
+.model-context { flex: none; }
+.model-picker-effort {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  min-height: 42px;
+  padding: 3px 7px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+.model-picker-effort > div {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.rail, .panel-rail, .rail-btn, .right, .tab, .dock, .dock-body { border-radius: 0; }
+
+.settings-view {
+  --settings-surface: color-mix(in srgb, var(--ground) 82%, var(--panel));
+  --settings-field: color-mix(in srgb, var(--ground) 84%, var(--ink));
+  --settings-rule: color-mix(in srgb, var(--ink) 20%, transparent);
+  --settings-type: 'Segoe UI', system-ui, sans-serif;
+  display: grid;
+  grid-template-columns: clamp(190px, 21vw, 258px) minmax(0, 1fr);
+  height: 100%;
+  font: 14px/1.45 var(--settings-type);
+  color: var(--ink);
+}
+.settings-view :is(button, input, textarea, select) {
+  font: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.settings-view :where(button, input:not([type='checkbox'], [type='color']), textarea, select) {
+  border: 1px solid var(--settings-rule);
+  border-radius: 5px;
+  padding: 7px 11px;
+  color: var(--ink);
+  background: var(--settings-field);
+}
+.settings-view button { min-height: 34px; white-space: nowrap; }
+.settings-view button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.settings-view :is(input, textarea, select) { min-width: 0; }
+.settings-view textarea { resize: vertical; }
+.settings-nav {
+  background: var(--ground);
+  border-right: 1px solid var(--settings-rule);
+  padding: 21px 16px;
+  overflow-y: auto;
+}
+.settings-nav .settings-back {
+  padding: 5px 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.settings-brand {
+  margin: 25px 8px 20px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+}
+.settings-brand img { width: 23px; height: 23px; object-fit: cover; border-radius: 50%; }
+.settings-nav nav { display: grid; gap: 4px; }
+.settings-nav nav button {
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.settings-nav nav button span {
+  display: inline-flex;
+  justify-content: center;
+  width: 18px;
+  color: var(--accent);
+  font: 15px var(--f-mono);
+}
+.settings-nav nav [aria-current] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--ground));
+  border-color: var(--settings-rule);
+  border-left: 2px solid var(--accent);
+}
+.settings-stage { overflow: auto; padding: 40px clamp(20px, 6vw, 90px) 36px; background: var(--settings-surface); }
+.settings-content { max-width: 720px; margin: 0 auto; }
+.settings-heading { margin-bottom: 25px; }
+.settings-heading h1 { margin: 0; font: 400 clamp(40px, 5vw, 62px)/.95 var(--f-disp); }
+.settings-group {
+  margin: 0 0 18px;
+  border: 1px solid var(--settings-rule);
+  border-radius: 9px;
+  background: var(--ground);
+  overflow: hidden;
+}
+.settings-group h2 {
+  font: 500 11px/1.3 var(--f-mono);
+  text-transform: uppercase;
+  letter-spacing: .11em;
+  color: var(--accent);
+  margin: 0;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--settings-rule);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 50px;
+  padding: 10px 15px;
+}
+.settings-row + .settings-row, .settings-group > div + div:has(.agent-status) { border-top: 1px solid var(--settings-rule); }
+.settings-row > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.settings-row strong { font-weight: 600; }
+.settings-view small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.settings-row :is(input:not([type='checkbox']), select) { width: clamp(130px, 21vw, 230px); flex-shrink: 0; }
+.settings-switch {
+  --track: color-mix(in srgb, var(--muted) 22%, var(--ground));
+  appearance: none;
+  position: relative;
+  display: inline-grid;
+  align-items: center;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid var(--settings-rule);
+  border-radius: 100px;
+  background: var(--track);
+  cursor: pointer;
+}
+.settings-switch::before {
+  content: '';
+  margin-inline: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 150ms ease;
+}
+.settings-switch:checked { background: var(--accent); }
+.settings-switch:checked::before { transform: translateX(16px); background: var(--on-accent); }
+@media (forced-colors: active) {
+  .settings-switch { appearance: auto; }
+  .settings-switch::before { display: none; }
+}
+.settings-swatches, .settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+}
+.settings-tabs {
+  padding: 0;
+  margin-bottom: 17px;
+}
+.settings-view [aria-pressed='true'] {
+  color: var(--ink);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--ground));
+}
+.settings-swatches button, .settings-custom { display: inline-flex; align-items: center; gap: 6px; }
+.settings-swatches button { padding-inline: 6px; font-size: 13px; }
+.settings-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--ground) 35%, transparent);
+}
+.settings-custom { color: var(--muted); margin-left: 4px; }
+.settings-custom input { padding: 0; border: 0; width: 24px; height: 27px; background: transparent; cursor: pointer; }
+.settings-themes { padding: 10px 12px 0; display: grid; gap: 5px; }
+.settings-theme { display: flex; gap: 6px; }
+.settings-theme button:first-child {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  text-align: left;
+  padding: 8px 11px;
+}
+.settings-theme-sample { width: 38px; height: 25px; border-radius: 4px; border: 1px solid var(--settings-rule); }
+.settings-theme small { color: var(--muted); margin-top: 0; }
+.settings-import { display: flex; flex-wrap: wrap; gap: 7px; padding: 11px 12px 0; }
+.settings-import input { flex: 1 1 170px; }
+.settings-help { margin: 11px 15px; color: var(--muted); font-size: 12px; }
+.settings-status { min-height: 1.45em; color: var(--accent); }
+.settings-action { display: flex; gap: 8px; padding: 0 15px 12px; }
+.settings-row + .settings-action { padding-top: 2px; }
+.settings-view .agent-status {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  width: 100%;
+  text-align: left;
+  padding-inline: 15px;
+}
+.agent-status:hover { background: var(--wash); }
+.agent-title, .agent-indicator { display: flex; align-items: center; gap: 9px; }
+.agent-indicator { color: var(--muted); font-size: 12px; }
+.agent-indicator::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+.agent-indicator[data-installed='true']::before { background: var(--accent); border-color: var(--accent); }
+.agent-monogram {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  font: 12px var(--f-mono);
+  color: var(--accent);
+  border: 1px solid var(--settings-rule);
+  border-radius: 5px;
+}
+.agent-detail { background: var(--settings-surface); padding: 8px 15px 12px; overflow-wrap: anywhere; }
+.agent-detail p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.settings-output { background: var(--screen); padding: 12px; margin: 0; color: var(--screen-ink); overflow: auto; }
+.settings-convert { display: grid; gap: 9px; padding: 12px 15px; }
+.settings-convert > label { display: grid; gap: 5px; }
+.settings-convert .settings-action { padding: 0; }
+.settings-convert .settings-inline { display: flex; align-items: center; gap: 5px; }
+.settings-members { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 10px 15px; }
+.settings-members label { display: inline-flex; align-items: center; gap: 5px; }
+.settings-view input[type='checkbox'] { accent-color: var(--accent); }
+.settings-view input:focus-visible, .settings-view button:focus-visible { outline-offset: -2px; }
+
+.dock-terminal-tab { display: flex; align-items: center; flex-shrink: 0; }
+.dock-head .dock-tab { letter-spacing: .04em; white-space: nowrap; }
+.dock-tab[aria-pressed='true'] { color: var(--accent); background: var(--wash); }
+.dock-console { display: flex; min-height: 0; min-width: 0; flex: 1; }
+.interactive-terminal {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  background: var(--screen);
+  color: var(--screen-ink);
+  padding: 8px;
+}
+.dock-console[hidden], .interactive-terminal[hidden] { display: none; }
+.interactive-terminal:focus-within { box-shadow: inset 0 0 0 1px var(--line); }
+.interactive-screen {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  white-space: pre;
+  font: 13px/18px var(--f-mono);
+}
+.terminal-line { position: relative; display: block; height: 18px; }
+.terminal-line i {
+  position: absolute;
+  inset-block: 1px;
+  width: 2px;
+  background: var(--accent);
+}
+.interactive-input {
+  position: absolute;
+  inset: 8px auto auto 8px;
+  opacity: 0.01;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  resize: none;
+}
+.terminal-notice { margin: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* motion -------------------------------------------------------------
+   One way of appearing: ink rises into place, surfaces glide on the same
+   curve, and nothing bounces, scales or overshoots — this plate has no radius
+   and no depth, so motion must not imply either. Three durations only: a tick
+   for state, ink for content that arrives, a plate move for the shell
+   changing shape. */
+
+:root {
+  --ease-wipe: cubic-bezier(0.65, 0, 0.35, 1);
+  --t-tick: 120ms;
+  --t-ink: 190ms;
+  --t-plate: 240ms;
+
+}
+
+/* ink arriving ------------------------------------------------------- */
+@keyframes ink-rise {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A node mounts once, when the stream appends it; later text deltas update it
+   in place. `@starting-style` is precisely the "first style update after
+   insertion" hook, so an arrival animates and a re-render never does. */
+.chat-flow > * {
+  transition:
+    opacity var(--t-ink) var(--ease-out),
+    transform var(--t-ink) var(--ease-out);
+}
+
+@starting-style {
+  .chat-flow > * {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  /* A task switch inserts the whole transcript at once, and that is a page
+     turn rather than new ink: ChatLog marks the frame it happens on. A
+     starting style is only consulted at insertion, so clearing the flag
+     afterwards cannot restart anything. */
+  .chat-flow.is-handoff > * {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes plate-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A pane keeps its DOM while hidden, so its entry animation restarts by
+   itself when `display` flips back — no state, and the browser pane is never
+   re-mounted for it. */
+.pane:not(.is-hidden) {
+  animation: plate-in var(--t-ink) var(--ease-state);
+}
+
+/* surfaces resizing -------------------------------------------------- */
+.right,
+.rail {
+  transition: width var(--t-plate) var(--ease-out);
+}
+
+/* A drag is not a transition: while a handle holds the pointer the shell
+   snaps to it, and the plate curve returns when the drag ends. */
+.is-resizing .right,
+.is-resizing .rail {
+  transition: none;
+}
+
+/* Collapsed, the rail's content leaves in reading order instead of vanishing
+   out of a box that is still moving: `allow-discrete` keeps it painted until
+   the fade ends, then takes it out of the layout. */
+.rail-list,
+.rail-filter,
+.rail-foot,
+.new-task,
+.wordmark {
+  transition:
+    opacity var(--t-ink) var(--ease-state),
+    display var(--t-plate);
+  transition-behavior: allow-discrete;
+}
+
+.rail.is-closed .rail-list,
+.rail.is-closed .rail-filter,
+.rail.is-closed .rail-foot,
+.rail.is-closed .new-task,
+.rail.is-closed .wordmark {
+  opacity: 0;
+}
+
+/* tabs --------------------------------------------------------------- */
+.tab {
+  transition:
+    color var(--t-tick) var(--ease-state),
+    background-color var(--t-tick) var(--ease-state),
+    border-color var(--t-tick) var(--ease-state);
+}
+
+/* settings ----------------------------------------------------------- */
+@keyframes plate-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.settings-view {
+  animation: plate-in var(--t-plate) var(--ease-state);
+}
+
+/* The stage is keyed by section, so a section change rises as one plate and
+   its groups follow in reading order. */
+.settings-stage {
+  animation: plate-in var(--t-ink) var(--ease-state);
+}
+
+.settings-content > * {
+  animation: plate-rise var(--t-ink) var(--ease-out) both;
+}
+
+.settings-content > :nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.settings-content > :nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.settings-content > :nth-child(n + 4) {
+  animation-delay: 110ms;
+}
+
+/* switching tasks ---------------------------------------------------- */
+/* A task switch is a hand-off between two transcripts. Only the log is named,
+   so the rest of the shell stays still — and the Browser pane's native child
+   webview, which no snapshot can capture, is never flashed through an empty
+   one. lib/motion.ts starts the transition; without platform support or with
+   reduced motion it simply sets the state. */
+.chat-log {
+  view-transition-name: transcript;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-old(transcript) {
+  animation: plate-in var(--t-tick) var(--ease-state) reverse both;
+}
+
+::view-transition-new(transcript) {
+  animation: ink-rise var(--t-ink) var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Content still arrives; it just arrives already in place. */
+  .pane:not(.is-hidden),
+  .settings-view,
+  .settings-stage,
+  .settings-content > *,
+  .activity-meter i,
+  .model-picker:popover-open {
+    animation: none;
+  }
+
+  .chat-flow > *,
+  .right,
+  .rail,
+  .tab,
+  .rail-list,
+  .rail-filter,
+  .rail-foot,
+  .new-task,
+  .wordmark {
+    transition: none;
+  }
+
+  /* Belt to lib/motion.ts's brace: nothing is snapshotted for a task switch
+     even if a transition is somehow started. */
+  .chat-log {
+    view-transition-name: none;
+  }
+}
