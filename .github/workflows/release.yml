@@ -1,0 +1,56 @@
+name: Release
+
+# Tagging a version builds the Windows bundles and attaches them to a draft
+# release. Bump the version in src-tauri/tauri.conf.json first — tauri-action
+# names the artifacts after it, and the tag must match v<version>.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build Windows bundles
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Nova Desktop v__VERSION__"
+          releaseBody: |
+            Windows installers for Nova Desktop v__VERSION__.
+
+            - `Nova Desktop_*_x64-setup.exe` — NSIS installer
+            - `Nova Desktop_*_x64_en-US.msi` — MSI package
+
+            Requires the WebView2 runtime (bundled with Windows 11) and Python 3 on
+            `PATH` for the terminal dock. The agent CLIs you intend to use have to be
+            installed and authenticated separately.
+          releaseDraft: true
+          prerelease: false

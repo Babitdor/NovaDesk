@@ -81,7 +81,10 @@ impl ProcessRunner {
             _ => return Err(AppError::Spawn("output pump task failed".into())),
         };
 
-        let status = child.wait().await.map_err(|e| AppError::Io(e.to_string()))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| AppError::Io(e.to_string()))?;
 
         Ok(ProcOutcome {
             exit_code: status.code(),

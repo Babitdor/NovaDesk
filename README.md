@@ -9,6 +9,9 @@ next to the transcript: diffs, files, a browser and real shells in one window.
 
 Tauri 2 + React 19 · Windows-first · one workspace, many agents
 
+[![CI](https://github.com/Babitdor/NovaDesk/actions/workflows/ci.yml/badge.svg)](https://github.com/Babitdor/NovaDesk/actions/workflows/ci.yml)
+[![Release](https://github.com/Babitdor/NovaDesk/actions/workflows/release.yml/badge.svg)](https://github.com/Babitdor/NovaDesk/actions/workflows/release.yml)
+
 </div>
 
 ---
@@ -101,6 +104,21 @@ npm run lint           # oxlint
 npm run build          # tsc -b && vite build
 cargo test              # inside src-tauri
 ```
+
+CI runs exactly those on every push and pull request: the frontend job on Ubuntu, the
+Rust job on Windows (the backend shells out to ConPTY and PowerShell, so the tests run on
+the platform they target). Formatting is a gate — `cargo fmt --all` before you push.
+
+Releases are built and attached automatically: bump `version` in
+`src-tauri/tauri.conf.json`, then push a matching tag.
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That runs `.github/workflows/release.yml`, which publishes the MSI and NSIS installers to
+a **draft** GitHub release for you to review and publish.
 
 ## Layout
 

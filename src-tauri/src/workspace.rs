@@ -48,8 +48,8 @@ impl WorkspaceGuard {
         let name = candidate
             .file_name()
             .ok_or_else(|| AppError::PathEscape(requested.to_string()))?;
-        let parent =
-            std::fs::canonicalize(parent).map_err(|e| AppError::from_io(e, Path::new(requested)))?;
+        let parent = std::fs::canonicalize(parent)
+            .map_err(|e| AppError::from_io(e, Path::new(requested)))?;
         let parent = self.contain(parent, requested)?;
         Ok(parent.join(name))
     }
