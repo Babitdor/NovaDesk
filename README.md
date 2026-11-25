@@ -115,8 +115,12 @@ tag with both installers attached:
 
 | Asset | What it is |
 | --- | --- |
-| `Nova Desktop_<version>_x64-setup.exe` | NSIS installer (per-user, no admin) |
-| `Nova Desktop_<version>_x64_en-US.msi` | MSI package for managed installs |
+| `Nova.Desktop_<version>_x64-setup.exe` | NSIS installer (per-user, no admin) |
+| `Nova.Desktop_<version>_x64_en-US.msi` | MSI package for managed installs |
+
+GitHub replaces the spaces in the bundle names with dots, so the attached assets read
+`Nova.Desktop_…` while the local files under `src-tauri/target/release/bundle/` keep
+their spaces.
 
 The workflow can also be started by hand (`workflow_dispatch`) from the Actions tab.
 `concurrency` keeps one release build at a time — a second tag waits instead of
