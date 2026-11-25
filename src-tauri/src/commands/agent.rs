@@ -10,6 +10,11 @@ use crate::AppState;
 
 /// Returns as soon as the turn is queued; the reply streams down `on_event`, so
 /// a webview call never sits between the user's click and a cancellation.
+///
+/// The flat signature is the IPC contract — `invoke('start_turn', { turnId, ... })`
+/// maps one argument per field — so grouping them into a struct would only rename
+/// the same payload on both sides.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn start_turn(
     turn_id: String,

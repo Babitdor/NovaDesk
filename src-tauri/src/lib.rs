@@ -25,12 +25,15 @@ use crate::workspace::WorkspaceGuard;
 ///
 /// `Clone` is cheap — every field sits behind an Arc — so a spawned task can hold
 /// its own handle and `State<'_, AppState>` stays a borrow.
+/// A live turn: the token that stops it and the backend driving it.
+type LiveTurns = Arc<Mutex<HashMap<String, (CancellationToken, Arc<dyn AgentBackend>)>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     guard: Arc<RwLock<Option<WorkspaceGuard>>>,
     /// Live turns by id. Cancelling the token makes the backend stop and its child
     /// processes die.
-    turns: Arc<Mutex<HashMap<String, (CancellationToken, Arc<dyn AgentBackend>)>>>,
+    turns: LiveTurns,
     /// Live one-off commands from the output panel, same contract as `turns`.
     procs: Arc<Mutex<HashMap<String, CancellationToken>>>,
     terminals: Arc<Mutex<HashMap<String, commands::terminal::Terminal>>>,

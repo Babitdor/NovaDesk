@@ -324,8 +324,7 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
                     .and_then(|output| {
                         String::from_utf8_lossy(&output.stdout)
                             .lines()
-                            .filter(|line| !line.trim().is_empty())
-                            .next_back()
+                            .rfind(|line| !line.trim().is_empty())
                             .map(|line| clip(line.trim(), 150))
                     })
                 } else {
