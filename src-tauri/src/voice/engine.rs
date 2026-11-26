@@ -18,6 +18,7 @@ use transcribe_rs::onnx::moonshine::{MoonshineModel, MoonshineVariant};
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::sense_voice::SenseVoiceModel;
 use transcribe_rs::onnx::Quantization;
+use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperLoadParams};
 use transcribe_rs::{SpeechModel, TranscribeOptions};
 
 use crate::error::AppError;
@@ -143,6 +144,23 @@ fn load(model: &'static Model, dir: &Path) -> Result<Loaded, AppError> {
         ),
         Engine::SenseVoice => {
             Box::new(SenseVoiceModel::load(dir, &quant).map_err(|err| load_failure(model, err))?)
+        }
+        Engine::Whisper => {
+            // whisper.cpp takes one GGML file rather than a directory, and the
+            // quantisation is baked into that file. CPU only, matching the ONNX
+            // path: asking for a GPU here would add a failure mode on machines
+            // that have none, and the flag is a later decision.
+            Box::new(
+                WhisperEngine::load_with_params(
+                    &dir.join(model.required[0]),
+                    WhisperLoadParams {
+                        use_gpu: false,
+                        flash_attn: false,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|err| load_failure(model, err))?,
+            )
         }
         Engine::None => {
             return Err(AppError::Voice(format!(

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { clampInterfaceSize, migratePreferences } from './settings.ts'
+import { clampInterfaceSize, clampSpeechSpeed, migratePreferences } from './settings.ts'
 
 /// A blob written by the version that shipped before this one: no `spec`, no
 /// projects, no General or Schedules preferences at all.
@@ -60,4 +60,110 @@ test('a partial voice block keeps its saved fields', () => {
   assert.equal(preferences.voice.destination, 'local')
   assert.equal(preferences.voice.model, 'tiny')
   assert.equal(preferences.voice.language, 'all')
+})
+
+test('a saved transcription service survives a reload', () => {
+  const preferences = migratePreferences({
+    voice: {
+      destination: 'service',
+      profiles: [{ id: 'p1', name: 'Work', provider: 'mistral', model: 'voxtral-mini-latest', url: '', key: 'k' }],
+      profileId: 'p1',
+    },
+  })
+  assert.equal(preferences.voice.destination, 'service')
+  assert.equal(preferences.voice.profileId, 'p1')
+  assert.deepEqual(preferences.voice.profiles, [
+    { id: 'p1', name: 'Work', provider: 'mistral', model: 'voxtral-mini-latest', url: '', key: 'k' },
+  ])
+})
+
+test('a voice destination this build does not have turns dictation off', () => {
+  assert.equal(migratePreferences({ voice: { destination: 'cloud' } }).voice.destination, 'off')
+  assert.equal(migratePreferences({ voice: { destination: 'service' } }).voice.destination, 'off')
+})
+
+test('a profile with an unknown provider or no id is dropped, not kept half-read', () => {
+  const preferences = migratePreferences({
+    voice: {
+      destination: 'service',
+      profiles: [
+        { id: 'ok', provider: 'openai', model: 'whisper-1', key: 'k' },
+        { id: '', provider: 'openai' },
+        { id: 'x', provider: 'elevenlabs' },
+        'nope',
+      ],
+    },
+  })
+  assert.deepEqual(preferences.voice.profiles.map((entry) => entry.id), ['ok'])
+  // The saved selection pointed at nothing that survived, so dictation is off.
+  assert.equal(preferences.voice.profileId, 'ok')
+  assert.equal(preferences.voice.destination, 'service')
+})
+
+test('a build that never saved speech reads the system voice', () => {
+  const preferences = migratePreferences(LEGACY)
+  assert.equal(preferences.speech.destination, 'system')
+  assert.equal(preferences.speech.speed, 1)
+  assert.equal(preferences.speech.profiles.length, 0)
+  assert.equal(preferences.speech.profileId, '')
+  // The old master switch still means what it meant.
+  assert.equal(preferences.speak, false)
+})
+
+test('a speech destination this build does not have falls back to the system voice', () => {
+  const preferences = migratePreferences({ speech: { destination: 'cloud' } })
+  assert.equal(preferences.speech.destination, 'system')
+})
+
+test('speed is clamped to what the engine accepts', () => {
+  assert.equal(migratePreferences({ speech: { speed: 9 } }).speech.speed, 2)
+  assert.equal(migratePreferences({ speech: { speed: 0 } }).speech.speed, 0.5)
+  assert.equal(migratePreferences({ speech: { speed: 1.26 } }).speech.speed, 1.3)
+  assert.equal(migratePreferences({ speech: { speed: 'fast' } }).speech.speed, 1)
+  assert.equal(clampSpeechSpeed(Number.NaN), 1)
+})
+
+test('a profile missing its id or provider is dropped, a whole one is kept', () => {
+  const preferences = migratePreferences({
+    speech: {
+      destination: 'service',
+      profiles: [
+        { id: 'a', name: 'Mine', provider: 'custom', model: 'm', voice: 'v', url: 'https://x.test/t', key: 'k', instructions: '' },
+        { name: 'no id', provider: 'openai' },
+        { id: 'b', provider: 'nope' },
+        'junk',
+        null,
+        { id: 'c', provider: 'groq' },
+      ],
+      profileId: 'a',
+    },
+  })
+  assert.deepEqual(preferences.speech.profiles.map((profile) => profile.id), ['a', 'c'])
+  assert.equal(preferences.speech.profileId, 'a')
+  // Missing fields become empty strings rather than undefined.
+  assert.equal(preferences.speech.profiles[1].key, '')
+  assert.equal(preferences.speech.profiles[1].name, 'Speech service')
+})
+
+test('a profile id that is not in the list is replaced by the first saved one', () => {
+  const preferences = migratePreferences({
+    speech: {
+      profiles: [{ id: 'kept', name: 'Kept', provider: 'openai' }],
+      profileId: 'gone',
+    },
+  })
+  assert.equal(preferences.speech.profileId, 'kept')
+})
+
+test('no saved profile means no profile id at all', () => {
+  const preferences = migratePreferences({ speech: { profileId: 'ghost', profiles: 'nope' } })
+  assert.equal(preferences.speech.profileId, '')
+  assert.deepEqual(preferences.speech.profiles, [])
+})
+
+test('a speaker number is a whole number inside the range the page offers', () => {
+  assert.equal(migratePreferences({ speech: { speaker: 904 } }).speech.speaker, 904)
+  assert.equal(migratePreferences({ speech: { speaker: -3 } }).speech.speaker, 0)
+  assert.equal(migratePreferences({ speech: { speaker: 12.6 } }).speech.speaker, 13)
+  assert.equal(migratePreferences({ speech: { speaker: 'x' } }).speech.speaker, 0)
 })

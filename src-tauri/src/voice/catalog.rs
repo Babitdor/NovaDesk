@@ -131,6 +131,7 @@ pub enum Engine {
     MoonshineBase,
     MoonshineTiny,
     SenseVoice,
+    Whisper,
     None,
 }
 
@@ -325,24 +326,96 @@ const MOONSHINE_TINY_FILES: &[(&str, &str, u64)] = &[
     ),
 ];
 
+const WHISPER_TINY_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-tiny.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+    77691713,
+)];
+
+const WHISPER_TINY_EN_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-tiny.en.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+    77704715,
+)];
+
+const WHISPER_BASE_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-base.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    147951465,
+)];
+
+const WHISPER_BASE_EN_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-base.en.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+    147964211,
+)];
+
+const WHISPER_SMALL_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-small.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+    487601967,
+)];
+
+const WHISPER_SMALL_EN_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-small.en.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
+    487614201,
+)];
+
+const WHISPER_MEDIUM_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-medium.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+    1533763059,
+)];
+
+const WHISPER_MEDIUM_EN_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-medium.en.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
+    1533774781,
+)];
+
+const WHISPER_LARGE_V1_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-large-v1.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v1.bin",
+    3094623691,
+)];
+
+const WHISPER_LARGE_V2_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-large-v2.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2.bin",
+    3094623691,
+)];
+
+const WHISPER_LARGE_V3_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-large-v3.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+    3095033483,
+)];
+
+const WHISPER_LARGE_V3_TURBO_FILES: &[(&str, &str, u64)] = &[(
+    "ggml-large-v3-turbo.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+    1624555275,
+)];
+
 pub const MODELS: &[Model] = &[
     Model {
         id: "whisper-medium",
         name: "Whisper Medium",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"],
         language_count: 99,
-        bytes: 832000000,
+        bytes: 1533763059,
         licence: "Apache-2.0",
         accuracy: Some("A- (4.64% error)"),
         speed: Some("7.3 s / 30 s"),
         description: "Mid-size OpenAI Whisper for 99 languages, with language detection and translation; slower on CPU.",
         badges: &[Badge::Recommended, Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_MEDIUM_FILES)),
+        required: &["ggml-medium.bin"],
     },
     Model {
         id: "breeze-asr-25",
@@ -358,7 +431,7 @@ pub const MODELS: &[Model] = &[
         description: "Whisper fine-tune for Taiwanese Mandarin mixed with English; Traditional script, no punctuation.",
         badges: &[Badge::Translate],
         supported: false,
-        unsupported_reason: Some("No loader for this engine in this build"),
+        unsupported_reason: Some("Whisper fine-tune with no published GGML weights; a conversion would have to ship here"),
         source: None,
         required: &[],
     },
@@ -1076,200 +1149,200 @@ pub const MODELS: &[Model] = &[
     Model {
         id: "whisper-base",
         name: "Whisper Base",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"],
         language_count: 99,
-        bytes: 85000000,
+        bytes: 147951465,
         licence: "Apache-2.0",
         accuracy: Some("B- (9.88% error)"),
         speed: Some("1.0 s / 30 s"),
         description: "Small Whisper Base for 99 languages, with language detection and translation; fast but less accurate.",
         badges: &[Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_BASE_FILES)),
+        required: &["ggml-base.bin"],
     },
     Model {
         id: "whisper-base-en",
         name: "Whisper Base English",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en"],
         language_count: 1,
-        bytes: 85000000,
+        bytes: 147964211,
         licence: "Apache-2.0",
         accuracy: Some("B (7.60% error)"),
         speed: Some("0.9 s / 30 s"),
         description: "English-only Whisper Base; small and fast, with a lower English error rate than the 99-language Base.",
         badges: &[],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_BASE_EN_FILES)),
+        required: &["ggml-base.en.bin"],
     },
     Model {
         id: "whisper-large-v1",
         name: "Whisper Large v1",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"],
         language_count: 99,
-        bytes: 1700000000,
+        bytes: 3094623691,
         licence: "Apache-2.0",
         accuracy: Some("A- (4.46% error)"),
         speed: Some("15 s / 30 s"),
         description: "Original Whisper Large (v1) for 99 languages, with language detection and translation; slow without a GPU.",
         badges: &[Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_LARGE_V1_FILES)),
+        required: &["ggml-large-v1.bin"],
     },
     Model {
         id: "whisper-large-v2",
         name: "Whisper Large v2",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"],
         language_count: 99,
-        bytes: 1700000000,
+        bytes: 3094623691,
         licence: "Apache-2.0",
         accuracy: Some("A- (4.21% error)"),
         speed: Some("15 s / 30 s"),
         description: "Whisper Large v2 for 99 languages, with language detection and translation; slow without a GPU.",
         badges: &[Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_LARGE_V2_FILES)),
+        required: &["ggml-large-v2.bin"],
     },
     Model {
         id: "whisper-large-v3",
         name: "Whisper Large v3",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su", "yue"],
         language_count: 100,
-        bytes: 1700000000,
+        bytes: 3095033483,
         licence: "Apache-2.0",
         accuracy: Some("A- (4.03% error)"),
         speed: Some("15 s / 30 s"),
         description: "OpenAI's Whisper Large v3 for 100 languages, with language detection and translation; best with a GPU.",
         badges: &[Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_LARGE_V3_FILES)),
+        required: &["ggml-large-v3.bin"],
     },
     Model {
         id: "whisper-large-v3-turbo",
         name: "Whisper Large v3 Turbo",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su", "yue"],
         language_count: 100,
-        bytes: 886000000,
+        bytes: 1624555275,
         licence: "Apache-2.0",
         accuracy: Some("A- (4.38% error)"),
         speed: Some("9.7 s / 30 s"),
         description: "Pruned, faster Whisper Large v3 for 100 languages, with language detection; slow without a GPU.",
         badges: &[],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_LARGE_V3_TURBO_FILES)),
+        required: &["ggml-large-v3-turbo.bin"],
     },
     Model {
         id: "whisper-medium-en",
         name: "Whisper Medium English",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en"],
         language_count: 1,
-        bytes: 831000000,
+        bytes: 1533774781,
         licence: "Apache-2.0",
         accuracy: Some("A- (4.88% error)"),
         speed: Some("6.8 s / 30 s"),
         description: "English-only Whisper Medium; accurate, but slower than Parakeet models of similar size.",
         badges: &[],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_MEDIUM_EN_FILES)),
+        required: &["ggml-medium.en.bin"],
     },
     Model {
         id: "whisper-small",
         name: "Whisper Small",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"],
         language_count: 99,
-        bytes: 270000000,
+        bytes: 487601967,
         licence: "Apache-2.0",
         accuracy: Some("B (6.51% error)"),
         speed: Some("2.6 s / 30 s"),
         description: "Small OpenAI Whisper for 99 languages, with language detection and translation.",
         badges: &[Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_SMALL_FILES)),
+        required: &["ggml-small.bin"],
     },
     Model {
         id: "whisper-small-en",
         name: "Whisper Small English",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en"],
         language_count: 1,
-        bytes: 270000000,
+        bytes: 487614201,
         licence: "Apache-2.0",
         accuracy: Some("B+ (6.14% error)"),
         speed: Some("2.4 s / 30 s"),
         description: "English-only Whisper Small; compact, with moderate speed and accuracy.",
         badges: &[],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_SMALL_EN_FILES)),
+        required: &["ggml-small.en.bin"],
     },
     Model {
         id: "whisper-tiny",
         name: "Whisper Tiny",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"],
         language_count: 99,
-        bytes: 46000000,
+        bytes: 77691713,
         licence: "Apache-2.0",
         accuracy: Some("C (13.84% error)"),
         speed: Some("0.7 s / 30 s"),
         description: "Smallest Whisper, for 99 languages with language detection and translation; very fast, low accuracy.",
         badges: &[Badge::Translate],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_TINY_FILES)),
+        required: &["ggml-tiny.bin"],
     },
     Model {
         id: "whisper-tiny-en",
         name: "Whisper Tiny English",
-        engine: Engine::None,
+        engine: Engine::Whisper,
         quant: Quant::Fp32,
         languages: &["en"],
         language_count: 1,
-        bytes: 46000000,
+        bytes: 77704715,
         licence: "Apache-2.0",
         accuracy: Some("C+ (10.72% error)"),
         speed: Some("0.6 s / 30 s"),
         description: "English-only Whisper Tiny; very small and fast, with low accuracy.",
         badges: &[],
-        supported: false,
-        unsupported_reason: Some("Whisper runs through whisper.cpp, which this build does not link"),
-        source: None,
-        required: &[],
+        supported: true,
+        unsupported_reason: None,
+        source: Some(Source::Files(WHISPER_TINY_EN_FILES)),
+        required: &["ggml-tiny.en.bin"],
     },
 ];
 
@@ -1297,6 +1370,24 @@ pub struct ModelView {
 pub struct LanguageView {
     pub id: &'static str,
     pub name: &'static str,
+}
+
+impl Engine {
+    /// The stable string the manifest records. Informational only: every decision
+    /// about whether a model can run reads the files on disk and this build's own
+    /// support, never this label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::Parakeet => "parakeet",
+            Engine::Canary => "canary",
+            Engine::Cohere => "cohere",
+            Engine::MoonshineBase => "moonshineBase",
+            Engine::MoonshineTiny => "moonshineTiny",
+            Engine::SenseVoice => "senseVoice",
+            Engine::Whisper => "whisper",
+            Engine::None => "none",
+        }
+    }
 }
 
 impl Model {
@@ -1423,6 +1514,53 @@ mod tests {
                     model.id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn whisper_models_point_at_one_ggml_file() {
+        let mut seen = 0;
+        for model in MODELS
+            .iter()
+            .filter(|model| model.engine == Engine::Whisper)
+        {
+            seen += 1;
+            assert!(model.supported, "{} cannot run on this build", model.id);
+            let Some(Source::Files(files)) = model.source else {
+                panic!("{} has no file list", model.id);
+            };
+            assert_eq!(files.len(), 1, "{} fetches more than one weight", model.id);
+            let (name, url, bytes) = files[0];
+            assert_eq!(
+                model.required,
+                &[name],
+                "{} requires another name",
+                model.id
+            );
+            assert!(
+                name.starts_with("ggml-") && name.ends_with(".bin"),
+                "{} is not a GGML file: {name}",
+                model.id
+            );
+            assert_eq!(model.bytes, bytes, "{} card size drifted", model.id);
+            assert!(url.starts_with("https://"), "{}: {url}", model.id);
+        }
+        assert_eq!(seen, 12, "the Whisper family lost an entry");
+    }
+
+    #[test]
+    fn models_without_an_engine_stay_unsupported() {
+        for model in MODELS.iter().filter(|model| model.engine == Engine::None) {
+            assert!(
+                !model.supported,
+                "{} claims to run without an engine",
+                model.id
+            );
+            assert!(
+                model.unsupported_reason.is_some(),
+                "{} gives no reason",
+                model.id
+            );
         }
     }
 

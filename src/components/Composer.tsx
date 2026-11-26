@@ -6,7 +6,7 @@ import { AgentMark } from './AgentMark'
 import { ModelPicker } from './ModelPicker'
 import { CREW, addressedCrew, crewRoles, crewTargets, type CrewMode } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
-import { VOICE_SHORTCUT_LABEL, MicRecorder, voiceInstalled, voiceTranscribe } from '../lib/voice'
+import { VOICE_SHORTCUT_LABEL, MicRecorder, voiceInstalled, voiceTranscribe, voiceTranscribeService } from '../lib/voice'
 import { errorText } from '../lib/ipc'
 import { loadDrafts, saveDraft } from '../lib/drafts'
 
@@ -99,7 +99,15 @@ export function Composer({
   const [installedVoices, setInstalledVoices] = useState<string[]>([])
   const voiceRecorder = useRef<MicRecorder | null>(null)
   const holding = useRef(false)
-  const voiceReady = voice.destination === 'local' && voice.model !== '' && installedVoices.includes(voice.model)
+  // A saved service needs a key unless it is a server you run yourself, which
+  // may take none; a local model has to be on this computer.
+  const serviceProfile = voice.profiles.find((entry) => entry.id === voice.profileId)
+  const serviceReady = Boolean(
+    serviceProfile && (serviceProfile.key.trim() !== '' || serviceProfile.provider === 'custom'),
+  )
+  const voiceReady = voice.destination === 'service'
+    ? serviceReady
+    : voice.destination === 'local' && voice.model !== '' && installedVoices.includes(voice.model)
 
   useEffect(() => {
     void voiceInstalled().then(setInstalledVoices).catch(() => setInstalledVoices([]))
@@ -138,13 +146,22 @@ export function Composer({
         return
       }
       setVoiceState('transcribing')
-      const result = await voiceTranscribe({
-        modelId: voice.model,
-        language: voice.language === 'all' ? undefined : voice.language,
-        samples: recording.samples,
-        sampleRate: recording.sampleRate,
-        channels: recording.channels,
-      })
+      const language = voice.language === 'all' ? undefined : voice.language
+      const result = voice.destination === 'service' && serviceProfile
+        ? await voiceTranscribeService({
+            profile: serviceProfile,
+            language,
+            samples: recording.samples,
+            sampleRate: recording.sampleRate,
+            channels: recording.channels,
+          })
+        : await voiceTranscribe({
+            modelId: voice.model,
+            language,
+            samples: recording.samples,
+            sampleRate: recording.sampleRate,
+            channels: recording.channels,
+          })
       if (result.text) {
         appendDraft(result.text)
         input.current?.focus()
@@ -163,7 +180,10 @@ export function Composer({
     // mounted would otherwise send the user straight back to Settings.
     const installed = await voiceInstalled().catch(() => installedVoices)
     if (installed !== installedVoices) setInstalledVoices(installed)
-    if (voice.destination !== 'local' || voice.model === '' || !installed.includes(voice.model)) {
+    const ready = voice.destination === 'service'
+      ? serviceReady
+      : voice.destination === 'local' && voice.model !== '' && installed.includes(voice.model)
+    if (!ready) {
       onOpenVoice()
       return
     }
@@ -182,7 +202,7 @@ export function Composer({
   // The shortcut is registered on the window so it works wherever the caret is.
   // Re-registered per render because the handlers close over the live draft.
   useEffect(() => {
-    if (voice.destination !== 'local') return
+    if (!voiceReady) return
     const match = (event: KeyboardEvent) => event.code === 'Space' && event.ctrlKey && event.shiftKey
     const down = (event: KeyboardEvent) => {
       if (!match(event)) return

@@ -3167,31 +3167,33 @@ code {
 /* Languages | Models */
 .voice-panes {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: clamp(210px, 28%, 260px) minmax(0, 1fr);
   gap: 12px;
   padding: 0 15px 15px;
 }
 .voice-pane {
   display: flex;
   flex-direction: column;
-  min-height: 300px;
-  max-height: 440px;
+  min-height: 320px;
+  max-height: 460px;
   border: 1px solid var(--settings-rule);
   border-radius: 9px;
-  background: var(--ground);
+  background: color-mix(in srgb, var(--ground) 90%, var(--panel));
 }
+/* The pane label is a quiet caption, not a heading in the accent colour: the
+   cards below carry the emphasis. */
 .voice-pane h3 {
   margin: 0;
-  padding: 11px 12px;
+  padding: 14px 16px 10px;
   font: 500 11px/1.3 var(--f-mono);
   text-transform: uppercase;
-  letter-spacing: .11em;
-  color: var(--accent);
-  border-bottom: 1px solid var(--settings-rule);
+  letter-spacing: .1em;
+  color: var(--muted);
 }
 .voice-search {
-  width: calc(100% - 24px);
-  margin: 10px 12px;
+  width: calc(100% - 32px);
+  margin: 0 16px 10px;
+  padding: 11px 13px;
 }
 .settings-row select.voice-wide { width: clamp(210px, 30vw, 330px); }
 .voice-languages ul {
@@ -3207,20 +3209,24 @@ code {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  min-height: 28px;
-  padding: 5px 8px;
+  min-height: 30px;
+  padding: 5px 9px;
   border: 0;
   border-radius: 6px;
   background: transparent;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
   color: var(--ink);
 }
 .voice-languages button:hover:not(:disabled) { background: var(--wash); }
-.voice-languages button:hover { background: var(--wash); }
-.voice-languages button[aria-pressed='true'] { background: var(--wash); color: var(--accent); }
+/* The chosen language is marked with a tick, not with a filled row: a list of
+   thirty languages with one lit row reads as a menu, not a filter. The clear is
+   explicit because the settings-wide [aria-pressed] rule paints a 12% accent
+   wash, and it outranks a single-class selector. */
+.voice-languages button[aria-pressed='true'] { background: transparent; color: var(--ink); }
+.voice-languages button[aria-pressed='true'] span { color: var(--muted); }
 
 .voice-cards {
   display: flex;
@@ -3228,13 +3234,13 @@ code {
   flex-direction: column;
   gap: 10px;
   overflow: auto;
-  padding: 0 12px 12px;
+  padding: 0 16px 14px;
 }
 .voice-card {
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--settings-rule);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--panel) 45%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel) 34%, transparent);
 }
 .voice-card header {
   display: flex;
@@ -3242,33 +3248,39 @@ code {
   flex-wrap: wrap;
   gap: 8px;
 }
-.voice-card header strong { font-size: 13px; }
+.voice-card header strong { font-size: 14px; font-weight: 600; }
 .voice-card p {
-  margin: 6px 0 5px;
+  margin: 7px 0 6px;
   font-size: 12.5px;
   color: var(--muted);
 }
 .voice-card small {
   display: block;
-  font-size: 11.5px;
+  font-size: 12px;
 }
-.voice-licence { margin-top: 2px; opacity: .85; }
+/* The measured line is the fact the card exists for, so it stays at ink weight
+   while the licence under it recedes. */
+.voice-meta { color: color-mix(in srgb, var(--ink) 88%, transparent); }
+.voice-licence { margin-top: 3px; color: var(--muted); }
+/* Badges are labels, not calls to action: a neutral chip keeps the accent for
+   the one thing the card wants you to press. */
 .voice-badge {
   padding: 3px 7px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 999px;
+  border: 1px solid var(--settings-rule);
+  border-radius: 5px;
+  background: transparent;
   font: 500 9.5px/1 var(--f-mono);
   font-style: normal;
   letter-spacing: .1em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--muted);
 }
 .voice-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
   min-height: 30px;
 }
 .voice-progress {
@@ -3286,6 +3298,72 @@ code {
 }
 .voice-installed { font-size: 11.5px; color: var(--muted); }
 .voice-card[data-installed='true'] { border-color: color-mix(in srgb, var(--accent) 38%, var(--settings-rule)); }
+
+/* speech (read aloud). The cards, badges and progress bars are the voice ones:
+   two lists of downloadable models on the same page should not look like two
+   features. Only what is new has a rule here. */
+.speech-speed {
+  flex: 1 1 180px;
+  max-width: 260px;
+}
+.speech-speaker {
+  width: 84px;
+}
+.speech-profiles {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.speech-profile {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--settings-rule);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--wash) 45%, transparent);
+}
+.speech-profile h3 {
+  margin: 0 0 10px;
+  font: 600 12px/1.2 var(--f-ui);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.speech-profile .settings-row + .settings-row { margin-top: 10px; }
+.speech-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.speech-profile input[type='password'],
+.speech-profile input[type='text'],
+.speech-profile input:not([type]) {
+  font-family: var(--f-mono);
+}
+.speech-advanced {
+  margin-top: 12px;
+}
+.speech-advanced summary {
+  cursor: pointer;
+  font: 600 12px/1.2 var(--f-ui);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.speech-advanced .settings-row { margin-top: 10px; }
+/* The address is read, not typed, so it looks like the text it is. */
+.speech-destination {
+  flex: 1 1 260px;
+  max-width: 420px;
+  overflow: hidden;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--wash) 60%, transparent);
+  font: 400 11px/1.4 var(--f-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
 
 /* composer */
 .voice-trigger {
@@ -3433,59 +3511,201 @@ html[data-zoom='fallback'] #root { zoom: var(--ui-scale, 1); }
 }
 .crash-card .settings-action { padding: 0; }
 
-/* The two auxiliary windows. Neither paints the shell, so both stand alone. */
+/* The two auxiliary windows. Neither paints the shell, so both stand alone: the
+   window is transparent and each surface paints its own plate from the theme
+   tokens, which each one re-reads whenever it is focused. */
 html[data-window] { background: transparent; }
-html[data-window] body { margin: 0; background: var(--ground); }
+html[data-window] body,
+html[data-window] #root { margin: 0; background: transparent; }
+
 .launcher {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
   height: 100vh;
-  padding: 0 14px;
-  background: color-mix(in srgb, var(--ground) 92%, var(--panel));
-  border: 1px solid var(--accent-line);
-  border-radius: 12px;
+  padding: 14px;
   box-sizing: border-box;
+  background: color-mix(in srgb, var(--ground) 92%, var(--panel));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--ink);
+  font: 12.5px var(--f-mono);
+  overflow: hidden;
 }
-.launcher-mark { color: var(--accent); font-size: 15px; }
-.launcher input {
-  flex: 1;
-  min-width: 0;
+.launcher-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 2px; }
+.launcher-mark { color: var(--accent); font-size: 14px; }
+.launcher-head strong { font: 600 15px var(--f-mono); letter-spacing: .01em; }
+.launcher-esc {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 7px;
+  border-color: var(--line);
+  background: var(--wash);
+  color: var(--muted);
+  font: 11px var(--f-mono);
+  font-weight: 400;
+  letter-spacing: .04em;
+  text-transform: none;
+}
+.launcher-esc:hover:not(:disabled) { color: var(--ink); border-color: var(--accent-line); }
+
+.launcher-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 42%, transparent);
+}
+.launcher-card textarea {
+  min-height: 58px;
+  padding: 2px;
+  border: 0;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
+  font: 14px/1.45 var(--f-mono);
+  outline: none;
+}
+.launcher-card textarea::placeholder { color: var(--muted); }
+.launcher-tools { display: flex; align-items: center; gap: 7px; }
+.launcher-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 42%;
+  padding: 4px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--wash);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.launcher-chip span { color: var(--accent); }
+.launcher-go {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--ground);
+  font: 16px/1 var(--f-mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.launcher-go:hover:not(:disabled) { background: var(--accent); border: 0; color: var(--on-accent); }
+
+.launcher-agents { flex: 1; min-height: 0; }
+.launcher-agents-head { display: flex; align-items: center; gap: 10px; }
+.launcher-agents-head strong { font: 600 13px var(--f-mono); }
+.launcher-find { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.launcher-find input {
+  width: 116px;
   border: 0;
   background: transparent;
   color: var(--ink);
-  font: 14px var(--f-mono);
+  font: 11.5px var(--f-mono);
+  text-align: right;
   outline: none;
 }
-.launcher input::placeholder { color: var(--muted); }
-.launcher-go { flex-shrink: 0; }
+.launcher-find input::placeholder { color: var(--muted); }
+.launcher-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; overflow: auto; min-height: 0; }
+.launcher-runs li button {
+  width: 100%;
+  display: grid;
+  gap: 1px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  text-align: left;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.launcher-runs li button strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launcher-runs li button small { color: var(--muted); letter-spacing: 0; }
+.launcher-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ground) 60%, transparent);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.launcher-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 3px 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.launcher-hint { display: inline-flex; align-items: center; gap: 5px; }
+.launcher-hint kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--wash);
+  color: var(--ink);
+  font: 10.5px var(--f-mono);
+}
+.launcher-live { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.launcher-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--live); }
+.launcher-live[data-on='true'] i {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 .agent-widget {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 11px 12px 12px;
-  min-height: 100vh;
+  gap: 9px;
+  height: 100vh;
+  padding: 12px;
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--ground) 94%, var(--panel));
-  border: 1px solid var(--accent-line);
-  border-radius: 10px;
+  background: color-mix(in srgb, var(--ground) 92%, var(--panel));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--ink);
   font: 12px var(--f-mono);
+  overflow: hidden;
 }
-.agent-widget header { display: flex; align-items: center; gap: 7px; color: var(--accent); }
-.agent-widget header strong { font-weight: 600; letter-spacing: .06em; text-transform: uppercase; font-size: 10.5px; }
-.agent-widget header small { margin-left: auto; color: var(--muted); }
-.agent-widget ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.agent-widget header { display: flex; align-items: center; gap: 7px; }
+.agent-widget header > span:first-child { color: var(--accent); }
+.agent-widget header strong { font-weight: 600; font-size: 12.5px; }
+.agent-widget header small { margin-left: auto; color: var(--muted); font-size: 11px; }
+.agent-widget ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; overflow: auto; min-height: 0; }
 .agent-widget li button {
   width: 100%;
   display: grid;
   gap: 1px;
+  padding: 7px 9px;
+  border-radius: 9px;
   text-align: left;
-  padding: 6px 8px;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .agent-widget li button strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-widget li button small { color: var(--muted); }
-.agent-widget-empty { margin: 0; color: var(--muted); }
-.agent-widget-close { margin-left: 4px; padding: 0 5px; line-height: 1; }
+.agent-widget-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ground) 60%, transparent);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.agent-widget-close { margin-left: 4px; padding: 0 6px; line-height: 1; }
 
 /* --- @team pipeline strip --------------------------------------------------
    The run's stage board: one chip per agent in the pipeline, the plan gate

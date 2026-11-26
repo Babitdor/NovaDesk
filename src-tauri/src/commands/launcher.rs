@@ -28,9 +28,10 @@ fn lock_shell() -> std::sync::MutexGuard<'static, ()> {
 pub const LAUNCHER: &str = "launcher";
 pub const WIDGET: &str = "widget";
 
-/// One line of prompt and a Start button.
-const LAUNCHER_WIDTH: f64 = 560.0;
-const LAUNCHER_HEIGHT: f64 = 96.0;
+/// A prompt, the task that is running, and the two hint rows: one card, sized
+/// for its content rather than resized to it.
+const LAUNCHER_WIDTH: f64 = 660.0;
+const LAUNCHER_HEIGHT: f64 = 500.0;
 const WIDGET_WIDTH: f64 = 320.0;
 const WIDGET_HEIGHT: f64 = 220.0;
 
@@ -40,6 +41,9 @@ fn create_launcher(app: &AppHandle<Wry>) -> Result<WebviewWindow<Wry>, AppError>
         .inner_size(LAUNCHER_WIDTH, LAUNCHER_HEIGHT)
         .resizable(false)
         .decorations(false)
+        // The page paints a rounded card; without a transparent window its
+        // corners would be the system's background colour instead.
+        .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
@@ -150,6 +154,7 @@ fn create_widget(app: &AppHandle<Wry>) -> Result<WebviewWindow<Wry>, AppError> {
         .inner_size(WIDGET_WIDTH, WIDGET_HEIGHT)
         .resizable(false)
         .decorations(false)
+        .transparent(true)
         .skip_taskbar(true)
         .visible(false);
     // The bottom-right corner is where a companion window is expected, and it is

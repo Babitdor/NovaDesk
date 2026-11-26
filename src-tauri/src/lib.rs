@@ -2,10 +2,13 @@ mod agent;
 mod commands;
 mod error;
 mod events;
+mod http;
 mod proc;
 mod recovery;
+pub mod speak;
 #[cfg(test)]
 mod testtmp;
+pub mod transcribe;
 pub mod voice;
 mod workspace;
 
@@ -45,6 +48,12 @@ pub struct AppState {
     voice: Arc<voice::engine::VoiceEngine>,
     /// Live model downloads, so Cancel can reach a transfer already streaming.
     voice_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Reads replies aloud. No resident model — Piper is a process per utterance
+    /// — so this holds the lock that keeps two replies from overlapping, and
+    /// nothing else.
+    speak: Arc<speak::engine::SpeakEngine>,
+    /// Live voice downloads, keyed by voice id.
+    speak_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl AppState {
@@ -69,6 +78,8 @@ impl AppState {
             agents,
             voice: Arc::new(voice::engine::VoiceEngine::default()),
             voice_downloads: Arc::new(Mutex::new(HashMap::new())),
+            speak: Arc::new(speak::engine::SpeakEngine::default()),
+            speak_downloads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -97,6 +108,14 @@ impl AppState {
             .voice_downloads
             .lock()
             .expect("voice downloads mutex poisoned")
+            .values()
+        {
+            token.cancel();
+        }
+        for token in self
+            .speak_downloads
+            .lock()
+            .expect("speech downloads mutex poisoned")
             .values()
         {
             token.cancel();
@@ -182,7 +201,16 @@ pub fn run() {
         commands::voice::voice_cancel,
         commands::voice::voice_delete,
         commands::voice::voice_transcribe,
+        commands::transcribe::transcribe_providers,
+        commands::transcribe::voice_transcribe_service,
         commands::voice::voice_engine_ready,
+        commands::speak::speak_catalog,
+        commands::speak::speak_installed,
+        commands::speak::speak_runtime_ready,
+        commands::speak::speak_download,
+        commands::speak::speak_cancel,
+        commands::speak::speak_delete,
+        commands::speak::speak_synthesize,
         commands::launcher::set_quick_launcher,
         commands::launcher::open_launcher,
         commands::launcher::set_widget,
@@ -213,11 +241,28 @@ pub fn run() {
             main_commands(invoke)
         })
         .on_window_event(|window, event| {
-            // A closing window must not leave child processes or a child webview
-            // behind.
+            // The main window owns the work: only its closing cancels transfers
+            // and cuts child processes loose. Dismissing the widget is not a
+            // reason to stop a build.
+            if window.label() != "main" {
+                return;
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window.app_handle().state::<AppState>().cancel_all();
                 commands::browser::close_child(window.app_handle());
+            }
+            // Nova's companion windows are part of Nova: closing it closes them.
+            // Otherwise the widget outlives the app it reports on, because the
+            // process stays alive as long as one webview is still standing.
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                for label in [commands::launcher::WIDGET, commands::launcher::LAUNCHER] {
+                    if let Some(aux) = window.app_handle().get_webview_window(label) {
+                        let _ = aux.close();
+                    }
+                }
             }
         })
         .build(tauri::generate_context!())

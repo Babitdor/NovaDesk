@@ -19,6 +19,10 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::cli;
 use crate::error::AppError;
 use crate::events::AgentEvent;
+// The Authorization header file lives in http.rs now: the speech services write
+// the same one, and a credential in argv is readable by every process on the
+// machine and ends up in a crash report.
+use crate::http::write_header_file;
 use crate::proc::ProcessRunner;
 use crate::workspace::WorkspaceGuard;
 use crate::AppState;
@@ -176,36 +180,6 @@ async fn token(app: &AppHandle) -> Option<(String, &'static str)> {
 
 // --- HTTP ---------------------------------------------------------------
 
-/// The Authorization header, in a file rather than in argv: a command line is
-/// visible to every process on the machine, and to the crash reporter.
-struct HeaderFile {
-    path: PathBuf,
-}
-
-impl Drop for HeaderFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-fn write_header_file(token: &str) -> Result<HeaderFile, AppError> {
-    let path = std::env::temp_dir().join(format!("nova-github-{}.hdr", uuid::Uuid::new_v4()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&path)
-        .map_err(|e| AppError::from_io(e, &path))?;
-    use std::io::Write;
-    write!(file, "Authorization: Bearer {token}\r\n").map_err(|e| AppError::from_io(e, &path))?;
-    drop(file);
-    Ok(HeaderFile { path })
-}
-
 /// One authenticated GET, decoded as JSON.
 ///
 /// curl runs without --fail so an HTTP error keeps its status code, which is
@@ -242,7 +216,9 @@ async fn api_json(url: &str, token: Option<&str>) -> Result<Value, AppError> {
         None => None,
     };
     if let Some(header) = &header {
-        command.arg("-H").arg(format!("@{}", header.path.display()));
+        command
+            .arg("-H")
+            .arg(format!("@{}", header.path().display()));
     }
     command.arg("--").arg(url);
 

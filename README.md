@@ -89,11 +89,12 @@ npm run dev            # http://localhost:1420
 
 ## Voice
 
-Voice turns speech into text on this machine. The microphone is captured in the
-webview, the samples are resampled to 16 kHz mono in Rust, and a local ONNX model
-transcribes them; nothing is uploaded, and the recording is discarded once the text
-is in the composer. Speech is transcribed by [`transcribe-rs`](https://github.com/cjpais/transcribe-rs)
-on top of ONNX Runtime.
+Voice turns speech into text. The microphone is captured in the webview, the
+samples are resampled to 16 kHz mono in Rust, and either a local ONNX model or a
+service you saved transcribes them; the recording is discarded once the text is in
+the composer. The local path uploads nothing. The models run through
+[`transcribe-rs`](https://github.com/cjpais/transcribe-rs) on top of ONNX Runtime, with
+the Whisper family running through whisper.cpp.
 
 Turn it on in **Settings → Voice**: download a model, set *Send microphone audio to*
 to **On-device**, then press `Ctrl+Shift+Space` or the **Dictate** button in the
@@ -101,8 +102,28 @@ composer. The shortcut can toggle or record only while held. The first time the
 microphone is opened, WebView2 asks whether Nova may use it — that dialog is the
 system's, and nothing records until it is allowed.
 
+### Dictation through a service
+
+*Send microphone audio to* also lists saved **speech services**: OpenAI, Groq,
+Mistral or a server of your own. Save one under **Settings → Voice → Speech
+services** (provider, model, key, and for your own server the address), then pick it
+in the destination list. A server you run yourself may take no key; the published
+ones need one. The recording is posted as 16-bit mono WAV at 16 kHz through
+the system curl, with the key in a header file rather than on a command line.
+
+| Provider | Endpoint | Models |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1/audio/transcriptions` | gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper-1 |
+| Groq | `https://api.groq.com/openai/v1/audio/transcriptions` | whisper-large-v3, whisper-large-v3-turbo |
+| Mistral | `https://api.mistral.ai/v1/audio/transcriptions` | voxtral-mini-latest, voxtral-mini-2507 |
+| Your own server | whatever you save | whatever it serves |
+
+Keys are kept in the webview's local storage, the same place the model API keys
+live, and saving a profile never contacts the service. On-device dictation never
+touches the network; a saved service is contacted only when you dictate to it.
+
 The catalogue lists 52 models with the copy, error rates, decode speeds, sizes and
-licences the vendors publish. Nine can run on this build:
+licences the vendors publish. Twenty-one can run on this build:
 
 | Model | Languages | Download | Licence |
 | --- | --- | --- | --- |
@@ -115,9 +136,22 @@ licences the vendors publish. Nine can run on this build:
 | SenseVoice Small | Mandarin, English, Japanese, Korean, Cantonese | 160 MB | FunASR Model License 1.1 |
 | Moonshine Base | English | 58 MB | MIT |
 | Moonshine Tiny | English | 32 MB | MIT |
+| Whisper Tiny | 99 languages | 78 MB | Apache-2.0 |
+| Whisper Tiny English | English | 78 MB | Apache-2.0 |
+| Whisper Base | 99 languages | 148 MB | Apache-2.0 |
+| Whisper Base English | English | 148 MB | Apache-2.0 |
+| Whisper Small | 99 languages | 488 MB | Apache-2.0 |
+| Whisper Small English | English | 488 MB | Apache-2.0 |
+| Whisper Medium | 99 languages | 1.53 GB | Apache-2.0 |
+| Whisper Medium English | English | 1.53 GB | Apache-2.0 |
+| Whisper Large v1 | 99 languages | 3.09 GB | Apache-2.0 |
+| Whisper Large v2 | 99 languages | 3.09 GB | Apache-2.0 |
+| Whisper Large v3 | 100 languages | 3.10 GB | Apache-2.0 |
+| Whisper Large v3 Turbo | 100 languages | 1.62 GB | Apache-2.0 |
 
-The other cards are listed, not hidden, and say why they cannot run yet: Whisper needs
-the whisper.cpp engine, which this build does not link; the streaming exports (Moonshine
+The other cards are listed, not hidden, and say why they cannot run yet: Breeze-ASR-25 is
+a Whisper fine-tune with no published GGML weights, so a conversion would have to ship
+here; the streaming exports (Moonshine
 Streaming, Nemotron Speech Streaming, Parakeet Multitalker, Voxtral Realtime) assume a
 live audio feed and Nova transcribes each recording after you stop; the remaining
 families (Qwen3-ASR, Voxtral, Granite Speech, Fun-ASR, MOSS, Breeze, Canary-Qwen, Cohere
@@ -151,6 +185,11 @@ static), so the app ships no separate runtime library to lose. Settings → Voic
 ort to start its environment when the page opens and reports it if that fails, rather
 than letting the first transcription die with a stack trace.
 
+whisper.cpp is compiled into that same executable, and unlike ONNX Runtime's prebuilt
+binaries it costs a C++ build per clean checkout: `whisper-rs-sys` builds whisper.cpp
+with CMake and generates its bindings with bindgen, so every build machine — CI included
+— needs CMake and libclang (`LIBCLANG_PATH`), and the binary grows by a few megabytes.
+
 To check inference without the UI, run the ignored integration test against a
 downloaded model and any 16 kHz mono WAV:
 
@@ -159,6 +198,133 @@ $env:NOVA_VOICE_MODEL="C:\path\to\model-dir"   # the four extracted files
 $env:NOVA_VOICE_WAV="C:\path\to\speech.wav"
 cargo test --test voice_engine --manifest-path src-tauri/Cargo.toml -- --ignored
 ```
+
+## Reading replies aloud
+
+Finished replies can be read out. There are two destinations, and they have
+nothing in common beyond the button:
+
+- **A voice on this computer.** Piper's own prebuilt binary is downloaded beside
+  the voice and run as a child process, one utterance at a time. Nothing about a
+  reply leaves the machine.
+- **A speech service.** The reply text is POSTed to OpenAI, Groq, ElevenLabs or a
+  server of your own; the audio comes back and is played. Keys are stored in the
+  window's local storage, the same place the model keys already live, and are
+  sent as a header file — never on a command line, where any process could read
+  them.
+
+**Settings → Voice → Read with** picks between them, sets the speed (0.5 to 2)
+and previews the result. `Speak finished replies` is the master switch: it reads
+once when a turn completes, and never when a turn fails or is stopped. A long
+reply is split into 320-character pieces, because one request per paragraph keeps
+the first words from waiting on the last.
+
+| Service | Models | Audio | Notes |
+| --- | --- | --- | --- |
+| OpenAI | `gpt-4o-mini-tts`, `tts-1`, `tts-1-hd` | WAV | The only one with a style-instruction field, so "read it like a tired engineer" works. |
+| Groq | `playai-tts`, `playai-tts-arabic` | WAV | The same request shape as OpenAI. |
+| ElevenLabs | `eleven_multilingual_v2`, `eleven_turbo_v2_5`, `eleven_flash_v2_5` | MP3 | Takes a voice id in the address; sends `xi-api-key` rather than a bearer token. |
+| Your own server | whatever it serves | WAV | Any https endpoint with OpenAI's `/v1/audio/speech` shape. |
+
+### On-device voices
+
+Twenty-two voices are listed. Nineteen are Piper voices, in thirteen languages; for
+those, the first download also installs Piper itself (22,477,236 bytes, the
+2023.11.14-2 Windows release), then the voice (about 63 MB; the two high-quality
+ones are about 114 MB and 121 MB). The other three are plain ONNX weights that run
+inside this app, so they need nothing installed beside them and no Piper at all:
+
+| Voice | Engine | Language | Size | Licence |
+| --- | --- | --- | --- | --- |
+| Kale | ONNX, in process | English (US) | 20 MB | Apache-2.0 |
+| Kokoro | ONNX, in process | English (US) | 92 MB + 4.5 MB shared front end | Apache-2.0 |
+| Supertonic | ONNX, in process | English (US) | 399 MB | OpenRAIL-M |
+
+Kokoro and Kale read the same phoneme ids — Kale is a finetune of Kokoro — so the
+front end (word list, overrides, GRU, id table, 4,610,899 bytes) is installed once
+into `%APPDATA%\app.novacode.desktop\speak\frontend\` and reused by every phoneme
+voice rather than downloaded per voice. Kale still ships its own copy inside its
+folder, because a 20 MB voice that arrives complete is worth the duplication.
+| Amy (low) | Piper | English (US) | 63 MB | see model card |
+| Lessac (medium) | Piper | English (US) | 63 MB | Blizzard 2013 |
+| Lessac (high) | Piper | English (US) | 114 MB | Blizzard 2013 |
+| Ryan (high) | Piper | English (US) | 121 MB | CC BY-NC-SA 4.0 |
+| LibriTTS-R (904 speakers) | Piper | English (US) | 79 MB | CC BY 4.0 |
+| Alba (medium) | Piper | English (UK) | 63 MB | CC BY 4.0 |
+| Northern English Male (medium) | Piper | English (UK) | 63 MB | CC BY-SA 4.0 |
+| Thorsten (high) | Piper | German | 114 MB | CC0 |
+| Siwis (medium) | Piper | French | 63 MB | CC BY 4.0 |
+| DaveFX (medium) | Piper | Spanish (Spain) | 63 MB | CC0 |
+| Paola (medium) | Piper | Italian | 63 MB | CC0 |
+| Faber (medium) | Piper | Portuguese (Brazil) | 63 MB | CC0 |
+| Irina (medium) | Piper | Russian | 63 MB | unknown |
+| Darkman (medium) | Piper | Polish | 63 MB | CC0 |
+| MLS (52 speakers) | Piper | Dutch | 77 MB | CC BY 4.0 |
+| DFKI (medium) | Piper | Turkish | 63 MB | CC BY-NC-SA 4.0 |
+| HuaYan (medium) | Piper | Chinese | 63 MB | unknown |
+| Kareem (low) | Piper | Arabic (Jordan) | 63 MB | see model card |
+| Pratham (medium) | Piper | Hindi | 64 MB | CC BY-NC-SA 4.0 |
+
+Every size is the sum of the files its download fetches, from `voices.json` in
+[rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) and from the
+repository's own file tree for Kale; the sample rate and speaker count on each card
+come from that voice's `MODEL_CARD` (Kale's 24 kHz from the runtime it ships;
+its repository lists ten presets and this download fetches the one the card is for,
+because each preset is a separate 522 KB style table). Nothing here is estimated, and the
+post-download size check reads the same numbers. A voice whose licence says
+*unknown* is the dataset's silence, not an assumption on our part.
+
+**Kale runs in this process, and has a text front end of its own.** The graph takes
+phoneme ids rather than letters, so the download is not just 15 MB of weights: it
+also brings the model's Apache-2.0 front end — a 2.8 MB word list, its overrides, and
+a 1.7 MB GRU for words the list has not got — because downloading eSpeak just to
+phonemise would mean a second binary that can be missing, and GPLv3 eSpeak linked
+into this executable is exactly what the Piper arrangement avoids. The port lives in
+`speak/frontend.rs` and is honest about its edges: numbers and decimals are spelled
+out, but dizione's money, date, unit and file-name rules, homograph disambiguation
+("read" past or present) and hyphenated compounds are not carried over, so those read
+plainly. Kokoro's graph has no length-scale input, so the speed control does not
+reach Kale; it keeps the voice's own pace instead of resampling it and shifting its
+pitch.
+
+### Voices deliberately not offered
+
+Checked against each model's own files, not against blog claims. Listed here so the
+next person does not redo the work:
+
+| Model | Why it is not in the catalogue |
+| --- | --- |
+| KittenTTS 2 (pico/nano/mini) | Phoneme input with its own front end. The OOV half of that front end is a character-level BART shipped as `safetensors` (`g2p/g2p_bart_en_us/model.safetensors`, 3,011,692 bytes) — `d_model` 128, one encoder layer, one decoder layer, vocab 63, 64 positions, so it is small enough to port by hand or export to ONNX with `optimum`, but it ships in neither form `ort` can read. The rest is the 3,418,388-byte misaki dictionary plus `voices_<lang>.npz`; the per-language graphs are 7,953,526 (int8) and 3,967,605 (int4) at 24 kHz. Worth revisiting as a hand port rather than a download. |
+| Supertonic 3 | Character input, no eSpeak, but 398 MB across four graphs and a flow-matching sampler whose constants live in `tts.json` (latent 24, chunk compress 6, 50 style tokens). Weights are OpenRAIL-M, not permissive. A second engine, and a large download. |
+| Phonon 31m | A language model with a chat template and `model.q4k` GGUF weights; it needs a GGUF runtime, which `ort` is not. |
+| PiVo-1.4M | Needs a FARGAN vocoder and a CMU dictionary wired in by hand. |
+| MOSS-TTS-Nano | Upstream publishes `pytorch_model.bin` and an ONNX *export script*; shipping an artifact we generated ourselves is not something this catalogue should do. |
+| Pocket TTS | The model card gates the weights ("you have to accept the conditions"), so it cannot be a download button at all. It would have to be a bring-your-own-token card, which is a separate decision. |
+
+**Supertonic is the one voice here that is not permissively licensed.** Its code is MIT, but
+the weights are **OpenRAIL-M**: the model may be used, modified and redistributed, and the
+licence carries use restrictions that travel with the weights — you may not use it to
+deliberately deceive or defraud, to generate sexual content involving minors, to give
+medical, legal or financial advice as though it were professional advice, to produce
+disinformation, or to harass or discriminate. Those restrictions attach to the *output* as
+well as to the model, so they are the user's obligation once it is installed, not Nova's to
+waive. The card says `OpenRAIL-M` for that reason and not "Apache-2.0" like its neighbours.
+
+**Licensing.** The Piper weights are MIT. The Piper release bundle also carries
+espeak-ng, which is **GPLv3** — it is downloaded at runtime into
+`%APPDATA%\app.novacode.desktop\speak\piper\` and executed as a separate program, never
+linked into `novacode-desktop.exe`. That is why the engine is Piper's published
+binary rather than the `piper-rs` crate: the crate would have put GPLv3 code inside
+Nova's own executable and required LLVM and CMake on every build machine.
+
+The runtime is Windows-only, because that is the asset Piper publishes. On other
+hosts the voices stay listed with *Not supported here* and the reason, instead of
+failing when a reply is read.
+
+Synthesis is a process per utterance: about 2.4 seconds of wall time for a seven
+second sentence, model load included, and one at a time so two replies do not halve
+each other's speed. That is the measured number, not an estimate.
+
 
 ## Build installers
 

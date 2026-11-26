@@ -33,6 +33,11 @@ pub enum AppError {
     /// from a general failure and point at the right control.
     #[error("{0}")]
     Voice(String),
+    /// Speak has its own kind for the same reason as Voice: "no voice
+    /// installed", "the key was rejected" and "the service is rate limited" all
+    /// point at different controls on the same page.
+    #[error("{0}")]
+    Speak(String),
 }
 
 impl AppError {
@@ -50,6 +55,7 @@ impl AppError {
             AppError::Cancelled => "cancelled",
             AppError::Agent(_) => "agent",
             AppError::Voice(_) => "voice",
+            AppError::Speak(_) => "speak",
         }
     }
 

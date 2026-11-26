@@ -6,6 +6,8 @@
 //! conversion happens once, in Rust, where it can be tested - the browser layer
 //! stays a transport.
 
+use base64::Engine as _;
+
 use crate::error::AppError;
 
 /// What every engine in transcribe-rs expects.
@@ -98,9 +100,57 @@ pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     output
 }
 
+/// Longest decoded recording the IPC path accepts, before resampling: 64 MB of
+/// f32 is well past the audio limit and stops a bad caller early.
+const MAX_IPC_BYTES: usize = 64 * 1024 * 1024;
+
+/// The page's samples as the IPC layer receives them: base64 of little-endian
+/// f32, interleaved at the device rate, downmixed and resampled here so every
+/// engine - on this computer or at the other end of an https request - gets the
+/// same 16 kHz mono signal.
+pub fn decode_ipc(encoded: &str, channels: u16, rate: u32) -> Result<Vec<f32>, AppError> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|err| AppError::Voice(format!("the recording could not be decoded: {err}")))?;
+    if raw.len() > MAX_IPC_BYTES {
+        return Err(AppError::Voice(
+            "the recording is longer than the voice engine accepts".to_string(),
+        ));
+    }
+    if raw.len() % 4 != 0 {
+        return Err(AppError::Voice(
+            "the recording is not a whole number of samples".to_string(),
+        ));
+    }
+    let interleaved: Vec<f32> = raw
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect();
+    to_model_input(&interleaved, channels, rate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ipc_shape_is_read_as_little_endian_f32() {
+        let mut raw = Vec::new();
+        for sample in [0.5f32, -0.25] {
+            raw.extend_from_slice(&sample.to_le_bytes());
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+        let samples = decode_ipc(&encoded, 1, TARGET_RATE).expect("two samples");
+        assert_eq!(samples, vec![0.5, -0.25]);
+    }
+
+    #[test]
+    fn a_recording_that_is_not_a_whole_number_of_samples_is_refused() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]);
+        let error = decode_ipc(&encoded, 1, TARGET_RATE).unwrap_err();
+        assert!(error.to_string().contains("whole number"), "{error}");
+        assert!(decode_ipc("not base64!!", 1, TARGET_RATE).is_err());
+    }
 
     #[test]
     fn rejects_truncated_frames() {

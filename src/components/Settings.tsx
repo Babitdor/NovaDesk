@@ -10,6 +10,7 @@ import { AgentMark } from './AgentMark'
 import { Markdown } from './Markdown'
 import { CREW, crewRoles, systemPrompt } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
+import { SpeakSettings } from './SpeakSettings'
 import { VoiceSettings } from './VoiceSettings'
 import { GeneralSettings } from './GeneralSettings'
 import { SchedulesSettings } from './SchedulesSettings'
@@ -398,16 +399,10 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
           {section === 'General' && <GeneralSettings preferences={p} update={update} workspace={workspace} />}
           {section === 'Voice' && <>
             {/* Reading replies aloud stays first: it is the one voice feature that
-                needs no download, and it is already switched on for some people. */}
-            <Group title="Read responses aloud">
-              <Toggle title="Speak finished replies" detail="Uses your operating system’s available voices."
-                checked={p.speak} onChange={(speak) => update({ speak })} />
-              <div className="settings-action">
-                <button type="button" disabled={!('speechSynthesis' in window)}
-                  onClick={() => window.speechSynthesis.speak(new SpeechSynthesisUtterance('Nova Desktop is ready.'))}>Preview voice</button>
-                <button type="button" disabled={!('speechSynthesis' in window)} onClick={() => window.speechSynthesis.cancel()}>Stop speaking</button>
-              </div>
-            </Group>
+                needs no download, and it is already switched on for some people.
+                The toggle, the destination and the preview all live in
+                SpeakSettings now, so there is one place that knows them. */}
+            <SpeakSettings preferences={p} update={update} />
             <VoiceSettings preferences={p} update={update} />
           </>}
           {section === 'Tools' && <>

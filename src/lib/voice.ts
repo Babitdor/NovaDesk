@@ -1,10 +1,20 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 
+import type { TranscriptionProfile, TranscriptionProvider } from './settings'
+
 // Voice: on-device dictation. The Rust side owns the catalogue, the downloads
 // and inference; this module is the typed boundary plus the microphone capture
 // both the settings page and the composer share.
 
-export type VoiceEngine = 'parakeet' | 'canary' | 'cohere' | 'moonshineBase' | 'moonshineTiny' | 'senseVoice' | 'none'
+export type VoiceEngine =
+  | 'parakeet'
+  | 'canary'
+  | 'cohere'
+  | 'moonshineBase'
+  | 'moonshineTiny'
+  | 'senseVoice'
+  | 'whisper'
+  | 'none'
 export type VoiceBadge = 'recommended' | 'translate' | 'livePreview' | 'streaming'
 
 export type VoiceLanguage = { id: string; name: string }
@@ -59,6 +69,40 @@ export const voiceTranscribe = (request: {
   channels: number
 }) => invoke<VoiceTranscription>('voice_transcribe', {
   modelId: request.modelId,
+  language: request.language,
+  samples: encodeSamples(request.samples),
+  sampleRate: request.sampleRate,
+  channels: request.channels,
+})
+
+/// Where a hosted transcription service can be pointed, and the models it
+/// publishes. The table itself lives in Rust (transcribe/service.rs), so the
+/// page draws whatever the build actually supports.
+export type TranscriptionProviderInfo = {
+  id: TranscriptionProvider
+  name: string
+  url: string
+  models: string[]
+  note: string
+}
+
+export const transcribeProviders = () => invoke<TranscriptionProviderInfo[]>('transcribe_providers')
+
+/// The same samples as voiceTranscribe, sent to a saved service instead of a
+/// downloaded model. Only the four fields the Rust side reads are sent.
+export const voiceTranscribeService = (request: {
+  profile: TranscriptionProfile
+  language?: string
+  samples: Float32Array
+  sampleRate: number
+  channels: number
+}) => invoke<VoiceTranscription>('voice_transcribe_service', {
+  profile: {
+    provider: request.profile.provider,
+    model: request.profile.model,
+    url: request.profile.url,
+    key: request.profile.key,
+  },
   language: request.language,
   samples: encodeSamples(request.samples),
   sampleRate: request.sampleRate,

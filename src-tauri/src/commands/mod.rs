@@ -6,6 +6,8 @@ pub mod launcher;
 pub mod process;
 pub mod recovery;
 pub mod settings;
+pub mod speak;
 pub mod terminal;
+pub mod transcribe;
 pub mod voice;
 pub mod workspace;

@@ -28,6 +28,7 @@ import {
 } from './lib/ipc'
 import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
 import { advance, dueAfterThread, dueSchedules, promptFor, withinLimit } from './lib/scheduler'
+import { speakReply, stopSpeaking } from './lib/speak'
 import {
   AGENTS, applyAppearance, clampInterfaceSize, loadPreferences, recommendedAgent, savePreferences,
   type AgentId, type ModelSelection, type Preferences, type ScheduleRun,
@@ -36,6 +37,19 @@ import { allNovaSlashCommands, desktopSlashCommands, novaSlashCommands } from '.
 
 const WORKSPACE_KEY = 'nova.desktop.workspace'
 type Running = { turnId: string; chatId: string; role?: CrewRole; iteration?: number }
+
+/// The task rows the widget and the quick launcher both report: the one turn
+/// that is running, or none. It is a function rather than a hook because two
+/// different effects need the same three fields.
+function activeRuns(running: Running | null, chats: Chat[]) {
+  if (!running) return []
+  const chat = chats.find((entry) => entry.id === running.chatId)
+  return [{
+    chatId: running.chatId,
+    title: chat?.title ?? 'Task',
+    work: running.role ? CREW[running.role].name : 'Working',
+  }]
+}
 type InterruptRequest = Extract<AgentEvent, { type: 'approvalRequired' }>
 /// A start requested by an agent rather than by the user. `needsApproval` is the
 /// "Ask before agents message other threads" gate; nothing in the queue runs
@@ -123,6 +137,11 @@ export default function App() {
     const paint = () => applyAppearance(preferences, color.matches)
     paint()
     color.addEventListener('change', paint)
+    // The launcher and the widget wear this theme too. They re-read it whenever
+    // they are focused; this reaches the one that is already on screen.
+    for (const label of ['launcher', 'widget']) {
+      void emitTo(label, 'nova:appearance').catch(() => {})
+    }
     void Promise.resolve().then(() => savePreferences(preferences))
       .catch((err) => setNotice('Could not save settings: ' + errorText(err)))
     return () => color.removeEventListener('change', paint)
@@ -202,9 +221,16 @@ export default function App() {
       }
       void getCurrentWindow().setFocus().catch(() => {})
     })
+    // The widget's × is a request to stop showing it, not a note that it
+    // vanished: turning the preference off is what keeps it closed after a
+    // restart, and the effect above then closes the window itself.
+    const dismiss = listen('nova:widget-dismiss', () => {
+      setPreferences((current) => ({ ...current, widgetEnabled: false }))
+    })
     return () => {
       void quick.then((off) => off()).catch(() => {})
       void focusChat.then((off) => off()).catch(() => {})
+      void dismiss.then((off) => off()).catch(() => {})
     }
   }, [chats])
 
@@ -212,14 +238,26 @@ export default function App() {
   /// widget, so the companion window holds no state of its own.
   useEffect(() => {
     if (!preferences.widgetEnabled) return
-    const chat = chats.find((entry) => entry.id === running?.chatId)
-    const runs = running
-      ? [{ chatId: running.chatId,
-        title: chat?.title ?? 'Task',
-        work: running.role ? CREW[running.role].name : 'Working' }]
-      : []
-    void emitTo('widget', 'nova:widget-state', { runs, paused: preferences.pauseSchedules }).catch(() => {})
+    void emitTo('widget', 'nova:widget-state', {
+      runs: activeRuns(running, chats),
+      paused: preferences.pauseSchedules,
+    }).catch(() => {})
   }, [preferences.widgetEnabled, preferences.pauseSchedules, running, chats])
+
+  /// Answers the launcher with what to draw: the folder, the model and the task
+  /// that is running. Registered with its facts as dependencies, so a palette
+  /// raised an hour later gets the current render rather than a copy taken at
+  /// mount.
+  useEffect(() => {
+    const ready = listen('nova:launcher-ready', () => {
+      void emitTo('launcher', 'nova:launcher-state', {
+        workspace: workspace?.name ?? '',
+        model: taskModel(active, preferences.models[agent]) ?? '',
+        runs: activeRuns(running, chats),
+      }).catch(() => {})
+    })
+    return () => { void ready.then((off) => off()).catch(() => {}) }
+  }, [workspace, active, preferences.models, agent, running, chats])
 
 
 
@@ -336,6 +374,8 @@ export default function App() {
     const chatId = chat.id
     const turnId = crypto.randomUUID()
     live.current = { turnId, chatId }
+    // A new turn ends whatever the last one was still saying.
+    stopSpeaking()
     setRunning(live.current)
     setInterrupts([])
     setNotice(null)
@@ -368,9 +408,12 @@ export default function App() {
     }, (event) => {
       if (event.type === 'turnFinished') {
         finish()
-        if (event.reason === 'completed' && preferences.speak && spoken.trim() && 'speechSynthesis' in window) {
-          window.speechSynthesis.cancel()
-          window.speechSynthesis.speak(new SpeechSynthesisUtterance(spoken.slice(0, 6000)))
+        // Reading aloud is a preference, not a step in the turn: a failure to
+        // play is a notice, never a failed reply.
+        if (event.reason === 'completed') {
+          void speakReply(spoken, preferences).then((error) => {
+            if (error) setNotice(error)
+          })
         }
         if (event.reason === 'failed' && !awaitingWorkspaceApproval) {
           setNotice((message) => message ?? 'The turn failed. Check the task for details.')
@@ -507,6 +550,7 @@ export default function App() {
   const stopTurn = () => {
     if (crewRun.current) crewRun.current.cancelled = true
     planGate.current?.resolve('skip')
+    stopSpeaking()
     if (live.current) void cancelTurn(live.current.turnId).catch((error) => setNotice(errorText(error)))
   }
   /// Patch the active chat's team run in place. The run is the pipeline strip's

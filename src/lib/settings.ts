@@ -83,14 +83,71 @@ export type ScheduleRun = {
 /// never deletes the folder or revokes workspace trust.
 export type Project = { root: string; name: string; openedAt: number }
 
+/// Where dictation sends what the microphone recorded: a model downloaded onto
+/// this computer, or a saved hosted service. "off" is the default, because
+/// nothing should be recorded or uploaded until the user asks for it.
+export type VoiceDestination = 'off' | 'local' | 'service'
+export type TranscriptionProvider = 'openai' | 'groq' | 'mistral' | 'custom'
+
+/// One saved transcription service. The key lives beside it, in the same local
+/// storage the model API keys already use.
+export type TranscriptionProfile = {
+  id: string
+  name: string
+  provider: TranscriptionProvider
+  model: string
+  /// Only read by the custom provider; the other three have published endpoints.
+  url: string
+  key: string
+}
+
 /// Voice settings. "destination: off" is the default: nothing is recorded until
 /// the user turns dictation on, and the model has to be downloaded explicitly.
 export type VoicePreferences = {
-  destination: 'off' | 'local'
+  destination: VoiceDestination
   model: string
   microphone: string
   language: string
   shortcut: 'toggle' | 'hold'
+  /// Which saved service "destination: service" sends to.
+  profileId: string
+  profiles: TranscriptionProfile[]
+}
+
+/// Where a reply is read aloud. `system` is the webview's own voice and needs no
+/// download, which is why it is the default; `local` is a Piper voice on this
+/// computer and `service` is a saved hosted API.
+export type SpeechDestination = 'off' | 'system' | 'local' | 'service'
+export type SpeechProvider = 'openai' | 'groq' | 'elevenlabs' | 'custom'
+
+/// One saved speech service. The key lives beside it: this is the same storage
+/// the model API keys already use, and saying so in the page is the honest
+/// alternative to a keychain integration that does not exist yet.
+export type SpeechProfile = {
+  id: string
+  name: string
+  provider: SpeechProvider
+  model: string
+  voice: string
+  /// Only read by the custom provider; the other three have published endpoints.
+  url: string
+  key: string
+  instructions: string
+}
+
+/// Read-aloud settings. `speak` above stays the master switch — it shipped
+/// first and a build that saved it must keep working — and this says what does
+/// the reading once it is on.
+export type SpeechPreferences = {
+  destination: SpeechDestination
+  /// Voice id from the on-device catalogue.
+  model: string
+  /// Which speaker, for a voice that carries more than one.
+  speaker: number
+  /// 0.5 to 2; 1 is the voice's own pace.
+  speed: number
+  profileId: string
+  profiles: SpeechProfile[]
 }
 
 /// How the @team pipeline runs. `planApproval` pauses the run after Nova's
@@ -129,6 +186,7 @@ export type Preferences = {
   trustedWorkspaces: string[]
   schedules: Schedule[]
   speak: boolean
+  speech: SpeechPreferences
   voice: VoicePreferences
   team: TeamPreferences
   restoreFolder: boolean
@@ -180,7 +238,8 @@ const defaults: Preferences = {
   defaultAgent: 'nova', models: {}, recentModels: [], crew: {}, routes: {}, checks: {}, schedules: [], trustedWorkspaces: [],
   speak: false, restoreFolder: true, markdown: true,
   githubLogin: '', cloneRoot: '', gitHubClones: {},
-  voice: { destination: 'off', model: '', microphone: 'default', language: 'all', shortcut: 'toggle' },
+  speech: { destination: 'system', model: '', speaker: 0, speed: 1, profileId: '', profiles: [] },
+  voice: { destination: 'off', model: '', microphone: 'default', language: 'all', shortcut: 'toggle', profileId: '', profiles: [] },
   team: { planApproval: false, ralphIterations: 3, stageTimeoutMin: 5, roles: {} },
   updateMode: 'automatic', updateCheckedAt: 0,
   interfaceSize: 100, compactConversation: false, expandToolActivity: false,
@@ -280,6 +339,120 @@ export function resetAppearance(_preferences: Preferences): Partial<Preferences>
   }
 }
 
+
+/// Read-aloud settings rebuilt rather than trusted: a stored blob can name a
+/// destination this build no longer has, a speed outside what the engine accepts,
+/// or a profile missing half its fields. All three are fixed here, quietly,
+/// because a launch should never fail over a preference.
+const SPEECH_DESTINATIONS: SpeechDestination[] = ['off', 'system', 'local', 'service']
+const SPEECH_PROVIDERS: SpeechProvider[] = ['openai', 'groq', 'elevenlabs', 'custom']
+export const SPEED_MIN = 0.5
+export const SPEED_MAX = 2
+
+export function clampSpeechSpeed(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return defaults.speech.speed
+  return Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, value)) * 10) / 10
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function speechProfile(raw: unknown): SpeechProfile | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const stored = raw as Record<string, unknown>
+  const provider = SPEECH_PROVIDERS.includes(stored.provider as SpeechProvider)
+    ? (stored.provider as SpeechProvider)
+    : null
+  const id = text(stored.id)
+  if (!provider || !id) return null
+  return {
+    id,
+    name: text(stored.name) || 'Speech service',
+    provider,
+    model: text(stored.model),
+    voice: text(stored.voice),
+    url: text(stored.url),
+    key: text(stored.key),
+    instructions: text(stored.instructions),
+  }
+}
+
+export const TRANSCRIPTION_PROVIDERS: TranscriptionProvider[] = ['openai', 'groq', 'mistral', 'custom']
+const VOICE_DESTINATIONS: VoiceDestination[] = ['off', 'local', 'service']
+
+function transcriptionProfile(raw: unknown): TranscriptionProfile | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const stored = raw as Record<string, unknown>
+  const provider = TRANSCRIPTION_PROVIDERS.includes(stored.provider as TranscriptionProvider)
+    ? (stored.provider as TranscriptionProvider)
+    : null
+  const id = text(stored.id)
+  if (!provider || !id) return null
+  return {
+    id,
+    name: text(stored.name) || 'Transcription service',
+    provider,
+    model: text(stored.model),
+    url: text(stored.url),
+    key: text(stored.key),
+  }
+}
+
+/// Fills in what an older build did not save. The destination is checked against
+/// the three this build has, because a stored one from a future build would
+/// otherwise leave the composer waiting on a path nothing implements.
+export function migrateVoice(raw: unknown): VoicePreferences {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaults.voice
+  const stored = raw as Partial<VoicePreferences> & Record<string, unknown>
+  const profiles = Array.isArray(stored.profiles)
+    ? stored.profiles.map(transcriptionProfile).filter((entry): entry is TranscriptionProfile => entry !== null).slice(0, 8)
+    : []
+  const storedId = text(stored.profileId)
+  const profileId = profiles.some((profile) => profile.id === storedId) ? storedId : (profiles[0]?.id ?? '')
+  const asked = VOICE_DESTINATIONS.includes(stored.destination as VoiceDestination)
+    ? (stored.destination as VoiceDestination)
+    : defaults.voice.destination
+  // A destination with nothing behind it falls back to off, so the microphone
+  // is never armed for a service that was deleted or never saved.
+  const destination = asked === 'service' && !profileId ? 'off' : asked
+  return {
+    destination,
+    model: text(stored.model),
+    microphone: text(stored.microphone) || defaults.voice.microphone,
+    language: text(stored.language) || defaults.voice.language,
+    shortcut: stored.shortcut === 'hold' ? 'hold' : 'toggle',
+    profileId,
+    profiles,
+  }
+}
+
+export function migrateSpeech(raw: unknown): SpeechPreferences {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaults.speech
+  const stored = raw as Partial<SpeechPreferences> & Record<string, unknown>
+  const destination = SPEECH_DESTINATIONS.includes(stored.destination as SpeechDestination)
+    ? (stored.destination as SpeechDestination)
+    : defaults.speech.destination
+  const profiles = Array.isArray(stored.profiles)
+    ? stored.profiles.map(speechProfile).filter((entry): entry is SpeechProfile => entry !== null).slice(0, 8)
+    : []
+  const storedId = text(stored.profileId)
+  const profileId = profiles.some((profile) => profile.id === storedId)
+    ? storedId
+    : (profiles[0]?.id ?? '')
+  const speaker = typeof stored.speaker === 'number' && Number.isFinite(stored.speaker)
+    ? Math.max(0, Math.min(999, Math.round(stored.speaker)))
+    : defaults.speech.speaker
+  return {
+    destination,
+    model: text(stored.model),
+    speaker,
+    speed: clampSpeechSpeed(stored.speed),
+    profileId,
+    profiles,
+  }
+}
+
 const KEY = 'nova.desktop.settings.v1'
 
 export function loadPreferences(): Preferences {
@@ -299,7 +472,8 @@ export function migratePreferences(raw: unknown): Preferences {
   const merged: Preferences = {
     ...defaults,
     ...stored,
-    voice: { ...defaults.voice, ...(stored.voice ?? {}) },
+    speech: migrateSpeech(stored.speech),
+    voice: migrateVoice(stored.voice),
     team: {
       ...defaults.team,
       ...(stored.team ?? {}),

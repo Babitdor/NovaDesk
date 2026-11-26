@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { errorText } from '../lib/ipc'
-import type { Preferences } from '../lib/settings'
+import type { Preferences, TranscriptionProfile, TranscriptionProvider } from '../lib/settings'
 import {
   VOICE_SHORTCUT_LABEL, MicRecorder, cancelVoiceDownload, catalogueLanguages, deleteVoiceModel,
-  downloadVoiceModel, formatBytes, modelMeta, toWav, voiceCatalog, voiceEngineReady, voiceInstalled,
-  type VoiceBadge, type VoiceModel,
+  downloadVoiceModel, formatBytes, modelMeta, toWav, transcribeProviders, voiceCatalog, voiceEngineReady,
+  voiceInstalled, type TranscriptionProviderInfo, type VoiceBadge, type VoiceModel,
 } from '../lib/voice'
 
 type Props = {
@@ -47,6 +47,8 @@ export function VoiceSettings({ preferences: p, update }: Props) {
   const [languageSearch, setLanguageSearch] = useState('')
   const [modelSearch, setModelSearch] = useState('')
   const [engineReady, setEngineReady] = useState(true)
+  const [providers, setProviders] = useState<TranscriptionProviderInfo[]>([])
+  const [draft, setDraft] = useState<TranscriptionProfile | null>(null)
   const [testing, setTesting] = useState(false)
   const [level, setLevel] = useState(0)
   const [clip, setClip] = useState('')
@@ -79,6 +81,7 @@ export function VoiceSettings({ preferences: p, update }: Props) {
   // the runtime starts. Each settles into its own state, so one failing call
   // does not blank the page.
   useEffect(() => {
+    void transcribeProviders().then(setProviders).catch(() => setProviders([]))
     void voiceCatalog().then(setModels).catch((err) => setStatus(errorText(err)))
     void voiceInstalled().then(setInstalled).catch(() => setInstalled([]))
     void voiceEngineReady().then(setEngineReady).catch(() => setEngineReady(false))
@@ -188,7 +191,60 @@ export function VoiceSettings({ preferences: p, update }: Props) {
     }
   }
 
-  const destination = voice.destination === 'local' && usable ? 'local' : 'off'
+  const profileInfo = (provider: TranscriptionProvider) =>
+    providers.find((entry) => entry.id === provider)
+
+  const profileName = (provider: TranscriptionProvider) =>
+    profileInfo(provider)?.name ?? provider
+
+  const active = voice.profiles.find((entry) => entry.id === voice.profileId)
+
+  // What the destination select shows. A saved service that was deleted, or a
+  // model that is no longer installed, is not a destination any more.
+  const destination = voice.destination === 'service' && active
+    ? 'service:' + active.id
+    : voice.destination === 'local' && usable
+      ? 'local:' + usable.id
+      : 'off'
+
+  const newProfile = (): TranscriptionProfile => {
+    const info = providers[0]
+    return {
+      id: crypto.randomUUID(),
+      name: info?.name ?? 'Speech service',
+      provider: info?.id ?? 'openai',
+      model: info?.models[0] ?? '',
+      url: '',
+      key: '',
+    }
+  }
+
+  // Save keeps the profile in the list; Save and use also points dictation at
+  // it, which is the only way the destination changes from one button.
+  const saveProfile = (use: boolean) => {
+    if (!draft) return
+    const entry = { ...draft, name: draft.name.trim() || profileName(draft.provider) }
+    const exists = voice.profiles.some((other) => other.id === entry.id)
+    const profiles = exists
+      ? voice.profiles.map((other) => (other.id === entry.id ? entry : other))
+      : [...voice.profiles, entry]
+    setVoice(use
+      ? { profiles, profileId: entry.id, destination: 'service' }
+      : { profiles })
+    setDraft(null)
+    setStatus(use ? entry.name + ' saved and in use.' : entry.name + ' saved.')
+  }
+
+  const removeProfile = (entry: TranscriptionProfile) => {
+    const kept = voice.profiles.filter((other) => other.id !== entry.id)
+    setVoice({
+      profiles: kept,
+      ...(voice.profileId === entry.id
+        ? { profileId: kept[0]?.id ?? '', destination: voice.destination === 'service' ? 'off' : voice.destination }
+        : {}),
+    })
+    setStatus(entry.name + ' removed.')
+  }
 
   return (
     <>
@@ -230,16 +286,132 @@ export function VoiceSettings({ preferences: p, update }: Props) {
         </label>
       </Group>
 
+      <Group title="Speech services">
+        <p className="settings-help">
+          Send the recording to a service such as OpenAI, Groq, Mistral or your own server instead of a
+          model on this computer. Keys are kept in this window's local storage, the same place the model
+          keys live, and saving never contacts the service.
+        </p>
+        <div className="settings-row">
+          <span>
+            <strong>Saved services</strong>
+            <small>{voice.profiles.length === 0 ? 'No speech profile yet. Add one to enable dictation.'
+              : voice.profiles.length === 1 ? '1 saved.' : voice.profiles.length + ' saved.'}</small>
+          </span>
+          <div className="voice-row-controls">
+            <button type="button" onClick={() => setDraft(newProfile())}>New profile</button>
+          </div>
+        </div>
+        {voice.profiles.length > 0 && (
+          <div className="speech-profiles">
+            {voice.profiles.map((entry) => (
+              <article className="voice-card" key={entry.id} data-installed={entry.id === voice.profileId}>
+                <header>
+                  <strong>{entry.name}</strong>
+                  <em className="voice-badge">{profileName(entry.provider)}</em>
+                </header>
+                <p>{profileInfo(entry.provider)?.note ?? 'A saved transcription service.'}</p>
+                <small className="voice-meta">{entry.model || 'no model'}{entry.key ? '' : ' · no key'}</small>
+                <div className="voice-actions">
+                  <button type="button" onClick={() => setDraft({ ...entry })}>Edit</button>
+                  <button type="button" onClick={() => removeProfile(entry)}>Delete</button>
+                  {entry.id !== voice.profileId && (
+                    <button type="button" onClick={() => setVoice({ profileId: entry.id, destination: 'service' })}>Use</button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+        {draft && (
+          <section className="speech-profile">
+            <h3>{voice.profiles.some((entry) => entry.id === draft.id) ? 'Edit speech profile' : 'New speech profile'}</h3>
+            <label className="settings-row">
+              <span>
+                <strong>Speech provider</strong>
+                <small>{profileInfo(draft.provider)?.note ?? 'Where the recording is sent.'}</small>
+              </span>
+              <select value={draft.provider}
+                onChange={(event) => {
+                  const provider = event.target.value as TranscriptionProvider
+                  const info = profileInfo(provider)
+                  setDraft({ ...draft, provider, model: info?.models[0] ?? '', url: provider === 'custom' ? draft.url : '' })
+                }}>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Speech model</strong>
+                <small>{(profileInfo(draft.provider)?.models.length ?? 0) > 0
+                  ? 'The models this service publishes for transcription.'
+                  : 'Whatever your server expects.'}</small>
+              </span>
+              {(profileInfo(draft.provider)?.models.length ?? 0) > 0 ? (
+                <select value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })}>
+                  {profileInfo(draft.provider)?.models.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+              ) : (
+                <input value={draft.model} placeholder="model id"
+                  onChange={(event) => setDraft({ ...draft, model: event.target.value })} />
+              )}
+            </label>
+            <label className="settings-row">
+              <span><strong>Profile name</strong><small>What this profile is called in the list.</small></span>
+              <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>API key</strong>
+                <small>Enter an API key from this speech provider. It is stored in this window's local storage.</small>
+              </span>
+              <input type="password" value={draft.key} placeholder="paste the key"
+                onChange={(event) => setDraft({ ...draft, key: event.target.value })} />
+            </label>
+            <details className="speech-advanced">
+              <summary>Advanced</summary>
+              <div className="settings-row">
+                <span>
+                  <strong>Destination</strong>
+                  <small>Saving does not contact the service. The recording is posted only when you dictate.</small>
+                </span>
+                {draft.provider === 'custom' ? (
+                  <input value={draft.url} placeholder="https://your-server/v1/audio/transcriptions"
+                    onChange={(event) => setDraft({ ...draft, url: event.target.value })} />
+                ) : (
+                  <code className="speech-destination">{profileInfo(draft.provider)?.url ?? ''}</code>
+                )}
+              </div>
+            </details>
+            <div className="voice-row-controls speech-actions">
+              <button type="button" onClick={() => setDraft(null)}>Cancel</button>
+              <button type="button" onClick={() => saveProfile(false)}>Save profile</button>
+              <button type="button" onClick={() => saveProfile(true)}>Save and use profile</button>
+            </div>
+          </section>
+        )}
+      </Group>
+
       <Group title="Transcription">
         <label className="settings-row">
           <span>
             <strong>Send microphone audio to</strong>
-            <small>Audio is transcribed here and discarded; nothing is uploaded in this build. Choose Off to turn voice input off on this device.</small>
+            <small>On-device models read the audio here and discard it. A saved service is sent the recording instead, and nothing else leaves this computer. Choose Off to turn voice input off.</small>
           </span>
-          <select className="voice-wide" value={destination === 'local' && usable ? 'local:' + usable.id : 'off'}
+          <select className="voice-wide" value={destination}
             onChange={(event) => {
               const next = event.target.value
               if (next === 'off') { setVoice({ destination: 'off' }); return }
+              if (next.startsWith('service:')) {
+                const id = next.slice('service:'.length)
+                if (!voice.profiles.some((entry) => entry.id === id)) return
+                setVoice({ destination: 'service', profileId: id })
+                return
+              }
               const id = next.slice('local:'.length)
               if (!installed.includes(id)) return
               setVoice({ destination: 'local', model: id })
@@ -248,6 +420,9 @@ export function VoiceSettings({ preferences: p, update }: Props) {
             {installed.length === 0 && <option value="local:none" disabled>On-device (no model installed)</option>}
             {models.filter((model) => installed.includes(model.id)).map((model) => (
               <option key={model.id} value={'local:' + model.id}>{'On-device (' + model.name + ')'}</option>
+            ))}
+            {voice.profiles.map((entry) => (
+              <option key={entry.id} value={'service:' + entry.id}>{profileName(entry.provider) + ' (' + entry.name + ')'}</option>
             ))}
           </select>
         </label>

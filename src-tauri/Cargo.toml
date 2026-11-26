@@ -1,6 +1,6 @@
 [package]
 name = "novacode-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Nova Desktop — a Tauri shell for a desktop coding agent"
 edition = "2021"
 rust-version = "1.77"
@@ -36,8 +36,11 @@ uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "io-util", "macros", "fs"] }
 tokio-util = "0.7"
 # On-device speech-to-text. The "onnx" feature pulls ort, ndarray and rustfft;
-# the models themselves are downloaded at runtime, never bundled.
-transcribe-rs = { version = "0.3", features = ["onnx"] }
+# "whisper-cpp" pulls whisper-rs, which compiles whisper.cpp with CMake and
+# generates the bindings with bindgen, so every build machine (CI included)
+# needs CMake + libclang and the binary grows by a few MB. The models
+# themselves are downloaded at runtime, never bundled.
+transcribe-rs = { version = "0.3", features = ["onnx", "whisper-cpp"] }
 # Feature unification with transcribe-rs turns on ort's prebuilt runtime
 # download and its copy-dylibs step, so onnxruntime.dll lands beside the exe.
 # Pinned exactly: transcribe-rs 0.3.12 calls ort's rc.12 session API, and
@@ -48,3 +51,9 @@ ort = { version = "=2.0.0-rc.12", features = ["download-binaries"] }
 flate2 = "1"
 tar = "0.4"
 base64 = "0.22"
+# On-device text-to-speech runs Piper's own prebuilt binary, downloaded next to
+# the voice the first time one is installed. Linking piper-rs instead would drag
+# in espeak-rs-sys, which needs libclang (bindgen) and CMake on every build
+# machine and would put GPLv3 espeak-ng inside this executable; the release zip
+# keeps both concerns outside the build. Added for the speech work below.
+zip = { version = "2", default-features = false, features = ["deflate"] }

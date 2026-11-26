@@ -1,6 +1,5 @@
 //! Voice commands: catalogue, downloads and transcription.
 
-use base64::Engine as _;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
@@ -11,10 +10,6 @@ use crate::voice::catalog::{self, ModelView};
 use crate::voice::download::{self, Progress};
 use crate::voice::engine::Transcription;
 use crate::AppState;
-
-/// Longest decoded recording the IPC path accepts, before resampling: 64 MB of
-/// f32 is well past the audio limit and stops a bad caller early.
-const MAX_SAMPLES_BYTES: usize = 64 * 1024 * 1024;
 
 #[tauri::command]
 pub fn voice_catalog() -> Vec<ModelView> {
@@ -110,25 +105,7 @@ pub async fn voice_transcribe(
         ));
     }
     let dir = download::model_dir(&app, model.id)?;
-
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(samples.as_bytes())
-        .map_err(|err| AppError::Voice(format!("the recording could not be decoded: {err}")))?;
-    if raw.len() > MAX_SAMPLES_BYTES {
-        return Err(AppError::Voice(
-            "the recording is longer than the voice engine accepts".to_string(),
-        ));
-    }
-    if raw.len() % 4 != 0 {
-        return Err(AppError::Voice(
-            "the recording is not a whole number of samples".to_string(),
-        ));
-    }
-    let interleaved: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        .collect();
-    let samples = audio::to_model_input(&interleaved, channels, sample_rate)?;
+    let samples = audio::decode_ipc(&samples, channels, sample_rate)?;
     let language = language.filter(|code| !code.is_empty() && !code.eq_ignore_ascii_case("all"));
 
     let engine = state.voice.clone();

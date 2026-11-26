@@ -17,14 +17,20 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::settings::system_command;
 use crate::error::AppError;
-use crate::voice::catalog::{self, Engine, Model, Source};
+use crate::voice::catalog::{self, Model, Source};
 
 /// Progress frames for one download, in bytes.
+///
+/// `phase` names what is arriving, because one install can be two transfers: a
+/// voice from the speech catalogue first fetches Piper itself (about 22 MB), then
+/// the voice (about 63 MB). The numbers restart with each phase, and the page
+/// needs to say which one it is watching.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub received: u64,
     pub total: u64,
+    pub phase: &'static str,
 }
 
 /// Written last, so a half-finished download never looks installed.
@@ -34,9 +40,27 @@ pub const MANIFEST: &str = ".nova-model.json";
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub id: String,
-    pub engine: Engine,
+    /// Which engine the download was for, as a plain string. Informational only:
+    /// what decides whether something is installed and runnable is the files on
+    /// disk plus this build's own support, so an older manifest still reads.
+    pub engine: String,
     pub files: Vec<String>,
     pub bytes: u64,
+}
+
+/// One install, described without saying what is being installed.
+///
+/// A dictation model, a Piper voice and the Piper binary itself all reduce to
+/// the same three things: files with exact sizes, the names that prove the
+/// install is complete, and the folder they belong in.
+pub struct Spec<'a> {
+    pub id: &'a str,
+    /// (file name on disk, absolute URL, bytes)
+    pub files: &'a [(&'a str, &'a str, u64)],
+    pub bytes: u64,
+    pub required: &'a [&'a str],
+    /// Recorded in the manifest, never consulted.
+    pub engine: &'a str,
 }
 
 const POLL: Duration = Duration::from_millis(120);
@@ -70,6 +94,10 @@ pub fn installed(app: &AppHandle) -> Result<Vec<String>, AppError> {
 }
 
 /// Fetch, verify and install one model. Returns once the model is usable.
+///
+/// A thin adapter: it decides which model, where it lives and whether it is
+/// already there, then hands the transfer to `install_spec` — the same code the
+/// speech voices use, which is why there is only one copy of the size check.
 pub async fn install(
     app: &AppHandle,
     id: &str,
@@ -90,64 +118,246 @@ pub async fn install(
     if is_installed(&dir, model) {
         return Ok(());
     }
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|err| AppError::from_io(err, &dir))?;
-
-    let mut reporter = Reporter::new(model.bytes);
-    emit(on, reporter.frame(0));
     match model.source {
         Some(Source::Files(files)) => {
-            for (name, url, bytes) in files {
-                let path = dir.join(name);
-                fetch(url, &path, *bytes, true, cancel, &mut reporter, on).await?;
-            }
+            let spec = Spec {
+                id: model.id,
+                files,
+                bytes: model.bytes,
+                required: model.required,
+                engine: model.engine.label(),
+            };
+            install_spec(&spec, &dir, cancel, on, phase::MODEL).await
         }
         Some(Source::Archive(url, bytes)) => {
-            let root = root(app)?;
-            let archive = root.join(format!("{id}.tar.gz"));
-            let staging = root.join(format!("{id}.unpack"));
-            fetch(url, &archive, bytes, true, cancel, &mut reporter, on).await?;
-            if staging.exists() {
-                tokio::fs::remove_dir_all(&staging)
-                    .await
-                    .map_err(|err| AppError::from_io(err, &staging))?;
-            }
-            let (archive_path, staging_path, required) =
-                (archive.clone(), staging.clone(), model.required.to_vec());
-            tauri::async_runtime::spawn_blocking(move || {
-                unpack(&archive_path, &staging_path, &required)
-            })
-            .await
-            .map_err(|err| {
-                AppError::Voice(format!("the archive unpacking task failed: {err}"))
-            })??;
-            for name in model.required {
-                let from = staging.join(name);
-                tokio::fs::rename(&from, dir.join(name))
-                    .await
-                    .map_err(|err| AppError::from_io(err, &from))?;
-            }
-            let _ = tokio::fs::remove_dir_all(&staging).await;
-            let _ = tokio::fs::remove_file(&archive).await;
+            install_archive(app, model, url, bytes, &dir, cancel, on).await
         }
-        None => return Err(AppError::Voice(format!("{id} has nothing to download"))),
+        None => Err(AppError::Voice(format!("{id} has nothing to download"))),
     }
+}
 
+/// Phase labels for a progress frame the page can name.
+pub mod phase {
+    pub const MODEL: &str = "model";
+    pub const VOICE: &str = "voice";
+    pub const RUNTIME: &str = "runtime";
+}
+
+/// The one shape every file download takes: create the folder, fetch each file
+/// and check its size, then write the manifest last so a half-finished install
+/// never looks done.
+pub async fn install_spec(
+    spec: &Spec<'_>,
+    dir: &Path,
+    cancel: &CancellationToken,
+    on: &Channel<Progress>,
+    phase: &'static str,
+) -> Result<(), AppError> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|err| AppError::from_io(err, dir))?;
+    let mut reporter = Reporter::new(spec.bytes, phase);
+    emit(on, reporter.frame(0));
+    for (name, url, bytes) in spec.files {
+        let path = dir.join(name);
+        fetch(url, &path, *bytes, true, cancel, &mut reporter, on).await?;
+    }
+    write_manifest(dir, spec).await?;
+    emit(on, reporter.finish());
+    Ok(())
+}
+
+async fn write_manifest(dir: &Path, spec: &Spec<'_>) -> Result<(), AppError> {
     let manifest = Manifest {
-        id: model.id.to_string(),
-        engine: model.engine,
-        files: model.required.iter().map(|name| name.to_string()).collect(),
-        bytes: model.bytes,
+        id: spec.id.to_string(),
+        engine: spec.engine.to_string(),
+        files: spec.required.iter().map(|name| name.to_string()).collect(),
+        bytes: spec.bytes,
     };
     let json = serde_json::to_vec_pretty(&manifest)
         .map_err(|err| AppError::Voice(format!("could not describe the model: {err}")))?;
     let path = dir.join(MANIFEST);
     tokio::fs::write(&path, json)
         .await
-        .map_err(|err| AppError::from_io(err, &path))?;
+        .map_err(|err| AppError::from_io(err, &path))
+}
+
+/// The dictation models that arrive as one tar.gz.
+async fn install_archive(
+    app: &AppHandle,
+    model: &Model,
+    url: &str,
+    bytes: u64,
+    dir: &Path,
+    cancel: &CancellationToken,
+    on: &Channel<Progress>,
+) -> Result<(), AppError> {
+    let root = root(app)?;
+    let archive = root.join(format!("{}.tar.gz", model.id));
+    let staging = root.join(format!("{}.unpack", model.id));
+    let mut reporter = Reporter::new(model.bytes, phase::MODEL);
+    emit(on, reporter.frame(0));
+    fetch(url, &archive, bytes, true, cancel, &mut reporter, on).await?;
+    if staging.exists() {
+        tokio::fs::remove_dir_all(&staging)
+            .await
+            .map_err(|err| AppError::from_io(err, &staging))?;
+    }
+    let (archive_path, staging_path, required) =
+        (archive.clone(), staging.clone(), model.required.to_vec());
+    tauri::async_runtime::spawn_blocking(move || unpack(&archive_path, &staging_path, &required))
+        .await
+        .map_err(|err| AppError::Voice(format!("the archive unpacking task failed: {err}")))??;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|err| AppError::from_io(err, dir))?;
+    for name in model.required {
+        let from = staging.join(name);
+        tokio::fs::rename(&from, dir.join(name))
+            .await
+            .map_err(|err| AppError::from_io(err, &from))?;
+    }
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    let _ = tokio::fs::remove_file(&archive).await;
+    let spec = Spec {
+        id: model.id,
+        files: &[],
+        bytes: model.bytes,
+        required: model.required,
+        engine: model.engine.label(),
+    };
+    write_manifest(dir, &spec).await?;
     emit(on, reporter.finish());
     Ok(())
+}
+
+/// Whether every file and folder an archive is expected to contain is there.
+///
+/// The Piper runtime is a folder of executables and a directory of phoneme data,
+/// so a half-unpacked archive has to fail this outright: a missing espeak-ng-data
+/// is a Piper that starts and then cannot read anything aloud.
+pub fn archive_ready(dir: &Path, files: &[&str], dirs: &[&str]) -> bool {
+    dir.is_dir()
+        && files.iter().all(|name| dir.join(name).is_file())
+        && dirs.iter().all(|name| dir.join(name).is_dir())
+}
+
+/// Fetch a zip and unpack it into `dir`, reporting both transfers as phases of
+/// one progress channel.
+///
+/// A zip rather than a tarball because there is no tar on a Windows host: the
+/// GNU tar that ships with git-bash is not on PATH for a GUI app, and `tar.exe`
+/// in System32 reads tar and not zip.
+pub async fn install_zip(
+    url: &str,
+    bytes: u64,
+    dir: &Path,
+    cancel: &CancellationToken,
+    on: &Channel<Progress>,
+    phase: &'static str,
+) -> Result<(), AppError> {
+    let parent = dir.parent().ok_or_else(|| {
+        AppError::Voice(format!("{} has no folder to download into", dir.display()))
+    })?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|err| AppError::from_io(err, parent))?;
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "archive".to_string());
+    let archive = parent.join(format!("{name}.zip"));
+    let mut reporter = Reporter::new(bytes, phase);
+    emit(on, reporter.frame(0));
+    fetch(url, &archive, bytes, true, cancel, &mut reporter, on).await?;
+
+    if dir.exists() {
+        tokio::fs::remove_dir_all(dir)
+            .await
+            .map_err(|err| AppError::from_io(err, dir))?;
+    }
+    let (from, to) = (archive.clone(), dir.to_path_buf());
+    tauri::async_runtime::spawn_blocking(move || unpack_zip(&from, &to))
+        .await
+        .map_err(|err| AppError::Voice(format!("the archive unpacking task failed: {err}")))??;
+    let _ = tokio::fs::remove_file(&archive).await;
+    emit(on, reporter.finish());
+    Ok(())
+}
+
+/// Unpack a zip, refusing any entry that would land outside `dir`.
+///
+/// An archive that wraps everything in one folder loses that folder. The Piper
+/// release ships as `piper/piper.exe` plus `piper/espeak-ng-data/`, and an
+/// install that kept the wrapper would put the executable one level deeper than
+/// the engine, the catalogue and archive_ready all look for it.
+fn unpack_zip(archive: &Path, dir: &Path) -> Result<(), AppError> {
+    std::fs::create_dir_all(dir).map_err(|err| AppError::from_io(err, dir))?;
+    let file = std::fs::File::open(archive).map_err(|err| AppError::from_io(err, archive))?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file))
+        .map_err(|err| AppError::Voice(format!("the archive could not be read: {err}")))?;
+    let wrapper = wrapper_folder(&mut zip);
+    for index in 0..zip.len() {
+        let mut entry = zip
+            .by_index(index)
+            .map_err(|err| AppError::Voice(format!("the archive could not be read: {err}")))?;
+        // enclosed_name is the ../ guard: anything that would land outside the
+        // target folder is not extracted at all. The archive's own size is
+        // pinned by the fetch, not by the zip crate.
+        let Some(name) = entry.enclosed_name() else {
+            continue;
+        };
+        let name = match &wrapper {
+            // The wrapper entry itself has nothing left once it is stripped.
+            Some(top) => match name.strip_prefix(top) {
+                Ok(rest) if !rest.as_os_str().is_empty() => rest.to_path_buf(),
+                _ => continue,
+            },
+            None => name,
+        };
+        let target = dir.join(name);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target).map_err(|err| AppError::from_io(err, &target))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| AppError::from_io(err, parent))?;
+        }
+        let mut out =
+            std::fs::File::create(&target).map_err(|err| AppError::from_io(err, &target))?;
+        std::io::copy(&mut entry, &mut out).map_err(|err| AppError::from_io(err, &target))?;
+    }
+    Ok(())
+}
+
+/// The one folder an archive wraps everything in, if it has one.
+///
+/// Read before anything is written, so the decision cannot depend on the order
+/// entries arrived in. A single top-level file next to a folder is not a
+/// wrapper, and an entry that would escape makes the whole answer "no wrapper":
+/// the guarded path then extracts exactly what it did before.
+fn wrapper_folder(zip: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>) -> Option<String> {
+    let mut top: Option<String> = None;
+    let mut nested = false;
+    for index in 0..zip.len() {
+        let entry = zip.by_index(index).ok()?;
+        let name = entry.enclosed_name()?;
+        let mut parts = name.components();
+        let first = parts.next()?.as_os_str().to_string_lossy().to_string();
+        if parts.next().is_some() {
+            nested = true;
+        }
+        match &top {
+            Some(known) if *known != first => return None,
+            Some(_) => {}
+            None => top = Some(first),
+        }
+    }
+    if nested {
+        top
+    } else {
+        None
+    }
 }
 
 pub async fn remove(app: &AppHandle, id: &str) -> Result<(), AppError> {
@@ -170,14 +380,16 @@ struct Reporter {
     total: u64,
     done: u64,
     sent: Option<u64>,
+    phase: &'static str,
 }
 
 impl Reporter {
-    fn new(total: u64) -> Self {
+    fn new(total: u64, phase: &'static str) -> Self {
         Self {
             total,
             done: 0,
             sent: None,
+            phase,
         }
     }
 
@@ -192,6 +404,7 @@ impl Reporter {
         Some(Progress {
             received,
             total: self.total,
+            phase: self.phase,
         })
     }
 
@@ -421,7 +634,7 @@ mod tests {
 
     #[test]
     fn progress_never_exceeds_the_total() {
-        let mut reporter = Reporter::new(100);
+        let mut reporter = Reporter::new(100, phase::VOICE);
         assert_eq!(reporter.frame(0).map(|frame| frame.received), Some(0));
         assert!(
             reporter.frame(0).is_none(),
@@ -432,5 +645,154 @@ mod tests {
             .expect("a frame for the finished file");
         let last = reporter.finish().expect("a final frame");
         assert_eq!((last.received, last.total), (100, 100));
+        assert_eq!(last.phase, phase::VOICE, "the page names the transfer");
+    }
+
+    #[test]
+    fn a_spec_round_trips_through_the_manifest() {
+        let dir = TempDir::new("spec-manifest");
+        let spec = Spec {
+            id: "en_US-amy-low",
+            files: &[("en_US-amy-low.onnx", "https://example.test/a.onnx", 10)],
+            bytes: 10,
+            required: &["en_US-amy-low.onnx"],
+            engine: "piper",
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime
+            .block_on(write_manifest(dir.path(), &spec))
+            .expect("written");
+
+        let raw = std::fs::read(dir.path().join(MANIFEST)).expect("the manifest is on disk");
+        let manifest: Manifest = serde_json::from_slice(&raw).expect("it parses");
+        assert_eq!(manifest.id, "en_US-amy-low");
+        assert_eq!(manifest.engine, "piper");
+        assert_eq!(manifest.bytes, 10);
+        assert_eq!(manifest.files, vec!["en_US-amy-low.onnx".to_string()]);
+    }
+
+    #[test]
+    fn an_archive_is_ready_only_when_its_files_and_folders_are() {
+        let dir = TempDir::new("archive-ready");
+        assert!(!archive_ready(
+            dir.path(),
+            &["piper.exe"],
+            &["espeak-ng-data"]
+        ));
+        std::fs::write(dir.path().join("piper.exe"), b"x").expect("write");
+        assert!(
+            !archive_ready(dir.path(), &["piper.exe"], &["espeak-ng-data"]),
+            "a missing phoneme folder is a Piper that cannot speak"
+        );
+        std::fs::create_dir_all(dir.path().join("espeak-ng-data")).expect("folder");
+        assert!(archive_ready(
+            dir.path(),
+            &["piper.exe"],
+            &["espeak-ng-data"]
+        ));
+    }
+
+    #[test]
+    fn a_zip_unpacks_with_its_folders_intact() {
+        let dir = TempDir::new("unpack-zip");
+        let archive = dir.path().join("bundle.zip");
+        {
+            let file = std::fs::File::create(&archive).expect("create");
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            use std::io::Write;
+            zip.start_file("piper.exe", options).expect("entry");
+            zip.write_all(b"binary").expect("write");
+            zip.add_directory("espeak-ng-data", options)
+                .expect("folder");
+            zip.start_file("espeak-ng-data/en_dict", options)
+                .expect("entry");
+            zip.write_all(b"dict").expect("write");
+            zip.finish().expect("finished");
+        }
+        let out = dir.path().join("piper");
+        unpack_zip(&archive, &out).expect("unpacked");
+        assert!(archive_ready(&out, &["piper.exe"], &["espeak-ng-data"]));
+        assert_eq!(
+            std::fs::read(out.join("espeak-ng-data").join("en_dict")).expect("the dictionary"),
+            b"dict"
+        );
+    }
+
+    #[test]
+    fn a_bundle_that_wraps_everything_in_one_folder_is_flattened() {
+        let dir = TempDir::new("unpack-wrapped");
+        let archive = dir.path().join("bundle.zip");
+        {
+            let file = std::fs::File::create(&archive).expect("create");
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            use std::io::Write;
+            zip.add_directory("piper", options).expect("folder");
+            zip.start_file("piper/piper.exe", options).expect("entry");
+            zip.write_all(b"binary").expect("write");
+            zip.add_directory("piper/espeak-ng-data", options)
+                .expect("folder");
+            zip.start_file("piper/espeak-ng-data/en_dict", options)
+                .expect("entry");
+            zip.write_all(b"dict").expect("write");
+            zip.finish().expect("finished");
+        }
+        let out = dir.path().join("piper");
+        unpack_zip(&archive, &out).expect("unpacked");
+        assert!(
+            archive_ready(&out, &["piper.exe"], &["espeak-ng-data"]),
+            "the wrapper folder is not part of the installed layout"
+        );
+        assert_eq!(
+            std::fs::read(out.join("espeak-ng-data").join("en_dict")).expect("the dictionary"),
+            b"dict"
+        );
+    }
+
+    #[test]
+    fn a_zip_with_a_file_beside_a_folder_keeps_its_shape() {
+        let dir = TempDir::new("unpack-flat");
+        let archive = dir.path().join("bundle.zip");
+        {
+            let file = std::fs::File::create(&archive).expect("create");
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            use std::io::Write;
+            zip.start_file("piper.exe", options).expect("entry");
+            zip.write_all(b"binary").expect("write");
+            zip.add_directory("espeak-ng-data", options)
+                .expect("folder");
+            zip.finish().expect("finished");
+        }
+        let out = dir.path().join("piper");
+        unpack_zip(&archive, &out).expect("unpacked");
+        // Two different first components: nothing is a wrapper, so nothing is
+        // stripped, which is what the on-device voice archives rely on.
+        assert!(archive_ready(&out, &["piper.exe"], &["espeak-ng-data"]));
+    }
+
+    #[test]
+    fn a_zip_entry_that_climbs_out_is_not_written() {
+        let dir = TempDir::new("unpack-escape");
+        let archive = dir.path().join("evil.zip");
+        {
+            let file = std::fs::File::create(&archive).expect("create");
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            use std::io::Write;
+            zip.start_file("../escaped.txt", options).expect("entry");
+            zip.write_all(b"nope").expect("write");
+            zip.finish().expect("finished");
+        }
+        let out = dir.path().join("piper");
+        unpack_zip(&archive, &out).expect("nothing to unpack");
+        assert!(
+            !dir.path().join("escaped.txt").exists(),
+            "the entry escaped the folder"
+        );
     }
 }
