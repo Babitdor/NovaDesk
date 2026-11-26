@@ -188,12 +188,18 @@ mod tests {
             token.cancel();
         });
 
-        // ping -n 20 would take ~19s, so finishing quickly proves the kill landed.
+        // A cmd builtin spin rather than `ping`: this test used to run
+        // `ping -n 20`, and the child came back exit 1 in 40 ms on two
+        // machines with "'ping' is not recognized", because the spawned cmd
+        // does not always inherit a PATH that finds it — which turned a
+        // cancellation test into a test that the child had already finished.
+        // A `for` loop needs no PATH at all, so the only way it ends quickly is
+        // the kill this test is about.
         let started = Instant::now();
         let err = ProcessRunner::run(
             &guard,
             "cmd",
-            &args(&["/C", "ping", "-n", "20", "127.0.0.1"]),
+            &args(&["/C", "for /L %i in (1,1,2000000000) do @rem"]),
             &sink,
             &cancel,
         )
