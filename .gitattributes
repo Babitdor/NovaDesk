@@ -1,0 +1,7 @@
+# Vendored crates are byte-exact copies of what crates.io shipped.
+#
+# Without this, core.autocrlf=true rewrites their LF files to CRLF on checkout, and
+# ort-sys's build script splits build/download/dist.txt on "\n" only: the trailing
+# "\r" lands in the expected SHA-256, hex_str_to_bytes() panics on it, and a clean
+# CI checkout cannot build at all. Locally the cached target hides it.
+src-tauri/vendor/** -text

@@ -15,6 +15,7 @@ dist-ssr
 # Local agent/plan and browser-automation scratch
 .nova/
 .playwright-mcp/
+.temp/
 
 # Older captures kept locally, not part of the documented set
 screenshots/legacy/
