@@ -93,6 +93,18 @@ export type VoicePreferences = {
   shortcut: 'toggle' | 'hold'
 }
 
+/// How the @team pipeline runs. `planApproval` pauses the run after Nova's
+/// planning stage until the user approves, edits or skips the plan.
+export type TeamPreferences = {
+  planApproval: boolean
+  /// How many times Ralph may re-run a genuinely failing check.
+  ralphIterations: number
+  /// Minutes a stage may stay silent before the watchdog fails it.
+  stageTimeoutMin: number
+  /// Roles included in the pipeline; the final reporter is always included.
+  roles: Partial<Record<CrewRole, boolean>>
+}
+
 export type Preferences = {
   appearance: 'system' | 'light' | 'dark'
   accent: keyof typeof ACCENTS | 'Custom'
@@ -118,6 +130,7 @@ export type Preferences = {
   schedules: Schedule[]
   speak: boolean
   voice: VoicePreferences
+  team: TeamPreferences
   restoreFolder: boolean
   markdown: boolean
   /// The public GitHub profile the pane browses while signed out, remembered so
@@ -168,6 +181,7 @@ const defaults: Preferences = {
   speak: false, restoreFolder: true, markdown: true,
   githubLogin: '', cloneRoot: '', gitHubClones: {},
   voice: { destination: 'off', model: '', microphone: 'default', language: 'all', shortcut: 'toggle' },
+  team: { planApproval: false, ralphIterations: 3, stageTimeoutMin: 5, roles: {} },
   updateMode: 'automatic', updateCheckedAt: 0,
   interfaceSize: 100, compactConversation: false, expandToolActivity: false,
   // Not Ctrl+Shift+Space: that is the dictation chord, and a global registration
@@ -181,6 +195,12 @@ const defaults: Preferences = {
 
 export const INTERFACE_MIN = 50
 export const INTERFACE_MAX = 200
+
+/// Numeric preference guard: a stored blob with a junk value falls back.
+function clampRange(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, Math.round(value)))
+}
 
 /// Clamped so a hand-edited storage blob cannot scale the whole window to 1%.
 export function clampInterfaceSize(size: number): number {
@@ -280,6 +300,13 @@ export function migratePreferences(raw: unknown): Preferences {
     ...defaults,
     ...stored,
     voice: { ...defaults.voice, ...(stored.voice ?? {}) },
+    team: {
+      ...defaults.team,
+      ...(stored.team ?? {}),
+      roles: { ...(stored.team as TeamPreferences | undefined)?.roles },
+      ralphIterations: clampRange((stored.team as TeamPreferences | undefined)?.ralphIterations, 1, 5, defaults.team.ralphIterations),
+      stageTimeoutMin: clampRange((stored.team as TeamPreferences | undefined)?.stageTimeoutMin, 1, 30, defaults.team.stageTimeoutMin),
+    },
     interfaceSize: clampInterfaceSize(typeof stored.interfaceSize === 'number' ? stored.interfaceSize : defaults.interfaceSize),
     agentLimit: typeof stored.agentLimit === 'number'
       ? Math.min(100, Math.max(1, Math.round(stored.agentLimit)))

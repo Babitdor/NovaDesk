@@ -3487,3 +3487,91 @@ html[data-window] body { margin: 0; background: var(--ground); }
 .agent-widget-empty { margin: 0; color: var(--muted); }
 .agent-widget-close { margin-left: 4px; padding: 0 5px; line-height: 1; }
 
+/* --- @team pipeline strip --------------------------------------------------
+   The run's stage board: one chip per agent in the pipeline, the plan gate
+   while it is up, and the actions a finished run keeps. It uses the approval
+   plate's visual language because it answers the same question — what is the
+   team waiting on? */
+.team-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: var(--conversation-size);
+  margin: 0 auto 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--accent);
+  background: var(--panel);
+  flex: none;
+}
+
+.team-pipeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.team-pipeline-head strong { color: var(--accent); font-weight: 500; }
+.team-pipeline-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.team-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.team-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  background: var(--ground);
+  font-size: 11px;
+  cursor: default;
+}
+
+.team-stage:not(:disabled) { cursor: pointer; }
+.team-stage:not(:disabled):is(:hover, :focus-visible) { border-color: var(--accent-line); }
+.team-stage .crew-portrait { width: 16px; height: 16px; }
+.team-stage-name { font-weight: 600; }
+.team-stage small { color: var(--muted); }
+.team-stage .badge { font-variant-numeric: tabular-nums; }
+.team-stage-plain .badge { color: var(--muted); }
+
+.team-plan { flex-direction: column; align-items: stretch; gap: 8px; margin: 0; animation: none; }
+.team-plan-text { max-height: 30vh; overflow: auto; white-space: pre-wrap; color: var(--ink); }
+.team-plan-edit { display: grid; gap: 8px; }
+.team-plan-edit textarea {
+  resize: vertical;
+  min-height: 80px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: var(--ground);
+  color: var(--ink);
+  font: inherit;
+}
+
+.team-pipeline-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.team-pipeline-foot small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.team-pipeline-foot button { min-height: 24px; font-size: 11px; }
+
+.crew-pipeline-roles { display: flex; gap: 10px; flex-wrap: wrap; }
+.crew-role-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+}
+.crew-role-toggle .crew-portrait { width: 16px; height: 16px; }
+.crew-role-toggle input { accent-color: var(--accent); }
+

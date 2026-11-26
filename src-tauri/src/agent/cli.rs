@@ -136,6 +136,23 @@ fn resolve(id: &str) -> Option<Executable> {
             }
         }
     }
+    // Hermes' Windows installer lives in LOCALAPPDATA and has been seen writing
+    // a file-shaped PATH entry, so PATH alone does not always find it.
+    if id == "hermes" {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let program = PathBuf::from(local)
+                .join("hermes")
+                .join("bin")
+                .join(if cfg!(windows) {
+                    "hermes.exe"
+                } else {
+                    "hermes"
+                });
+            if program.is_file() {
+                return Some(direct(program));
+            }
+        }
+    }
     let npm = match id {
         "pi" => &[
             "@earendil-works/pi-coding-agent",

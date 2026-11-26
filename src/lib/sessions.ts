@@ -1,7 +1,7 @@
 import { applyEvent, type ChatItem } from './chat'
 import type { AgentEvent } from './events'
 import type { AgentId } from './settings'
-import type { CrewMode, CrewSpeaker } from './crew'
+import type { CrewMode, CrewSpeaker, TeamRun } from './crew'
 
 /// One conversation, and the only unit the shell switches between.
 ///
@@ -27,6 +27,9 @@ export type Chat = {
   connectionId?: string
   session?: string
   usage?: { input: number; output: number }
+  /// The latest @team run: live stage statuses for the pipeline strip, and the
+  /// handoff context a retry of failed stages needs. Replaced by each new run.
+  teamRun?: TeamRun
 }
 
 /// The board's columns, in the order they are read: what is not started, what is

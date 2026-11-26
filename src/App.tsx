@@ -10,9 +10,14 @@ import { Settings, type Section } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { Sky } from './components/Sky'
 import { TerminalDock, type Dock } from './components/TerminalDock'
+import { TeamPipeline } from './components/TeamPipeline'
 import { ViewSwitcher } from './components/ViewSwitcher'
 import { appendUser } from './lib/chat'
-import { CREW, addressedCrew, crewPrompt, ralphRetry, systemPrompt, teamOrder, type CrewMode, type CrewRole, type Handoff } from './lib/crew'
+import {
+  CREW, addressedCrew, crewPrompt, parseRetry, systemPrompt, teamOrder,
+  type CrewMode, type CrewRole, type Handoff,
+  type StageStatus, type TeamRun, type TeamStage,
+} from './lib/crew'
 import { clamp, defaultPanelWidth, defaultRailWidth, dockMax, dockMin, panelMax, panelMin, railCollapsed, railMax, railMin } from './lib/layout'
 import { withViewTransition } from './lib/motion'
 import type { AgentEvent, FinishReason, InterruptReply, WorkspaceInfo } from './lib/events'
@@ -56,8 +61,13 @@ export default function App() {
   const [bridgeQueue, setBridgeQueue] = useState<BridgeRequest[]>([])
   const [terminalCommand, setTerminalCommand] = useState<{ chatId: string; text: string } | null>(null)
   const [running, setRunning] = useState<Running | null>(null)
+  /// True while a @team pipeline (not a plain turn) is driving the live turn.
+  const [crewActive, setCrewActive] = useState(false)
   const live = useRef<Running | null>(null)
   const crewRun = useRef<{ cancelled: boolean } | null>(null)
+  /// The pipeline's open plan gate, if any: the paused run resolves its loop
+  /// through this when the user approves, edits or skips the plan.
+  const planGate = useRef<{ runId: string; resolve: (decision: 'approve' | 'skip' | string) => void } | null>(null)
   const replying = useRef(false)
   /// When the last turn finished: the gate for an "after a thread finishes" run.
   const lastFinish = useRef(0)
@@ -496,8 +506,117 @@ export default function App() {
   }
   const stopTurn = () => {
     if (crewRun.current) crewRun.current.cancelled = true
+    planGate.current?.resolve('skip')
     if (live.current) void cancelTurn(live.current.turnId).catch((error) => setNotice(errorText(error)))
   }
+  /// Patch the active chat's team run in place. The run is the pipeline strip's
+  /// only input, so every stage transition lands here.
+  const patchTeamRun = (chatId: string, patch: (run: TeamRun) => TeamRun) =>
+    setChats((previous) => previous.map((chat) => chat.id === chatId && chat.teamRun
+      ? { ...chat, teamRun: patch(chat.teamRun) } : chat))
+
+  /// Roles for a team run: the configured pipeline workers, then the reporter.
+  /// Nova plans and reports, so it is never dropped.
+  const teamRoles = (): readonly CrewRole[] => [
+    ...teamOrder.slice(0, -1).filter((role) => role === 'nova' || preferences.team.roles[role] !== false),
+    'nova',
+  ]
+
+  /// Drives one pipeline stage: ralph's iteration loop, the inactivity watchdog,
+  /// stage bookkeeping and the handoff the next stage inherits. Shared by the
+  /// first run and the retry-failed-stages path.
+  const executeStage = async (options: {
+    chatId: string; task: string; mode: CrewMode; roles: readonly CrewRole[]
+    index: number; role: CrewRole; final: boolean; notes: Handoff[]; run: { cancelled: boolean }
+    history: string
+  }) => {
+    const { chatId, task, mode, roles, index, role, final, notes, run, history } = options
+    const configuration = preferences.crew[role]
+    const backend = configuration?.agent ?? 'nova'
+    const maxIterations = Math.max(1, preferences.team.ralphIterations)
+    const timeoutMs = Math.max(1, preferences.team.stageTimeoutMin) * 60_000
+    for (let iteration = 1; !run.cancelled; iteration += 1) {
+      const turnId = crypto.randomUUID()
+      const speaker = { role, to: roles[index + 1], stage: turnId, scope: mode }
+      live.current = { turnId, chatId, role, iteration }
+      setRunning(live.current)
+      setInterrupts([])
+      setReplyPending(false)
+      replying.current = false
+      patchTeamRun(chatId, (teamRun) => ({ ...teamRun, stages: teamRun.stages.map(
+        (stage, at) => at === index
+          ? { ...stage, status: 'running', iteration, stageId: turnId, startedAt: stage.startedAt ?? Date.now() }
+          : stage,
+      ) }))
+      let reply = ''
+      let timedOut = false
+      let watchdog: number | undefined
+      const arm = () => {
+        clearTimeout(watchdog)
+        watchdog = window.setTimeout(() => {
+          timedOut = true
+          void cancelTurn(turnId).catch(() => {})
+        }, timeoutMs)
+      }
+      const reason: FinishReason = await new Promise<FinishReason>((resolve) => {
+        void startTurn({
+          turnId, chatId: turnId, backend, model: configuration?.model?.trim() || undefined,
+          personality: { role, systemPrompt: configuration?.systemPrompt?.trim() || systemPrompt(role) },
+          prompt: crewPrompt(role, task, history, notes, mode === 'team', final),
+          trustWorkspace: true, check: final && role !== 'ralph' && role !== 'serena' && role !== 'nora'
+            ? preferences.checks[workspace?.root ?? ''] : undefined,
+        }, (event) => {
+          if (event.type === 'turnStarted' && run.cancelled) void cancelTurn(turnId).catch(() => {})
+          if (event.type === 'approvalRequired') setInterrupts((queue) => [...queue, event])
+          if (event.type === 'usage') {
+            patchTeamRun(chatId, (teamRun) => ({ ...teamRun, usage: {
+              input: teamRun.usage.input + event.input, output: teamRun.usage.output + event.output,
+            } }))
+          }
+          if (event.type === 'messageDelta' || (event.type === 'messageFinal' && !event.plain)) {
+            const separator = reply && event.type === 'messageFinal' ? '\n\n' : ''
+            reply = (reply + separator + event.text).slice(-8000)
+          }
+          if (event.type !== 'notice' || event.level !== 'info') {
+            setChats((previous) => routeEvent(previous, chatId, event, speaker))
+          }
+          if (event.type !== 'turnFinished') arm()
+          if (event.type === 'turnFinished') resolve(event.reason)
+        }).catch((error) => {
+          setChats((previous) => routeEvent(previous, chatId, { type: 'turnError', message: errorText(error) }, speaker))
+          resolve('failed')
+        })
+      }).finally(() => clearTimeout(watchdog))
+      // A user stop ends the run; the backend reporting a stage as cancelled on
+      // its own must not — it only loses that stage's work.
+      if (run.cancelled) break
+      if (timedOut) {
+        setChats((previous) => routeEvent(previous, chatId, {
+          type: 'turnError', message: `${CREW[role].name} was silent for ${preferences.team.stageTimeoutMin} minutes — the stage was cancelled.`,
+        }, speaker))
+      } else if (reason === 'cancelled') {
+        setNotice(CREW[role].name + ' was interrupted before finishing — the team continues without that stage.')
+      }
+      const parsed = parseRetry(reply)
+      const retry = role === 'ralph' && reason === 'completed' && parsed.retry
+      const status: StageStatus = reason === 'completed' && !timedOut ? 'done' : 'failed'
+      notes.push({ from: role, text: status === 'done'
+        ? parsed.clean || 'No written handoff was returned.'
+        : 'This stage failed. See the transcript for details and do not treat this work as verified.' })
+      patchTeamRun(chatId, (teamRun) => ({
+        ...teamRun,
+        stages: teamRun.stages.map((stage, at) => at === index
+          ? { ...stage, status: retry ? 'running' : status, iteration, finishedAt: retry ? undefined : Date.now() }
+          : stage),
+        handoffs: notes.map(({ from, text }) => ({ from, text: text.slice(0, 2000) })),
+      }))
+      if (!retry || iteration >= maxIterations) {
+        if (retry) setNotice(`${CREW[role].name} reached the ${maxIterations}-iteration limit. A check still needs attention.`)
+        break
+      }
+    }
+  }
+
   const sendCrew = (task: string, mode: CrewMode) => {
     if (live.current || !workspace || folderBusy || wrongFolder) return false
     if (!preferences.trustedWorkspaces.includes(workspace.root)) {
@@ -505,7 +624,7 @@ export default function App() {
       return false
     }
     const chatId = active.id
-    const roles: readonly CrewRole[] = mode === 'team' ? teamOrder : [mode]
+    const roles = mode === 'team' ? teamRoles() : [mode]
     const history = active.items.flatMap((item) => {
       if (item.kind === 'user' && item.recipient === mode) {
         return ['User: ' + item.text.slice(0, 2000)]
@@ -519,76 +638,111 @@ export default function App() {
     const notes: Handoff[] = []
     const run = { cancelled: false }
     crewRun.current = run
+    setCrewActive(true)
     setNotice(null)
+    const stages: TeamStage[] = roles.map((role) => ({ role, status: 'pending', iteration: 1 }))
     setChats((previous) => previous.map((chat) => chat.id === chatId ? {
       ...chat, workspace: workspace.root, state: 'running', items: appendUser(chat.items, task, mode),
       title: chat.title === 'New task' ? titleFromPrompt(task) : chat.title,
+      teamRun: { id: crypto.randomUUID(), task, stages, startedAt: Date.now(),
+        usage: { input: 0, output: 0 }, handoffs: [], awaitingPlan: null },
     } : chat))
 
     void (async () => {
       for (const [index, role] of roles.entries()) {
         const final = index === roles.length - 1
-        const configuration = preferences.crew[role]
-        const backend = configuration?.agent ?? 'nova'
-        for (let iteration = 1; !run.cancelled; iteration += 1) {
-          const turnId = crypto.randomUUID()
-          const speaker = { role, to: roles[index + 1], stage: turnId, scope: mode }
-          live.current = { turnId, chatId, role, iteration }
-          setRunning(live.current)
-          setInterrupts([])
-          setReplyPending(false)
-          replying.current = false
-          let reply = ''
-          const reason = await new Promise<FinishReason>((resolve) => {
-            void startTurn({
-              turnId, chatId: turnId, backend, model: configuration?.model?.trim() || undefined,
-              personality: { role, systemPrompt: configuration?.systemPrompt?.trim() || systemPrompt(role) },
-              prompt: crewPrompt(role, task, history, notes, mode === 'team', final),
-              trustWorkspace: true, check: final && role !== 'ralph' && role !== 'serena' && role !== 'nora'
-                ? preferences.checks[workspace.root] : undefined,
-            }, (event) => {
-              if (event.type === 'turnStarted' && run.cancelled) void cancelTurn(turnId).catch(() => {})
-              if (event.type === 'approvalRequired') setInterrupts((queue) => [...queue, event])
-              if (event.type === 'messageDelta' || (event.type === 'messageFinal' && !event.plain)) {
-                const separator = reply && event.type === 'messageFinal' ? '\n\n' : ''
-                reply = (reply + separator + event.text).slice(-8000)
-              }
-              if (event.type !== 'notice' || event.level !== 'info') {
-                setChats((previous) => routeEvent(previous, chatId, event, speaker))
-              }
-              if (event.type === 'turnFinished') resolve(event.reason)
-            }).catch((error) => {
-              setChats((previous) => routeEvent(previous, chatId, { type: 'turnError', message: errorText(error) }, speaker))
-              resolve('failed')
-            })
+        await executeStage({ chatId, task, mode, roles, index, role, final, notes, run, history })
+        if (run.cancelled) break
+        // The plan gate: Nova's plan pauses the pipeline until the user
+        // approves, rewrites or skips it — only when the setting asks for it.
+        if (mode === 'team' && preferences.team.planApproval && index === 0 && notes.length) {
+          patchTeamRun(chatId, (teamRun) => ({ ...teamRun, awaitingPlan: index + 1 }))
+          const decision = await new Promise<'approve' | 'skip' | string>((resolve) => {
+            planGate.current = { runId: '', resolve }
           })
-          // A user stop ends the run; the backend reporting a stage as cancelled
-          // on its own must not — it only loses that stage's work.
-          if (run.cancelled) break
-          if (reason === 'cancelled') {
-            setNotice(CREW[role].name + ' was interrupted before finishing — the team continues without that stage.')
-          }
-          const retry = role === 'ralph' && reason === 'completed' && reply.trimEnd().endsWith(ralphRetry)
-          notes.push({ from: role, text: reason === 'completed'
-            ? reply.replaceAll(ralphRetry, '').trim() || 'No written handoff was returned.'
-            : 'This stage failed. See the transcript for details and do not treat this work as verified.' })
-          if (!retry || iteration >= 3) {
-            if (retry) setNotice('Ralph reached the three-iteration limit. A check still needs attention.')
-            break
+          planGate.current = null
+          patchTeamRun(chatId, (teamRun) => ({ ...teamRun, awaitingPlan: null }))
+          if (typeof decision === 'string' && decision.trim()) {
+            notes.push({ from: 'user', text: 'User steering after reviewing the plan: ' + decision.trim().slice(0, 2000) })
           }
         }
         if (run.cancelled) break
       }
     })().finally(() => {
       crewRun.current = null
+      planGate.current = null
+      setCrewActive(false)
       live.current = null
       setRunning(null)
       setInterrupts([])
       setReplyPending(false)
       replying.current = false
-      setChats((previous) => previous.map((chat) => chat.id === chatId ? { ...chat, state: 'idle' } : chat))
+      setChats((previous) => previous.map((chat) => chat.id === chatId ? {
+        ...chat, state: 'idle',
+        teamRun: chat.teamRun ? {
+          ...chat.teamRun, finishedAt: Date.now(),
+          stages: chat.teamRun.stages.map((stage) => stage.status === 'running'
+            ? { ...stage, status: 'failed' as StageStatus, finishedAt: Date.now() } : stage),
+        } : undefined,
+      } : chat))
     }).catch((error) => setNotice(errorText(error)))
     return true
+  }
+  /// Re-runs only the failed stages of the last team run, replaying the recorded
+  /// handoffs so the retry picks up where the run stopped.
+  const retryTeamStages = () => {
+    const run = active.teamRun
+    if (!run || live.current || !workspace || folderBusy || wrongFolder) return
+    if (!preferences.trustedWorkspaces.includes(workspace.root)) {
+      setOfferedWorkspace(workspace.root)
+      return
+    }
+    const failed = run.stages
+      .map((stage, index) => ({ stage, index }))
+      .filter(({ stage }) => stage.status === 'failed')
+    if (!failed.length) return
+    const chatId = active.id
+    const cancelled = { cancelled: false }
+    crewRun.current = cancelled
+    setCrewActive(true)
+    setNotice(null)
+    const notes: Handoff[] = run.handoffs.map(({ from, text }) => ({ from, text }))
+    const history = active.items.flatMap((item) => {
+      if (item.kind === 'user' && item.recipient === 'team') return ['User: ' + item.text.slice(0, 2000)]
+      if (item.kind === 'assistant' && !item.provisional && item.speaker &&
+        (item.speaker.scope ?? 'team') === 'team') {
+        return [CREW[item.speaker.role].name + ': ' + item.text.slice(0, 2000)]
+      }
+      return []
+    }).slice(-8).join('\n\n')
+    patchTeamRun(chatId, (teamRun) => ({
+      ...teamRun, finishedAt: undefined, handoffs: notes,
+      stages: teamRun.stages.map((stage, index) =>
+        failed.some(({ index: at }) => at === index)
+          ? { ...stage, status: 'pending', startedAt: undefined, finishedAt: undefined } : stage),
+    }))
+    void (async () => {
+      for (const { index } of failed) {
+        const role = run.stages[index].role
+        await executeStage({
+          chatId, task: run.task, mode: 'team', roles: run.stages.map(({ role }) => role),
+          index, role, final: index === run.stages.length - 1, notes, run: cancelled, history,
+        })
+        if (cancelled.cancelled) break
+      }
+    })().finally(() => {
+      crewRun.current = null
+      setCrewActive(false)
+      live.current = null
+      setRunning(null)
+      setInterrupts([])
+      setReplyPending(false)
+      replying.current = false
+      setChats((previous) => previous.map((chat) => chat.id === chatId ? {
+        ...chat, state: 'idle',
+        teamRun: chat.teamRun ? { ...chat.teamRun, finishedAt: Date.now() } : undefined,
+      } : chat))
+    }).catch((error) => setNotice(errorText(error)))
   }
   const launchTerminal = () => void openNovaTerminal().catch((error) => setNotice(errorText(error)))
   const submit = (text: string) => {
@@ -771,6 +925,9 @@ export default function App() {
               </div>
             </div>
           )}
+          {active.teamRun && <TeamPipeline run={active.teamRun} busy={busy && crewActive}
+            onDecision={(decision) => planGate.current?.resolve(decision)}
+            onRetry={retryTeamStages} />}
           <Composer chatId={active.id} commands={commands} busy={busy} disabled={!workspace || folderBusy || wrongFolder || Boolean(running && !busy)}
             agent={agent} model={taskModel(active, preferences.models[agent])} effort={active.effort}
             recentModels={preferences.recentModels} configuredModels={preferences.models} onSelectModel={selectModel}

@@ -24,7 +24,7 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
       const name = role ? CREW[role].name : author
       const text = role === 'ralph' ? item.text.replaceAll(ralphRetry, '').trimEnd() : item.text
       return (
-        <article className="msg msg-assistant" aria-label={name}>
+        <article className="msg msg-assistant" aria-label={name} data-stage={item.speaker?.stage}>
           <header className="reply-head">
             <div className="reply-speaker">
               {role && <CrewPortrait role={role} />}

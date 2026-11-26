@@ -311,7 +311,43 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                 }}>Open setup</button>
               </div>)}
             </Group>}
-            {tab === 'Agent teams' && <Group title="Agent personalities">
+             {tab === 'Agent teams' && <>
+              <Group title="Team pipeline">
+                <p className="settings-help">@team runs Nova → the enabled workers → a final report by Nova. These settings shape that pipeline.</p>
+                <Toggle title="Require plan approval" detail="Pause the run after Nova's plan until you approve, edit or skip it."
+                  checked={p.team.planApproval}
+                  onChange={(enabled) => update({ team: { ...p.team, planApproval: enabled } })} />
+                <label className="settings-row">
+                  <span><strong>Ralph iterations</strong><small>How often a genuinely failing check is retried before the run moves on.</small></span>
+                  <select aria-label="Ralph iterations" value={p.team.ralphIterations}
+                    onChange={(event) => update({ team: { ...p.team, ralphIterations: Number(event.target.value) } })}>
+                    {[1, 2, 3, 4, 5].map((count) => <option key={count} value={count}>{count}</option>)}
+                  </select>
+                </label>
+                <label className="settings-row">
+                  <span><strong>Stage watchdog</strong><small>Fail a stage that produces no output for this long, and let the team continue.</small></span>
+                  <select aria-label="Stage watchdog" value={p.team.stageTimeoutMin}
+                    onChange={(event) => update({ team: { ...p.team, stageTimeoutMin: Number(event.target.value) } })}>
+                    {[2, 5, 10, 15].map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
+                  </select>
+                </label>
+                <div className="settings-row">
+                  <span><strong>Pipeline workers</strong><small>Which agents run between Nova's plan and the final report.</small></span>
+                  <span className="crew-pipeline-roles">
+                    {crewRoles.filter((role) => role !== 'nova').map((role) => {
+                      const enabled = p.team.roles[role] !== false
+                      return <label key={role} className="crew-role-toggle">
+                        <input type="checkbox" checked={enabled} onChange={(event) => update({
+                          team: { ...p.team, roles: { ...p.team.roles, [role]: event.target.checked } },
+                        })} />
+                        <CrewPortrait role={role} />
+                        {CREW[role].name}
+                      </label>
+                    })}
+                  </span>
+                </div>
+              </Group>
+              <Group title="Agent personalities">
               <p className="settings-help">Address a message with @nova, @serena, @ralph, @nora, or @team. Each personality uses the harness, model, and system prompt set here.</p>
               {crewRoles.map((role) => {
                 const profile = p.crew[role] ?? { agent: 'nova' }
@@ -339,7 +375,8 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                     onChange={(event) => update({ crew: { ...p.crew, [role]: { ...profile, systemPrompt: event.target.value } } })} /></label>
                 </section>
               })}
-            </Group>}
+              </Group>
+            </>}
             {tab === 'Model routing' && <>
               <Group title="Workspace routing">
                 <label className="settings-row">
