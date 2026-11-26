@@ -5,9 +5,13 @@
 //! CLI are deliberately excluded, so the row is labelled "native core" rather
 //! than pretending to be the whole app.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Serialize;
 use serde_json::Value;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_updater::UpdaterExt;
 
 use crate::commands::settings::download;
 use crate::error::AppError;
@@ -97,6 +101,137 @@ pub async fn check_app_update(app: AppHandle) -> Result<UpdateCheck, AppError> {
         latest,
         current,
     })
+}
+
+/// One step of an in-app update, streamed to the About page while it runs.
+///
+/// The plugin reports each chunk's length rather than a running total, so
+/// `downloaded` is summed here. `total` is whatever the release server
+/// advertised: absent on a chunked response, which is why the pane can print a
+/// byte count without a bar when it is `None`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    stage: &'static str,
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// Held for as long as an install runs. On Windows the plugin replaces this
+/// process (`std::process::exit(0)`) once the installer takes over, so a second
+/// command would race one that is already tearing the app down. The flag is
+/// cleared on every error path; a success needs no clearing because there is no
+/// process left to clear it in.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Downloads, verifies and hands the signed installer to Windows, then restarts
+/// into it. Resolves only when the install could not start: a successful one
+/// ends this process, and the installer relaunches Nova afterwards.
+#[tauri::command]
+pub async fn install_app_update(
+    app: AppHandle,
+    on_event: Channel<UpdateProgress>,
+) -> Result<(), AppError> {
+    // The updater needs a bundle to replace. Refusing here is the difference
+    // between a sentence a reader understands and the installer overwriting a
+    // `cargo build` binary with a released one.
+    if cfg!(debug_assertions) {
+        return Err(AppError::Agent(
+            "Updates are for installed builds: this one was started by a development build.".into(),
+        ));
+    }
+    // `compare_exchange`, not `load` then `store`: two clicks in the same tick
+    // would otherwise both pass the check.
+    if INSTALLING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(AppError::Agent(
+            "An update is already downloading or installing.".into(),
+        ));
+    }
+
+    let result = run_update(&app, &on_event).await;
+    // Reached on failure only: a successful install ends the process below.
+    INSTALLING.store(false, Ordering::SeqCst);
+    result
+}
+
+async fn run_update(app: &AppHandle, on: &Channel<UpdateProgress>) -> Result<(), AppError> {
+    let _ = on.send(UpdateProgress {
+        stage: "checking",
+        downloaded: 0,
+        total: None,
+    });
+    let updater = app.updater().map_err(|err| {
+        AppError::Agent(format!("Nova could not read its updater settings: {err}"))
+    })?;
+    let update = updater.check().await.map_err(describe_update)?;
+    // `None` covers three cases the page treats the same way: an endpoint that
+    // answered 204, a manifest whose version is not newer, and a comparator
+    // that rejected the release.
+    let Some(update) = update else {
+        return Err(AppError::Agent(format!(
+            "Nova {} is already the newest version.",
+            app.package_info().version
+        )));
+    };
+
+    let mut downloaded = 0u64;
+    let bytes = update
+        .download(
+            |chunk, total| {
+                downloaded += chunk as u64;
+                let _ = on.send(UpdateProgress {
+                    stage: "downloading",
+                    downloaded,
+                    total,
+                });
+            },
+            || {},
+        )
+        .await
+        .map_err(describe_update)?;
+
+    let _ = on.send(UpdateProgress {
+        stage: "installing",
+        downloaded: bytes.len() as u64,
+        total: Some(bytes.len() as u64),
+    });
+    // `download` already verified the signature against the key in
+    // tauri.conf.json and returned the bytes; `install` is what starts the
+    // installer and, on Windows, kills this process so its files can move.
+    update.install(bytes).map_err(describe_update)?;
+    Ok(())
+}
+
+/// Turns the updater's errors into the one sentence the pane has room for.
+///
+/// Two of them describe the mechanism rather than the cause ("Could not fetch a
+/// valid release JSON from the remote"), and minisign's own text is about keys
+/// and signatures rather than about an update. Both are the difference between a
+/// reader checking the release page and a reader filing a bug.
+fn describe_update(err: tauri_plugin_updater::Error) -> AppError {
+    use tauri_plugin_updater::Error;
+    let message = match err {
+        Error::ReleaseNotFound => "That release carries no updater manifest, so Nova cannot install it from here. Its release page has the installer.".to_string(),
+        Error::TargetNotFound(target) => format!(
+            "The release has no build for {target}, so Nova cannot install it from here."
+        ),
+        Error::TargetsNotFound(targets) => format!(
+            "The release has no build for this platform ({}), so Nova cannot install it from here.",
+            targets.join(", ")
+        ),
+        Error::Minisign(_) | Error::SignatureUtf8(_) | Error::Base64(_) => {
+            "The update's signature did not match the key in this build, so Nova refused to install it."
+                .to_string()
+        }
+        Error::Network(text) => format!("The download failed: {text}"),
+        Error::Reqwest(err) => format!("The download failed: {err}"),
+        // `Error` is non_exhaustive: anything new still has to say something.
+        other => format!("The update failed: {other}"),
+    };
+    AppError::Agent(message)
 }
 
 /// True when `latest` is strictly newer than `current`.

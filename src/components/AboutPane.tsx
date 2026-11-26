@@ -1,8 +1,9 @@
 import { useEffect, useEffectEvent, useState } from 'react'
 
 import { NOTICES } from '../data/notices'
-import { appReport, checkAppUpdate, errorText, openLink, type AppReport, type UpdateCheck } from '../lib/ipc'
+import { appReport, checkAppUpdate, errorText, installAppUpdate, openLink, type AppReport, type UpdateCheck, type UpdateProgress } from '../lib/ipc'
 import type { Preferences } from '../lib/settings'
+import { progressLabel } from '../lib/update'
 
 const REPOSITORY = 'https://github.com/Babitdor/NovaDesk'
 const RELEASES = `${REPOSITORY}/releases`
@@ -72,6 +73,11 @@ export function AboutPane({ preferences, update }: Props) {
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState<UpdateCheck | null>(null)
   const [checkError, setCheckError] = useState('')
+  // The install is the one operation whose promise does not settle when it
+  // works: on Windows the plugin starts the installer and ends this process, so
+  // `installing` stays true until the window closes. Only a failure clears it.
+  const [installing, setInstalling] = useState(false)
+  const [installProgress, setInstallProgress] = useState<UpdateProgress | null>(null)
   const [details, setDetails] = useState(false)
   const [copied, setCopied] = useState('')
   const [filter, setFilter] = useState('')
@@ -95,6 +101,23 @@ export function AboutPane({ preferences, update }: Props) {
       setChecked(null)
       setCheckError(errorText(err))
     } finally { setChecking(false) }
+  }
+
+  const runInstall = async () => {
+    setInstallProgress(null)
+    setCheckError('')
+    setInstalling(true)
+    try {
+      await installAppUpdate(setInstallProgress)
+      // A resolve means Windows never handed the process to the installer,
+      // which is not a state to leave the button in: a success ends the process
+      // and never returns here.
+      setInstalling(false)
+      setCheckError('The installer returned without restarting Nova. Reopen the app to be sure.')
+    } catch (err) {
+      setInstalling(false)
+      setCheckError(errorText(err))
+    }
   }
 
   // The counters move from outside this pane (the dock opens, a turn starts) and
@@ -134,10 +157,12 @@ export function AboutPane({ preferences, update }: Props) {
     }
   }
 
-  // Check state, in the order a reader asks about it: is it on, is it running,
-  // did it fail, and only then what the answer was.
+  // Check state, in the order a reader asks about it: is an install running (it
+  // outranks everything: the window is about to close), is it off, is a check
+  // running, did either fail, and only then what the answer was.
   let updateState = 'Not checked'
-  if (preferences.updateMode === 'off') updateState = 'Off'
+  if (installing) updateState = progressLabel(installProgress) || 'Starting the installer…'
+  else if (preferences.updateMode === 'off') updateState = 'Off'
   else if (checking) updateState = 'Checking…'
   else if (checkError) updateState = checkError
   else if (checked) updateState = checked.available
@@ -174,7 +199,13 @@ export function AboutPane({ preferences, update }: Props) {
         <div className="settings-row">
           <span><strong>Updates</strong><small>{updateState}</small></span>
           <span className="about-buttons">
-            <button type="button" disabled={checking || preferences.updateMode === 'off'}
+            {checked?.available ? (
+              <button type="button" className="primary" disabled={checking || installing}
+                onClick={() => void runInstall()}>
+                {installing ? 'Updating…' : 'Update & restart'}
+              </button>
+            ) : null}
+            <button type="button" disabled={checking || installing || preferences.updateMode === 'off'}
               onClick={() => void runCheck()}>{checking ? 'Checking…' : 'Check now'}</button>
             <button type="button" onClick={() => void openLink(checked?.available && checked.url ? checked.url : RELEASES)}>
               {checked?.available ? `v${checked.latest}` : 'Releases'}
@@ -184,7 +215,7 @@ export function AboutPane({ preferences, update }: Props) {
         <label className="settings-row">
           <span>
             <strong>Update mode</strong>
-            <small>Nova has no installer: it checks GitHub and links to the release. It never installs or restarts itself.</small>
+            <small>Automatic checks when this page opens; Manual waits for Check now. Either way nothing installs or restarts until you press Update &amp; restart.</small>
           </span>
           <select value={preferences.updateMode}
             onChange={(event) => update({ updateMode: event.target.value as Preferences['updateMode'] })}>

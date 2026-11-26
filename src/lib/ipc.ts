@@ -72,6 +72,23 @@ export type UpdateCheck = {
 export const appReport = () => invoke<AppReport>('app_report')
 export const checkAppUpdate = () => invoke<UpdateCheck>('check_app_update')
 
+/// Mirrors `UpdateProgress` in src-tauri/src/commands/app.rs. The plugin reports
+/// each chunk's length, so `downloaded` is a total Rust summed, and `total` is
+/// whatever the release server advertised — `null` on a chunked response.
+export type UpdateProgress = {
+  stage: 'checking' | 'downloading' | 'installing'
+  downloaded: number
+  total: number | null
+}
+
+/// Downloads, verifies and installs the signed release, then restarts Nova into
+/// it. The promise settles only when the install could not start: a working
+/// install ends this process, so the page must treat `installing` as terminal.
+export const installAppUpdate = (onEvent: (event: UpdateProgress) => void) => {
+  const channel = new Channel<UpdateProgress>(onEvent)
+  return invoke<void>('install_app_update', { onEvent: channel })
+}
+
 export const runCommand = (
   commandId: string,
   program: string,

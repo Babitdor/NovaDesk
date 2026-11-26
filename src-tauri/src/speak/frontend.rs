@@ -559,8 +559,10 @@ impl Reader<'_> {
             .ok_or_else(|| AppError::Speak("the g2p weights end early".to_string()))?;
         self.at = end;
         Ok(slice
-            .chunks_exact(2)
-            .map(|pair| half_to_f64(u16::from_le_bytes([pair[0], pair[1]])))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| half_to_f64(u16::from_le_bytes(*pair)))
             .collect())
     }
 

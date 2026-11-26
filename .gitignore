@@ -27,6 +27,11 @@ src-tauri/target
 src-tauri/gen/schemas
 # The tool shim Tauri bundles: built by npm run tools:shim, never committed.
 src-tauri/binaries/
+# The updater signing key. CI reads the same key from repository secrets; this
+# copy is what signs a build on this machine, and the password sits beside it so
+# a local build does not need the secret store. Losing both means already
+# installed copies can only be replaced by a manual download.
+src-tauri/.tauri/
 
 # Editor directories and files
 .vscode/*

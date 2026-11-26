@@ -200,7 +200,9 @@ export type Preferences = {
   /// instead of Clone for anything already on this computer.
   gitHubClones: Record<string, string>
   /// What the About page does when it opens. Even "automatic" only *checks*:
-  /// Nova ships no updater, so it never installs or restarts itself.
+  /// When the About page looks for a newer release: as it opens, only when
+  /// Check now is pressed, or never. The install itself is always a press of
+  /// Update & restart — no mode installs or restarts anything on its own.
   updateMode: 'automatic' | 'manual' | 'off'
   /// Epoch ms of the last successful check, so "checked 2m ago" survives a reopen.
   updateCheckedAt: number

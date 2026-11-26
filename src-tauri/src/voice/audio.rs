@@ -30,7 +30,7 @@ pub fn to_model_input(interleaved: &[f32], channels: u16, rate: u32) -> Result<V
             "the recording reported no channels or no sample rate".to_string(),
         ));
     }
-    if interleaved.len() % channels as usize != 0 {
+    if !interleaved.len().is_multiple_of(channels as usize) {
         return Err(AppError::Voice(format!(
             "the recording has {} samples, which is not a whole number of {channels}-channel frames",
             interleaved.len()
@@ -123,8 +123,10 @@ pub fn decode_ipc(encoded: &str, channels: u16, rate: u32) -> Result<Vec<f32>, A
         ));
     }
     let interleaved: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect();
     to_model_input(&interleaved, channels, rate)
 }

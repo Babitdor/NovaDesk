@@ -446,8 +446,34 @@ The workflow can also be started by hand (`workflow_dispatch`) from the Actions 
 cancelling the first, so no run is left half-published.
 
 Tags are plain `v<version>` — `git tag -l` lists them, and `gh release list` shows what
-shipped with each one. Nothing in the app depends on a release existing; the portable
-`novacode-desktop.exe` from a local build is the same binary.
+shipped with each one. Nothing in the app depends on a release existing: the portable
+`novacode-desktop.exe` from a local build is the same binary. Only the updater below does,
+and it reads `latest.json` from the newest release.
+
+### In-app updates
+
+From 0.5.0 on, About → Updates offers **Update & restart**: Nova downloads the release
+bundle, verifies its signature against the key compiled into the app, runs the installer
+and reopens on the new version. Earlier versions have no updater and are updated by hand
+once. The debug build refuses to install anything — a `cargo build` binary has no bundle to
+replace — and says so.
+
+The signature is the whole security story, so the key has two halves:
+
+- **Public** — `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. It ships inside
+  every build and is what verifies a download.
+- **Private** — `src-tauri/.tauri/nova-updater.key` on this machine, with its password in
+  `src-tauri/.tauri/password.txt` beside it (both gitignored), and the same two values as
+  the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` that `release.yml` hands to `tauri-action`.
+
+Losing the private key means installed copies can no longer update themselves: a bundle
+signed with a new key does not verify against the old public key, so those users need one
+manual download first. Rotating the key on purpose is the same operation, in that order —
+ship the new public key, then sign with the new private one. `requireSignedVersion` is on,
+and `latest.json` has to carry both `windows-x86_64-nsis` and `windows-x86_64-msi`; a
+release missing one fails with "the release has no build for …" instead of installing
+something unverified.
 
 ## General, Schedules and agent requests
 

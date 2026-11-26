@@ -247,6 +247,7 @@ pub fn run() {
         commands::settings::open_link,
         commands::app::app_report,
         commands::app::check_app_update,
+        commands::app::install_app_update,
         commands::github::github_account,
         commands::github::github_repos,
         commands::github::github_activity,
@@ -289,6 +290,10 @@ pub fn run() {
         // Registered empty: the chord itself comes from the saved preference, and
         // a plugin with no shortcuts costs nothing until one is set.
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Registered for its Rust API only: commands::app drives check, download
+        // and install itself, so no updater JS command and no updater permission
+        // is granted to the webview — capabilities/default.json stays core-only.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new())
         .setup(|app| {
             // Installed before any window exists: a panic during boot is exactly
