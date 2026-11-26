@@ -178,7 +178,7 @@ pub fn reports_at(dir: &Path) -> Vec<CrashReport> {
             Some(report)
         })
         .collect();
-    reports.sort_by(|a, b| b.at.cmp(&a.at));
+    reports.sort_by_key(|report| std::cmp::Reverse(report.at));
     reports.truncate(REPORT_LIMIT);
     reports
 }

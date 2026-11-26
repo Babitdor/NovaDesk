@@ -82,12 +82,12 @@ fn valid(request: &Request) -> bool {
             let prompt = prompt.trim();
             !prompt.is_empty()
                 && prompt.chars().count() <= MAX_PROMPT
-                && agent.as_ref().is_none_or(|agent| {
+                && agent.as_ref().map_or(true, |agent| {
                     !agent.is_empty() && agent.chars().count() <= MAX_AGENT
                 })
                 // A week is the outer bound: a longer wait is a schedule, and this
                 // process will have exited long before it fires.
-                && after_seconds.is_none_or(|seconds| seconds <= 7 * 24 * 60 * 60)
+                && after_seconds.map_or(true, |seconds| seconds <= 7 * 24 * 60 * 60)
         }
         Request::ThreadMessage { thread, text } => {
             !thread.trim().is_empty()
