@@ -2,11 +2,26 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{cli, drive_turn, Personality, TurnRequest};
+use crate::agent::{cli, drive_turn, Personality, TurnRequest, DEFAULT_BACKEND};
 use crate::error::AppError;
 use crate::events::{AgentEvent, FinishReason, InterruptReply};
 use crate::proc::ProcessRunner;
 use crate::AppState;
+
+/// Spawns Nova's pipe session for the current workspace before the first turn,
+/// so the user's first message streams instead of waiting on the boot. The
+/// frontend calls this only for folders it already trusts; failures are silent
+/// because a cold start is a slow first turn, never an error.
+#[tauri::command]
+pub async fn prewarm_nova(state: State<'_, AppState>) -> Result<(), AppError> {
+    let guard = state.require_guard().await?;
+    let agent = state.agents.get(DEFAULT_BACKEND)?;
+    let root = guard.root().to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let _ = agent.prewarm(&root).await;
+    });
+    Ok(())
+}
 
 /// Returns as soon as the turn is queued; the reply streams down `on_event`, so
 /// a webview call never sits between the user's click and a cancellation.
@@ -28,6 +43,7 @@ pub async fn start_turn(
     check: Option<Vec<String>>,
     trust_workspace: bool,
     on_event: Channel<AgentEvent>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     if uuid::Uuid::parse_str(&chat_id).is_err() || uuid::Uuid::parse_str(&turn_id).is_err() {
@@ -84,6 +100,15 @@ pub async fn start_turn(
         turns.insert(turn_id.clone(), (cancel.clone(), agent.clone()));
     }
 
+    // One request file per task, or per personality stage: the path is fixed for
+    // the life of a reused harness process, so it must not change per turn.
+    let requests_file = app.path().app_data_dir().ok().map(|dir| {
+        let key = personality
+            .as_ref()
+            .map(|profile| format!("personality-{}", profile.role))
+            .unwrap_or_else(|| chat_id.clone());
+        crate::agent::requests::path_for(&dir, &key)
+    });
     let state = state.inner().clone();
     let req = TurnRequest {
         prompt,
@@ -94,6 +119,7 @@ pub async fn start_turn(
         session,
         trust_workspace,
         personality,
+        requests_file,
     };
 
     tauri::async_runtime::spawn(async move {

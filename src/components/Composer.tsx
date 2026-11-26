@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { SlashCommand } from '../lib/slash'
 import { AGENTS, type AgentId, type ModelSelection, type Preferences } from '../lib/settings'
@@ -6,6 +6,9 @@ import { AgentMark } from './AgentMark'
 import { ModelPicker } from './ModelPicker'
 import { CREW, addressedCrew, crewRoles, crewTargets, type CrewMode } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
+import { VOICE_SHORTCUT_LABEL, MicRecorder, voiceInstalled, voiceTranscribe } from '../lib/voice'
+import { errorText } from '../lib/ipc'
+import { loadDrafts, saveDraft } from '../lib/drafts'
 
 type Props = {
   chatId: string
@@ -27,20 +30,25 @@ type Props = {
   onConfigureCrew: () => void
   usage?: { input: number; output: number }
   workspace: string | null
+  voice: Preferences['voice']
+  onOpenVoice: () => void
+  /// "Keep unsent drafts": the store is only touched while the preference is on.
+  keepDrafts: boolean
   onSend: (prompt: string) => boolean
   onStop: () => void
 }
 
 export function Composer({
   chatId, commands, busy, disabled, agent, model, effort, recentModels, configuredModels, onSelectModel,
-  hasHistory, work, waiting, obscured, crew, onCrew, onConfigureCrew, usage, workspace, onSend, onStop,
+  hasHistory, work, waiting, obscured, crew, onCrew, onConfigureCrew, usage, workspace, voice,
+  onOpenVoice, keepDrafts, onSend, onStop,
 }: Props) {
   const composer = useRef<HTMLDivElement>(null)
   const modelButton = useRef<HTMLButtonElement>(null)
   const input = useRef<HTMLTextAreaElement>(null)
   const menuId = useId()
   const modelId = useId()
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => keepDrafts ? loadDrafts() : {})
   const [menu, setMenu] = useState<{ chat: string; kind: 'slash' | 'mention'; highlighted: number } | null>(null)
   const [modelMenu, setModelMenu] = useState<string | null>(null)
   if (modelMenu && (modelMenu !== chatId || obscured || busy)) setModelMenu(null)
@@ -58,7 +66,21 @@ export function Composer({
   const menuOpen = menu?.chat === chatId
   const highlighted = menuOpen && menu.highlighted < options.length ? menu.highlighted : -1
   const optionId = (index: number) => `${menuId}-${index}`
-  const setDraft = (text: string) => setDrafts((previous) => ({ ...previous, [chatId]: text }))
+  /// The draft store is a mirror of this state, never its source: clearing the
+  /// composer writes an empty draft, which deletes the entry.
+  const persistDraft = (text: string) => { if (keepDrafts) saveDraft(chatId, text) }
+  const setDraft = (text: string) => {
+    persistDraft(text)
+    setDrafts((previous) => ({ ...previous, [chatId]: text }))
+  }
+  // Dictation appends instead of replacing: whatever was typed before the
+  // shortcut is part of the same prompt.
+  const appendDraft = (text: string) => {
+    const current = drafts[chatId] ?? ''
+    const next = current.trim() ? current.trimEnd() + ' ' + text : text
+    persistDraft(next)
+    setDrafts((previous) => ({ ...previous, [chatId]: next }))
+  }
   const openMenu = (kind: 'slash' | 'mention' = 'slash') => setMenu({ chat: chatId, kind, highlighted: -1 })
   const closeMenu = () => setMenu(null)
   const openModels = () => {
@@ -69,6 +91,124 @@ export function Composer({
     setModelMenu(null)
     if (focus) modelButton.current?.focus({ preventScroll: true })
   }
+
+  // --- dictation -------------------------------------------------------
+  const [voiceState, setVoiceState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
+  const [voiceLevel, setVoiceLevel] = useState(0)
+  const [voiceError, setVoiceError] = useState('')
+  const [installedVoices, setInstalledVoices] = useState<string[]>([])
+  const voiceRecorder = useRef<MicRecorder | null>(null)
+  const holding = useRef(false)
+  const voiceReady = voice.destination === 'local' && voice.model !== '' && installedVoices.includes(voice.model)
+
+  useEffect(() => {
+    void voiceInstalled().then(setInstalledVoices).catch(() => setInstalledVoices([]))
+  }, [])
+
+  // A model downloaded while this composer is mounted changes what the mic
+  // button can do, and the window regaining focus is when that happens.
+  useEffect(() => {
+    const refresh = () => {
+      void voiceInstalled().then(setInstalledVoices).catch(() => {})
+    }
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [])
+
+  const finishDictation = async (keep: boolean) => {
+    const mic = voiceRecorder.current
+    setVoiceLevel(0)
+    if (!mic?.active) {
+      setVoiceState('idle')
+      return
+    }
+    if (!keep) {
+      mic.cancel()
+      setVoiceState('idle')
+      return
+    }
+    try {
+      const recording = await mic.stop()
+      if (recording.duration < 0.25) {
+        setVoiceError('That recording was too short to transcribe. Hold a little longer.')
+        return
+      }
+      if (recording.peak < 0.01) {
+        setVoiceError('The microphone picked up no sound. Check the input device in Settings, Voice.')
+        return
+      }
+      setVoiceState('transcribing')
+      const result = await voiceTranscribe({
+        modelId: voice.model,
+        language: voice.language === 'all' ? undefined : voice.language,
+        samples: recording.samples,
+        sampleRate: recording.sampleRate,
+        channels: recording.channels,
+      })
+      if (result.text) {
+        appendDraft(result.text)
+        input.current?.focus()
+      } else {
+        setVoiceError('Nothing was recognised in that recording.')
+      }
+    } catch (err) {
+      setVoiceError(errorText(err))
+    } finally {
+      setVoiceState('idle')
+    }
+  }
+
+  const startDictation = async () => {
+    // The installed list can be stale - a model downloaded after this composer
+    // mounted would otherwise send the user straight back to Settings.
+    const installed = await voiceInstalled().catch(() => installedVoices)
+    if (installed !== installedVoices) setInstalledVoices(installed)
+    if (voice.destination !== 'local' || voice.model === '' || !installed.includes(voice.model)) {
+      onOpenVoice()
+      return
+    }
+    if (voiceState !== 'idle') return
+    setVoiceError('')
+    try {
+      const mic = (voiceRecorder.current ??= new MicRecorder())
+      await mic.start(voice.microphone, setVoiceLevel)
+      setVoiceState('recording')
+    } catch (err) {
+      setVoiceState('idle')
+      setVoiceError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // The shortcut is registered on the window so it works wherever the caret is.
+  // Re-registered per render because the handlers close over the live draft.
+  useEffect(() => {
+    if (voice.destination !== 'local') return
+    const match = (event: KeyboardEvent) => event.code === 'Space' && event.ctrlKey && event.shiftKey
+    const down = (event: KeyboardEvent) => {
+      if (!match(event)) return
+      event.preventDefault()
+      if (event.repeat) return
+      if (voice.shortcut === 'hold') {
+        holding.current = true
+        void startDictation()
+      } else if (voiceState === 'recording') void finishDictation(true)
+      else void startDictation()
+    }
+    const up = (event: KeyboardEvent) => {
+      if (!holding.current || voice.shortcut !== 'hold') return
+      if (match(event)) event.preventDefault()
+      holding.current = false
+      void finishDictation(true)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  })
+
+  useEffect(() => () => { voiceRecorder.current?.cancel() }, [])
 
   useLayoutEffect(() => {
     const el = input.current
@@ -176,12 +316,30 @@ export function Composer({
             submit()
           }
         }} />
+      {voiceError && <p className="composer-voice-error" role="status">
+        {voiceError}
+        <button type="button" className="ghost" onClick={() => { setVoiceError(''); onOpenVoice() }}>Voice settings</button>
+      </p>}
       {busy && <div className="composer-activity" data-waiting={waiting} role="status">
         <span className="activity-meter" aria-hidden="true"><i /><i /><i /></span>
         <span>{work}</span>
       </div>}
       <div className="composer-meta">
         <span className="composer-tags">
+          <button type="button" className="ghost voice-trigger" aria-label="Dictate a prompt"
+            data-state={voiceState} aria-pressed={voiceState === 'recording'}
+            disabled={busy && voiceState === 'idle'}
+            title={voiceReady ? 'Dictate · ' + VOICE_SHORTCUT_LABEL : 'Set up on-device dictation in Settings, Voice'}
+            onClick={() => {
+              if (voiceState === 'recording') void finishDictation(true)
+              else if (voiceState === 'idle') void startDictation()
+            }}>
+            <span className="voice-dot" aria-hidden="true" />
+            {voiceState === 'recording' ? 'Listening' : voiceState === 'transcribing' ? 'Transcribing' : 'Dictate'}
+          </button>
+          {voiceState === 'recording' && (
+            <span className="voice-meter" aria-hidden="true"><i style={{ width: Math.round(voiceLevel * 100) + '%' }} /></span>
+          )}
           <button type="button" className="ghost slash-trigger" aria-label="Browse slash commands"
             aria-expanded={menuOpen && !mentionMenu} aria-controls={menuOpen && !mentionMenu ? menuId : undefined}
             onClick={() => {

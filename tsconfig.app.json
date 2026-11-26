@@ -22,5 +22,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* The engine tests run through `node --test`, which needs the `.ts` import
+     extensions and the node:test types; keeping them out of the app program
+     would otherwise mean adding "node" to `types` for every component. */
+  "exclude": ["src/**/*.test.ts"]
 }

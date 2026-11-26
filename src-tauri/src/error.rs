@@ -29,6 +29,10 @@ pub enum AppError {
     Cancelled,
     #[error("{0}")]
     Agent(String),
+    /// Voice has its own kind so the page can tell "no model installed" apart
+    /// from a general failure and point at the right control.
+    #[error("{0}")]
+    Voice(String),
 }
 
 impl AppError {
@@ -45,6 +49,7 @@ impl AppError {
             AppError::Spawn(_) => "spawn",
             AppError::Cancelled => "cancelled",
             AppError::Agent(_) => "agent",
+            AppError::Voice(_) => "voice",
         }
     }
 

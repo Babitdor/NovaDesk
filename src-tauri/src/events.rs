@@ -47,6 +47,21 @@ pub enum AgentEvent {
         path: String,
         diff: String,
     },
+    /// A Nova subagent dispatch (Ralph, Nora, Serena, `task` runs, Code Mode
+    /// workers). The pipe upserts rows by `task_id`; a later event with the
+    /// same id updates the row instead of appending a new one.
+    SubagentTask {
+        task_id: String,
+        status: String,
+        label: Option<String>,
+        subagent_type: Option<String>,
+        duration_ms: Option<u64>,
+    },
+    /// A live progress line for a running `SubagentTask` row.
+    SubagentPreview {
+        task_id: String,
+        text: String,
+    },
     /// The backend needs a decision before it can continue. Answer with
     /// `respond_approval`; the turn stays open until it is answered.
     ApprovalRequired {
@@ -70,6 +85,18 @@ pub enum AgentEvent {
     },
     TurnFinished {
         reason: FinishReason,
+    },
+    /// The harness asked Nova to start another task, through the documented
+    /// request file. The UI decides whether that is allowed.
+    WakeupRequested {
+        prompt: String,
+        agent: Option<String>,
+        after_seconds: Option<u64>,
+    },
+    /// The harness asked Nova to put a message in another task.
+    ThreadMessage {
+        thread: String,
+        text: String,
     },
 }
 

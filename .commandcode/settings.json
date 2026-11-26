@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(npm:*)",
+      "Shell(node crew-loop-sim.mjs)",
+      "Shell(npx oxlint src/App.tsx 2 >& 1)",
+      "Shell(cargo:*)",
+      "Shell(npx oxlint src/lib/chat.ts src/lib/events.ts 2 >& 1)",
+      "Shell(npx oxlint 2 >& 1)",
+      "Shell(where.exe nova 2>/dev/null; where.exe python 2>/dev/null | head -3; echo \"NOVA_SOURCE=$NOVA_SOURCE\"; echo \"NOVA_BIN=$NOVA_BIN\"; echo \"NOVA_PYTHON=$NOVA_PYTHON\")",
+      "powershell",
+      "Shell(python nova-latency-probe.py)",
+      "Shell(python nova-boot-breakdown.py)",
+      "Shell(python nova-boot-breakdown2.py)",
+      "Shell(python nova-warm-probe.py)",
+      "Shell(PY=\"C:/Users/Babit-PC/AppData/Roaming/uv/tools/novacode-cli/Scripts/python.exe\"; echo '{\"type\":\"shutdown\"}' | \"$PY\" -m cProfile -o nova-boot.prof -c \"import sys; sys.argv=['nova','--mode','pipe']; from novacode_cli.entrypoint import cli_main; cli_main()\" 2>nul; echo \"exit=$?\")",
+      "Shell(python nova-boot-profile.py 2 >& 1)",
+      "Shell(ls -la *.prof 2>/dev/null; ls \"B:/Summer Project 2026/NovaCode/Nova-Desktop\"/*.prof 2>/dev/null)",
+      "Shell(python nova-boot-analyze.py 2 >& 1)",
+      "Shell(python nova-clear-probe.py)",
+      "Shell(PY=\"C:/Users/Babit-PC/AppData/Roaming/uv/tools/novacode-cli/Scripts/python.exe\"; \"$PY\" -X importtime -c \"import sys; sys.argv=['nova','--mode','pipe']; from novacode_cli.entrypoint import cli_main\" 2> importtime.log; python -c \" import re lines = open('importtime.log', encoding='utf-8', errors='replace').read().splitlines() # importtime: self_us|cumulative_us|indented module path rows = [] for line in lines: m = re.match(r'import time:\\s+(\\d+)\\s+\\|\\s+(\\d+)\\s+\\|\\s*(\\s*)(\\S+)', line) if m: rows.append((int(m.group(2)), len(m.group(3))//2, m.group(4))) # top-level entries with cumulative > 100ms for cum, depth, name in rows: if depth == 0 and cum > 100000: print(f'{cum/1e6:6.2f}s {name}') \")",
+      "Shell(python importtime-analyze.py 2 >& 1)",
+      "Shell(python -c \" import subprocess PY = r'C:\\Users\\Babit-PC\\AppData\\Roaming\\uv\\tools\\novacode-cli\\Scripts\\python.exe' p = subprocess.run([PY, '-X', 'importtime', '-c', 'from novacode_cli.entrypoint import cli_main'], capture_output=True, text=True, timeout=120) lines = [l for l in p.stderr.splitlines() if l.startswith('import time:')] print('lines:', len(lines)) print('\\n'.join(lines[-5:])) \")",
+      "Shell(python importtime-analyze.py)",
+      "Shell(python module-costs.py)",
+      "Shell(nova:*)",
+      "Shell(ls:*)",
+      "Shell(PY=\"C:/Users/Babit-PC/AppData/Roaming/uv/tools/novacode-cli/Scripts/python.exe\";:*)",
+      "Shell(python harness-check.py)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

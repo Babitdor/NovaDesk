@@ -1,28 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { emitTo, listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 import { ChatLog } from './components/ChatLog'
 import { Composer } from './components/Composer'
 import { Interrupt } from './components/Interrupt'
-import { PanelRail } from './components/PanelRail'
 import { RightPanel } from './components/RightPanel'
 import { Settings, type Section } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { Sky } from './components/Sky'
 import { TerminalDock, type Dock } from './components/TerminalDock'
+import { ViewSwitcher } from './components/ViewSwitcher'
 import { appendUser } from './lib/chat'
 import { CREW, addressedCrew, crewPrompt, ralphRetry, systemPrompt, teamOrder, type CrewMode, type CrewRole, type Handoff } from './lib/crew'
 import { clamp, defaultPanelWidth, defaultRailWidth, dockMax, dockMin, panelMax, panelMin, railCollapsed, railMax, railMin } from './lib/layout'
 import { withViewTransition } from './lib/motion'
 import type { AgentEvent, FinishReason, InterruptReply, WorkspaceInfo } from './lib/events'
-import type { Pane } from './lib/panes'
-import { cancelTurn, errorText, openNovaTerminal, pickWorkspace, respondApproval, setWorkspace, startTurn } from './lib/ipc'
-import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat } from './lib/sessions'
-import { AGENTS, applyAppearance, loadPreferences, recommendedAgent, savePreferences, type ModelSelection, type Preferences } from './lib/settings'
+import { VIEWS, type Pane, type View } from './lib/panes'
+import {
+  cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval,
+  setCrashPolicy, setQuickLauncher, setWidget, setWorkspace, startTurn,
+} from './lib/ipc'
+import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
+import { advance, dueAfterThread, dueSchedules, promptFor, withinLimit } from './lib/scheduler'
+import {
+  AGENTS, applyAppearance, clampInterfaceSize, loadPreferences, recommendedAgent, savePreferences,
+  type AgentId, type ModelSelection, type Preferences, type ScheduleRun,
+} from './lib/settings'
 import { allNovaSlashCommands, desktopSlashCommands, novaSlashCommands } from './lib/slash'
 
 const WORKSPACE_KEY = 'nova.desktop.workspace'
 type Running = { turnId: string; chatId: string; role?: CrewRole; iteration?: number }
 type InterruptRequest = Extract<AgentEvent, { type: 'approvalRequired' }>
+/// A start requested by an agent rather than by the user. `needsApproval` is the
+/// "Ask before agents message other threads" gate; nothing in the queue runs
+/// while it is true.
+type BridgeRequest = { id: string; prompt: string; agent?: AgentId; needsApproval: boolean }
+type BridgeEvent = Extract<AgentEvent, { type: 'wakeupRequested' | 'threadMessage' }>
 
 export default function App() {
   const [workspace, setFolder] = useState<WorkspaceInfo | null>(null)
@@ -38,16 +52,22 @@ export default function App() {
   const [activeId, setActiveId] = useState(() => chats[0].id)
   const [preferences, setPreferences] = useState(loadPreferences)
   const [settings, setSettings] = useState(false)
-  const [settingsPage, setSettingsPage] = useState<{ section: Section; tab: string }>({ section: 'Appearance', tab: 'Harnesses' })
+  const [settingsPage, setSettingsPage] = useState<{ section: Section; tab: string }>({ section: 'General', tab: 'Harnesses' })
+  const [bridgeQueue, setBridgeQueue] = useState<BridgeRequest[]>([])
   const [terminalCommand, setTerminalCommand] = useState<{ chatId: string; text: string } | null>(null)
   const [running, setRunning] = useState<Running | null>(null)
   const live = useRef<Running | null>(null)
   const crewRun = useRef<{ cancelled: boolean } | null>(null)
   const replying = useRef(false)
+  /// When the last turn finished: the gate for an "after a thread finishes" run.
+  const lastFinish = useRef(0)
+  /// Latest `submit` and bridge handler, so the event listeners registered once
+  /// at mount always call the current render's closures.
+  const submitRef = useRef<(text: string) => boolean>(() => false)
+  const bridgeRef = useRef<(event: BridgeEvent) => void>(() => {})
   const [notice, setNotice] = useState<string | null>(null)
   const [offeredWorkspace, setOfferedWorkspace] = useState<string | null>(null)
-  const [pane, setPane] = useState<Pane>('Changes')
-  const [panelOpen, setPanelOpen] = useState(true)
+  const [view, setView] = useState<View>('Chat')
   const [dock, setDock] = useState<Dock>('closed')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [railWidth, setRailWidth] = useState(defaultRailWidth)
@@ -55,6 +75,10 @@ export default function App() {
   const [dockHeight, setDockHeight] = useState<number | null>(null)
   const [interrupts, setInterrupts] = useState<InterruptRequest[]>([])
   const [replyPending, setReplyPending] = useState(false)
+  // Chat is the transcript with no panel, so one state answers both questions the
+  // shell used to keep in two: which pane is showing, and whether it is open.
+  const panelOpen = view !== 'Chat'
+  const pane: Pane = view === 'Chat' ? 'Files' : view
   const active = chats.find((chat) => chat.id === activeId) ?? chats[0]
   const agent = active.agent ?? recommendedAgent(preferences, workspace?.root)
   const backendName = AGENTS[agent]?.name ?? agent
@@ -94,11 +118,114 @@ export default function App() {
     return () => color.removeEventListener('change', paint)
   }, [preferences])
 
+  /// One activity entry. The log is a convenience, not a journal: fifty rows and
+  /// nothing older, so a long-running schedule cannot grow storage forever.
+  const record = useCallback((scheduleId: string, status: ScheduleRun['status'], detail: string) => {
+    setPreferences((current) => ({
+      ...current,
+      scheduleActivity: [{ id: crypto.randomUUID(), scheduleId, at: Date.now(), status,
+        detail: detail.trim().slice(0, 160) || 'Scheduled run' }, ...current.scheduleActivity].slice(0, 50),
+    }))
+  }, [])
+
+  // The three native settings are written on load as well as on change: the
+  // recovery policy has to be on disk before a crash can read it, and a shortcut
+  // has to be registered again after a restart.
+  useEffect(() => {
+    void setCrashPolicy(preferences.restartAfterCrash, preferences.crashReports).catch(() => {})
+  }, [preferences.restartAfterCrash, preferences.crashReports])
+
+  useEffect(() => {
+    void setQuickLauncher(preferences.quickLauncher, preferences.quickLauncherShortcut).catch((err) => {
+      // Another application may already own the chord: say so and stop claiming the
+      // launcher is on, rather than leaving a toggle that does nothing.
+      setNotice('The global shortcut could not be registered: ' + errorText(err))
+      setPreferences((current) => ({ ...current, quickLauncher: false }))
+    })
+  }, [preferences.quickLauncher, preferences.quickLauncherShortcut])
+
+  useEffect(() => {
+    void setWidget(preferences.widgetEnabled, preferences.widgetPinned).catch(() => {})
+  }, [preferences.widgetEnabled, preferences.widgetPinned])
+
+  /// Page errors are reported once per ten seconds: a render loop would
+  /// otherwise fill the crash folder with the same stack.
+  useEffect(() => {
+    if (!preferences.crashReports) return
+    let last = 0
+    const report = (message: string, location: string) => {
+      const now = Date.now()
+      if (now - last < 10_000) return
+      last = now
+      void reportCrash(message.slice(0, 4000) || 'Unknown error', location.slice(0, 400)).catch(() => {})
+    }
+    const onError = (event: ErrorEvent) => report(event.message || 'Uncaught error',
+      event.filename + ':' + event.lineno + ':' + event.colno)
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason: unknown = event.reason
+      const text = typeof reason === 'string' ? reason
+        : (reason as { message?: string } | null)?.message ?? 'Unhandled rejection'
+      report(text, typeof reason === 'object' && reason
+        ? ((reason as { stack?: string }).stack ?? '').slice(0, 400) : '')
+    }
+    window.addEventListener('error', onError)
+    window.addEventListener('unhandledrejection', onRejection)
+    return () => {
+      window.removeEventListener('error', onError)
+      window.removeEventListener('unhandledrejection', onRejection)
+    }
+  }, [preferences.crashReports])
+
+  /// The two auxiliary windows talk back through events only — the capability
+  /// gives them no commands — so these listeners are the whole receiving side.
+  useEffect(() => {
+    const quick = listen<{ prompt?: string }>('nova:quick-task', (event) => {
+      const prompt = String(event.payload?.prompt ?? '').slice(0, 12000)
+      if (!prompt.trim()) return
+      void getCurrentWindow().setFocus().catch(() => {})
+      submitRef.current(prompt)
+    })
+    const focusChat = listen<{ chatId?: string }>('nova:focus-chat', (event) => {
+      const chatId = String(event.payload?.chatId ?? '')
+      if (chats.some((chat) => chat.id === chatId)) {
+        withViewTransition(() => { setActiveId(chatId); setView('Chat') })
+      }
+      void getCurrentWindow().setFocus().catch(() => {})
+    })
+    return () => {
+      void quick.then((off) => off()).catch(() => {})
+      void focusChat.then((off) => off()).catch(() => {})
+    }
+  }, [chats])
+
+  /// What the widget shows. Sent on every change rather than polled inside the
+  /// widget, so the companion window holds no state of its own.
+  useEffect(() => {
+    if (!preferences.widgetEnabled) return
+    const chat = chats.find((entry) => entry.id === running?.chatId)
+    const runs = running
+      ? [{ chatId: running.chatId,
+        title: chat?.title ?? 'Task',
+        work: running.role ? CREW[running.role].name : 'Working' }]
+      : []
+    void emitTo('widget', 'nova:widget-state', { runs, paused: preferences.pauseSchedules }).catch(() => {})
+  }, [preferences.widgetEnabled, preferences.pauseSchedules, running, chats])
+
+
+
   useEffect(() => {
     if (!restoredPath) return
     void setWorkspace(restoredPath).then(setFolder)
       .catch((err) => setNotice(errorText(err))).finally(() => setFolderBusy(false))
   }, [restoredPath])
+
+  /// A trusted folder gets a warm Nova session while the user is still typing,
+  /// so the first turn streams instead of booting a CLI process.
+  const workspaceRoot = workspace?.root
+  const workspaceTrusted = Boolean(workspaceRoot && preferences.trustedWorkspaces.includes(workspaceRoot))
+  useEffect(() => {
+    if (workspaceRoot && workspaceTrusted) void prewarmNova().catch(() => {})
+  }, [workspaceRoot, workspaceTrusted])
 
   useEffect(() => {
     const timer = setTimeout(() => save(chats), 400)
@@ -106,6 +233,18 @@ export default function App() {
     window.addEventListener('pagehide', flush)
     return () => { clearTimeout(timer); window.removeEventListener('pagehide', flush) }
   }, [chats])
+
+  /// One entry point for every way a view changes — the switcher, the number row
+  /// and a card that opens its task — so the crossfade and the width rule cannot
+  /// drift apart between them.
+  const selectView = useCallback((next: View) => withViewTransition(() => {
+    setView(next)
+    // Three columns of cards want the width: a narrower panel is widened rather
+    // than left with clipped columns, and a wider one is left where it was.
+    if (next === 'Board') {
+      setPanelWidth((width) => Math.max(width, Math.min(panelMax(sidebarOpen ? railWidth : railCollapsed), 560)))
+    }
+  }), [railWidth, sidebarOpen])
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -116,13 +255,27 @@ export default function App() {
         event.preventDefault()
         setSettings(false)
         setDock((current) => current === 'closed' ? 'open' : 'closed')
+      } else if (event.ctrlKey && !event.altKey && /^[1-5]$/.test(event.key)) {
+        event.preventDefault()
+        setSettings(false)
+        selectView(VIEWS[Number(event.key) - 1])
+      } else if ((event.ctrlKey || event.metaKey) && !event.altKey
+          && (event.key === '=' || event.key === '+' || event.key === '-' || event.key === '0')) {
+        // Same clamp the General pane uses, so the keyboard and the buttons can
+        // never disagree about the range.
+        event.preventDefault()
+        const delta = event.key === '0' ? 0 : event.key === '-' ? -10 : 10
+        setPreferences((current) => ({
+          ...current,
+          interfaceSize: delta === 0 ? 100 : clampInterfaceSize(current.interfaceSize + delta),
+        }))
       } else if (event.key === 'Escape') {
         setSettings(false)
       }
     }
     window.addEventListener('keydown', shortcut)
     return () => window.removeEventListener('keydown', shortcut)
-  }, [])
+  }, [selectView])
 
   const openFolder = async (path?: string) => {
     if (live.current || folderBusy) return
@@ -134,6 +287,10 @@ export default function App() {
       setOfferedWorkspace(picked.root)
       setNotice(null)
       localStorage.setItem(WORKSPACE_KEY, picked.root)
+      // Projects is a recency list, newest first, capped: removing an entry
+      // forgets the folder and nothing else.
+      update({ projects: [{ root: picked.root, name: picked.name, openedAt: Date.now() },
+        ...preferences.projects.filter((project) => project.root !== picked.root)].slice(0, 12) })
       if (active.workspace && active.workspace !== picked.root && !path) {
         const chat = createChat()
         setChats((previous) => [chat, ...previous].slice(0, MAX_CHATS))
@@ -186,6 +343,7 @@ export default function App() {
     const finish = () => {
       if (live.current?.turnId !== turnId) return
       live.current = null
+      lastFinish.current = Date.now()
       setRunning(null)
       setInterrupts([])
       replying.current = false
@@ -217,6 +375,8 @@ export default function App() {
         spoken += event.text
       } else if (event.type === 'messageFinal' && !event.plain) {
         spoken += `${spoken ? '\n' : ''}${event.text}`
+      } else if (event.type === 'wakeupRequested' || event.type === 'threadMessage') {
+        bridgeRef.current(event)
       }
       if (event.type !== 'notice') setChats((previous) => routeEvent(previous, chatId, event))
     }).catch((err) => {
@@ -226,26 +386,85 @@ export default function App() {
     return true
   }, [folderBusy, preferences, workspace])
 
+  /// The schedule engine owns the decisions; this effect only starts turns and
+  /// records what happened. The entry is advanced *before* the turn starts, so a
+  /// slow backend can never let the same run fire twice.
   useEffect(() => {
-    if (!workspace || running) return
+    if (!workspace) return
+    const root = workspace.root
     const tick = () => {
-      if (live.current) return
-      const schedule = preferences.schedules.find((item) => item.workspace === workspace.root && item.at <= Date.now())
+      if (live.current || preferences.pauseSchedules) return
+      const now = Date.now()
+      const due = dueSchedules(preferences.schedules, root, now)
+      const afterThread = dueAfterThread(preferences.schedules, root, lastFinish.current)
+      const schedule = due[0] ?? afterThread[0]
       if (!schedule) return
-      const chat = { ...createChat(), agent: schedule.agent, workspace: workspace.root }
-      const next = new Date(schedule.at)
-      const now = new Date()
-      next.setFullYear(now.getFullYear(), now.getMonth(), now.getDate())
-      if (next <= now) next.setDate(next.getDate() + 1)
-      if (send(schedule.prompt, chat, 'scheduled')) {
-        update({ schedules: schedule.daily
-          ? preferences.schedules.map((item) => item.id === schedule.id ? { ...item, at: next.getTime() } : item)
-          : preferences.schedules.filter((item) => item.id !== schedule.id) })
+      const prompt = promptFor(schedule)
+      if (!prompt.trim()) {
+        update({ schedules: preferences.schedules.filter((entry) => entry.id !== schedule.id) })
+        record(schedule.id, 'failed', 'Empty prompt, so the schedule was removed.')
+        return
       }
+      if (schedule.origin !== 'user' && !withinLimit(0, bridgeQueue.length, preferences.agentLimit)) {
+        record(schedule.id, 'skipped', 'Agent limit reached: ' + prompt)
+        return
+      }
+      const next = advance(schedule, now)
+      update({ schedules: next
+        ? preferences.schedules.map((entry) => entry.id === schedule.id ? { ...entry, ...next } : entry)
+        : preferences.schedules.filter((entry) => entry.id !== schedule.id) })
+      const chat = { ...createChat(), agent: schedule.agent, workspace: root }
+      if (send(prompt, chat, 'scheduled')) record(schedule.id, 'started', prompt)
+      else record(schedule.id, 'failed', 'The task could not start: ' + prompt)
     }
     const timer = setInterval(tick, 5000)
     return () => clearInterval(timer)
-  }, [workspace, running, preferences.schedules, send, update])
+  }, [workspace, preferences, send, update, record, bridgeQueue.length])
+
+  /// Cross-thread starts approved by the user run here, one at a time, always
+  /// behind the task the user is already in.
+  useEffect(() => {
+    if (running || folderBusy || !workspace) return
+    const next = bridgeQueue.find((request) => !request.needsApproval)
+    if (!next) return
+    const chat = { ...createChat(), agent: next.agent ?? recommendedAgent(preferences, workspace.root),
+      workspace: workspace.root }
+    // Starting the run is the external action; the queue update follows it, so a
+    // start that fails is recorded instead of looking like a lost request.
+    void Promise.resolve().then(() => {
+      const started = send(next.prompt, chat, 'scheduled')
+      record('bridge', started ? 'started' : 'failed',
+        (started ? '' : 'Could not start: ') + next.prompt)
+      setBridgeQueue((queue) => queue.filter(({ id }) => id !== next.id))
+    })
+  }, [running, folderBusy, workspace, bridgeQueue, send, record, preferences])
+
+  /// The receiving end of the request file: the only non-user way a turn starts.
+  /// Assigned from an effect so the ref never changes during render; without a
+  /// dependency array it always points at the newest render's closures.
+  useEffect(() => {
+    bridgeRef.current = (event) => {
+      const prompt = (event.type === 'wakeupRequested' ? event.prompt : event.text).trim().slice(0, 12000)
+      if (!prompt) return
+      if (!preferences.agentsMaySchedule) {
+        setNotice('An agent asked to start another task, but agent scheduling is off.')
+        record('bridge', 'denied', prompt)
+        return
+      }
+      if (!withinLimit(running ? 1 : 0, bridgeQueue.length, preferences.agentLimit)) {
+        setNotice('The agent limit for this task is reached, so the request was dropped.')
+        record('bridge', 'skipped', prompt)
+        return
+      }
+      const agent = event.type === 'wakeupRequested' && event.agent && event.agent in AGENTS
+        ? event.agent as AgentId : undefined
+      const request: BridgeRequest = { id: crypto.randomUUID(), prompt, agent,
+        needsApproval: preferences.askBeforeCrossThread }
+      setBridgeQueue((queue) => [...queue, request].slice(0, 20))
+      record('bridge', request.needsApproval ? 'queued' : 'approved',
+        (request.needsApproval ? 'Approval needed: ' : 'Queued: ') + prompt)
+    }
+  })
 
   const answer = async (reply: InterruptReply) => {
     const request = interrupts[0]
@@ -271,7 +490,7 @@ export default function App() {
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.rail-settings')?.focus())
   }
 
-  const openSettings = (section: Section = 'Appearance', tab = 'Harnesses') => {
+  const openSettings = (section: Section = 'General', tab = 'Harnesses') => {
     setSettingsPage({ section, tab })
     setSettings(true)
   }
@@ -343,9 +562,11 @@ export default function App() {
               resolve('failed')
             })
           })
-          if (run.cancelled || reason === 'cancelled') {
-            run.cancelled = true
-            break
+          // A user stop ends the run; the backend reporting a stage as cancelled
+          // on its own must not — it only loses that stage's work.
+          if (run.cancelled) break
+          if (reason === 'cancelled') {
+            setNotice(CREW[role].name + ' was interrupted before finishing — the team continues without that stage.')
           }
           const retry = role === 'ralph' && reason === 'completed' && reply.trimEnd().endsWith(ralphRetry)
           notes.push({ from: role, text: reason === 'completed'
@@ -414,6 +635,11 @@ export default function App() {
     return send(command ? `/${command.canonical}${args ? ` ${args}` : ''}` : text, active)
   }
 
+  // The listeners registered at mount call through these refs, so a launcher
+  // keystroke always uses the current render's state. Assigned from an effect
+  // because a ref must not change during render.
+  useEffect(() => { submitRef.current = submit })
+  const bridge = bridgeQueue.find((request) => request.needsApproval)
   const busy = running?.chatId === active.id
   const interrupt = busy ? interrupts[0] : undefined
   const work = interrupt ? 'Waiting for approval'
@@ -436,6 +662,17 @@ export default function App() {
       )].slice(0, 12),
     }))
   }
+
+  /// A card opens its task, which means the transcript: the board is a way into a
+  /// task, not a place to read one.
+  const openChat = (id: string) => withViewTransition(() => {
+    setActiveId(id)
+    setView('Chat')
+  })
+
+  const moveChat = (id: string, column: Column) => setChats((previous) => previous.map(
+    (chat) => chat.id === id ? { ...chat, column } : chat))
+
   return (
     <>
       <div className="shell" hidden={settings}>
@@ -467,12 +704,37 @@ export default function App() {
           onNew={() => addTasks([createChat()])} onOpenFolder={() => void openFolder()}
           onSettings={() => openSettings()} folderBusy={folderBusy || Boolean(running)} />
 
+        <div className="viewbar">
+          <ViewSwitcher view={view} dock={dock} onSelect={selectView}
+            onToggleDock={() => setDock((current) => current === 'closed' ? 'open' : 'closed')} />
+        </div>
+
         <main className="main">
           {preferences.wallpaper && <Sky still={preferences.still} />}
           <ChatLog key={active.id} items={active.items} busy={busy}
-            markdown={preferences.markdown} backend={backendName} workspaceReady={!!workspace} />
+            markdown={preferences.markdown} backend={backendName} workspaceReady={!!workspace}
+            compact={preferences.compactConversation} expandTools={preferences.expandToolActivity} />
           {interrupt && <Interrupt key={interrupt.interruptId} request={interrupt} pending={replyPending}
             onReply={(reply) => void answer(reply)} />}
+          {bridge && <div className="approval bridge-approval">
+            <div className="approval-detail" role="status">
+              <strong>Start another task?</strong>
+              <p><code>{bridge.prompt.slice(0, 240)}</code></p>
+              <span>An agent asked Nova to start this task. Nothing runs until you approve; a denial is
+                written to the Schedules activity log.</span>
+            </div>
+            <div className="approval-actions">
+              <button type="button" className="approve" onClick={() => {
+                setBridgeQueue((queue) => queue.map((entry) => entry.id === bridge.id
+                  ? { ...entry, needsApproval: false } : entry))
+                record('bridge', 'approved', bridge.prompt)
+              }}>Approve</button>
+              <button type="button" className="deny" onClick={() => {
+                setBridgeQueue((queue) => queue.filter(({ id }) => id !== bridge.id))
+                record('bridge', 'denied', bridge.prompt)
+              }}>Deny</button>
+            </div>
+          </div>}
           {notice && <div className="notice" role="status">
             <span>{notice}</span><button type="button" className="ghost" onClick={() => setNotice(null)} aria-label="Dismiss notice">×</button>
           </div>}
@@ -519,18 +781,17 @@ export default function App() {
               (chat) => chat.id === active.id ? { ...chat, crew } : chat,
             ))}
             onConfigureCrew={() => openSettings('Agents', 'Agent teams')}
+            voice={preferences.voice} onOpenVoice={() => openSettings('Voice')}
             usage={active.usage} workspace={workspace?.name ?? null}
-            onSend={submit} onStop={stopTurn} />
+            keepDrafts={preferences.keepDrafts} onSend={submit} onStop={stopTurn} />
           <TerminalDock key={workspace?.root} dock={dock} height={dockHeight} onDock={setDock} onHeight={setDockHeight}
             workspaceReady={!!workspace} obscured={settings} />
         </main>
 
-        <PanelRail tab={pane} panelOpen={panelOpen} dock={dock}
-          onSelect={(next) => { setPane(next); setPanelOpen(true) }}
-          onTogglePanel={() => setPanelOpen((open) => !open)}
-          onToggleDock={() => setDock((current) => current === 'closed' ? 'open' : 'closed')} />
-        <RightPanel workspace={workspace} tab={pane} open={panelOpen} obscured={settings} onSelect={setPane}
-          width={panelWidth} onWidth={setPanelWidth} sidebarWidth={sidebarOpen ? railWidth : railCollapsed} />
+        <RightPanel workspace={workspace} tab={pane} open={panelOpen} obscured={settings}
+          width={panelWidth} onWidth={setPanelWidth} sidebarWidth={sidebarOpen ? railWidth : railCollapsed}
+          chats={chats} activeId={active.id} preferences={preferences} onOpenChat={openChat}
+          onMove={moveChat} onUpdatePreferences={update} onOpenFolder={(path) => void openFolder(path)} />
       </div>
       {settings && <Settings key={workspace?.root} preferences={preferences} update={update}
         initialSection={settingsPage.section} initialTab={settingsPage.tab}

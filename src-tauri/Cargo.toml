@@ -15,9 +15,19 @@ custom-protocol = ["tauri/custom-protocol"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# ort-sys 2.0.0-rc.12 (pinned by transcribe-rs) panics while copying ONNX
+# Runtime's dylibs under current cargo's nested build layout; the vendored copy
+# fixes that one build script. See vendor/ort-sys/build/dynamic_link.rs.
+[patch.crates-io]
+ort-sys = { path = "vendor/ort-sys" }
+
 [dependencies]
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
+# The quick launcher's global chord. 2.4 requires tauri ^2.12, which the lock
+# already resolves; no npm package is needed because the page only calls the
+# commands in commands/launcher.rs.
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
@@ -25,3 +35,16 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "io-util", "macros", "fs"] }
 tokio-util = "0.7"
+# On-device speech-to-text. The "onnx" feature pulls ort, ndarray and rustfft;
+# the models themselves are downloaded at runtime, never bundled.
+transcribe-rs = { version = "0.3", features = ["onnx"] }
+# Feature unification with transcribe-rs turns on ort's prebuilt runtime
+# download and its copy-dylibs step, so onnxruntime.dll lands beside the exe.
+# Pinned exactly: transcribe-rs 0.3.12 calls ort's rc.12 session API, and
+# rc.13+ changed it (Session::builder now needs an Environment).
+ort = { version = "=2.0.0-rc.12", features = ["download-binaries"] }
+# Transfers go through the system curl (same helper the theme installer uses);
+# these three handle the tar.gz model archives and the base64 sample transport.
+flate2 = "1"
+tar = "0.4"
+base64 = "0.22"

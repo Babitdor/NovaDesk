@@ -132,6 +132,7 @@ mod tests {
             trust_workspace: false,
             prompt: prompt.to_string(),
             workspace: None,
+            requests_file: None,
         }
     }
 

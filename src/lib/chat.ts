@@ -84,6 +84,30 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
         ...items,
         { id: nextId(), kind: 'tool', callId: nextId(), label: `edit ${event.path}`, input: event.diff },
       ]
+    case 'subagentTask': {
+      // One row per subagent dispatch, upserted by task id; the label on a row
+      // keeps its own stage prefix so crew turns never collide.
+      const callId = (speaker?.stage ?? '') + 'subagent:' + event.taskId
+      const label = event.label
+        ?? (event.subagentType ? 'Subagent · ' + event.subagentType : 'Subagent task')
+      const index = items.findIndex((item) => item.kind === 'tool' && item.callId === callId)
+      if (index < 0) {
+        return [...items, { id: nextId(), kind: 'tool', callId, label, input: '' }]
+      }
+      const finished = event.status !== 'running'
+      const suffix = finished && event.durationMs ? ` · ${Math.round(event.durationMs / 1000)}s` : ''
+      return items.map((item, at) => at === index && item.kind === 'tool'
+        ? { ...item, label: label + suffix, ok: finished ? !/error|fail|cancel/i.test(event.status) : undefined }
+        : item)
+    }
+    case 'subagentPreview': {
+      const callId = (speaker?.stage ?? '') + 'subagent:' + event.taskId
+      const index = items.findLastIndex((item) => item.kind === 'tool' && item.callId === callId)
+      if (index < 0) return items
+      return items.map((item, at) => at === index && item.kind === 'tool'
+        ? { ...item, stream: (item.stream ?? '') + event.text }
+        : item)
+    }
     case 'notice':
       return [...items, { id: nextId(), kind: 'notice', level: event.level, text: event.message }]
     case 'approvalRequired':
@@ -97,6 +121,11 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
     case 'turnStarted':
     case 'session':
     case 'usage':
+      return items
+    // Cross-task starts are decisions for App, not transcript entries: the
+    // request is answered by a card and the outcome lands in the activity log.
+    case 'wakeupRequested':
+    case 'threadMessage':
       return items
   }
 }

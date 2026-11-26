@@ -2,6 +2,7 @@ pub mod cli;
 pub mod local;
 pub mod models;
 pub mod nova;
+pub mod requests;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -34,6 +35,10 @@ pub struct TurnRequest {
     pub session: Option<String>,
     pub trust_workspace: bool,
     pub personality: Option<Personality>,
+    /// The request file this turn may write, passed to the harness as
+    /// `NOVA_DESKTOP_REQUESTS`. Keyed by task (not by turn) so a reused session
+    /// keeps a valid path for as long as it lives.
+    pub requests_file: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -88,6 +93,13 @@ pub trait AgentBackend: Send + Sync {
             ))
         })
     }
+
+    /// Spawns a warm session for the workspace so the first turn skips the
+    /// boot. Only called for trusted workspaces; backends without a persistent
+    /// process keep this no-op.
+    fn prewarm<'a>(&'a self, _root: &'a std::path::Path) -> BoxFut<'a, Result<(), AppError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Runs a turn. The command sends its closing event after releasing the active slot.
@@ -98,7 +110,14 @@ pub async fn drive_turn(
     cancel: CancellationToken,
 ) -> FinishReason {
     let _ = sink.send(AgentEvent::TurnStarted);
-    match agent.start(req, sink.clone(), cancel).await {
+    // A leftover request from an earlier turn must not fire now, so the file is
+    // cleared before the turn and read only after it: a harness cannot start work
+    // while it is still mid-turn, and a restart cannot replay an old request.
+    let requests_file = req.requests_file.clone();
+    if let Some(path) = &requests_file {
+        requests::clear(path);
+    }
+    let reason = match agent.start(req, sink.clone(), cancel).await {
         Ok(reason) => reason,
         Err(err) => {
             let _ = sink.send(AgentEvent::TurnError {
@@ -107,7 +126,28 @@ pub async fn drive_turn(
             });
             FinishReason::Failed
         }
+    };
+    if let Some(path) = &requests_file {
+        for request in requests::read(path) {
+            let event = match request {
+                requests::Request::Wakeup {
+                    prompt,
+                    agent,
+                    after_seconds,
+                } => AgentEvent::WakeupRequested {
+                    prompt,
+                    agent,
+                    after_seconds,
+                },
+                requests::Request::ThreadMessage { thread, text } => {
+                    AgentEvent::ThreadMessage { thread, text }
+                }
+            };
+            let _ = sink.send(event);
+        }
+        requests::clear(path);
     }
+    reason
 }
 
 /// Name → backend, so adding a backend never touches the command signatures.

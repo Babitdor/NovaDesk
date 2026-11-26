@@ -3,23 +3,12 @@ import { useState } from 'react'
 import type { WorkspaceInfo } from '../lib/events'
 import { railMax, railMin } from '../lib/layout'
 import { Splitter } from './Splitter'
-import type { Chat } from '../lib/sessions'
+import { stamp, type Chat } from '../lib/sessions'
 
 // Windows canonicalizes to the verbatim form (`\\?\B:\...`); the prefix is
 // plumbing, so the chrome shows the path a person would write. Display only —
 // every path handed back to the backend stays verbatim.
 const displayPath = (root: string) => root.replace(/^\\\\\?\\UNC\\/, '\\\\').replace(/^\\\\\?\\/, '')
-
-/// A list of tasks is scanned, not read: the stamp is the coarse distance, and
-/// a live turn is the only state worth a word.
-function stamp(chat: Chat): string {
-  if (chat.state === 'running') return 'live'
-  const minutes = Math.round((Date.now() - chat.createdAt) / 60000)
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.round(minutes / 60)
-  return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
-}
 
 type Props = {
   chats: Chat[]

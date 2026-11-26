@@ -310,6 +310,11 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
     for (index, &(id, name)) in AGENTS.iter().enumerate() {
         let cwd = safe_cwd.to_path_buf();
         jobs.spawn(async move {
+            let version_number = |version: &str| {
+                version
+                    .split_whitespace()
+                    .find_map(|part| semver::Version::parse(part.trim_start_matches('v')).ok())
+            };
             let path = resolve(id);
             let installed_version = async {
                 if let Some(path) = &path {
@@ -322,10 +327,18 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
                     .and_then(Result::ok)
                     .filter(|output| output.status.success())
                     .and_then(|output| {
-                        String::from_utf8_lossy(&output.stdout)
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let lines: Vec<&str> = stdout
                             .lines()
-                            .rfind(|line| !line.trim().is_empty())
-                            .map(|line| clip(line.trim(), 150))
+                            .filter(|line| !line.trim().is_empty())
+                            .collect();
+                        // Some harnesses print a banner around the version; the
+                        // line that carries one beats merely being last.
+                        let numbered = lines
+                            .iter()
+                            .rev()
+                            .find(|line| version_number(line).is_some());
+                        numbered.or(lines.last()).map(|line| clip(line.trim(), 150))
                     })
                 } else {
                     None
@@ -335,11 +348,6 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
                 tokio::join!(installed_version, latest_version(id))
             } else {
                 (None, None)
-            };
-            let version_number = |version: &str| {
-                version
-                    .split_whitespace()
-                    .find_map(|part| semver::Version::parse(part.trim_start_matches('v')).ok())
             };
             let update_available = version
                 .as_deref()
@@ -444,6 +452,11 @@ impl AgentBackend for CliAgent {
             let root = req.workspace.as_ref().ok_or(AppError::NoWorkspace)?.root();
             let (args, stdin_prompt) = arguments(self.0, &req);
             let mut process = command(self.0)?;
+            // Same request-file contract as Nova: a harness may write requests and
+            // Nova reads them when the turn ends. Ignoring the variable is fine.
+            if let Some(path) = &req.requests_file {
+                process.env(super::requests::ENV, path);
+            }
             let mut prompt_mod = None;
             if let Some(profile) = &req.personality {
                 match self.0 {
@@ -974,6 +987,7 @@ mod tests {
             session: None,
             trust_workspace: false,
             personality: None,
+            requests_file: None,
         };
         let (pi, _) = arguments("pi", &request);
         assert!(pi
@@ -1000,6 +1014,7 @@ mod tests {
                 role: "serena".into(),
                 system_prompt: "Stay in scope.".into(),
             }),
+            requests_file: None,
         };
         let profile = request.personality.as_ref().unwrap();
         assert!(AGENTS

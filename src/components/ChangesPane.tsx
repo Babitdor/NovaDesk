@@ -1,70 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { parseDiff, type DiffLine, type FileDiff } from '../lib/diff'
+import type { DiffLine } from '../lib/diff'
 import type { WorkspaceInfo } from '../lib/events'
-import { runCommand } from '../lib/ipc'
-
-type Captured = { ok: boolean; out: string; err: string }
-
-/// `run_command` streams stdout down a channel and reports only an exit code on
-/// completion, so a caller that needs the text has to collect it here.
-async function capture(program: string, args: string[]): Promise<Captured> {
-  const commandId = crypto.randomUUID()
-  let out = ''
-  let err = ''
-
-  const settled = new Promise<boolean>((resolve) => {
-    void runCommand(commandId, program, args, (event) => {
-      if (event.type === 'processOutput') {
-        if (event.stream === 'stdout') out += event.chunk
-        else err += event.chunk
-      } else if (event.type === 'toolResult' && event.callId === commandId) {
-        resolve(event.ok)
-      }
-    }).catch(() => resolve(false))
-  })
-
-  return { ok: await settled, out, err }
-}
-
-type Snapshot = { files: FileDiff[]; branch: string } | { error: string }
-
-/// Reads the whole working tree through the same process runner the terminal
-/// uses, so the pane needs no new backend command and can never see outside the
-/// workspace. It returns the state instead of setting it, so the mount and the
-/// Refresh button share one implementation.
-async function readTree(): Promise<Snapshot> {
-  // `--is-inside-work-tree` answers with or without a first commit, which
-  // `rev-parse HEAD` does not.
-  const inside = await capture('git', ['rev-parse', '--is-inside-work-tree'])
-  if (!inside.ok) return { error: 'Not a git repository.' }
-
-  const branch = await capture('git', ['rev-parse', '--abbrev-ref', 'HEAD'])
-  const diff = await capture('git', ['diff', 'HEAD'])
-  const status = await capture('git', ['status', '--porcelain=v1'])
-
-  // An untracked file has no diff until it is staged, so it is listed from the
-  // status rather than invented.
-  const untracked = status.ok
-    ? status.out
-        .split('\n')
-        .filter((line) => line.startsWith('?? '))
-        .map((line) => line.slice(3).trim())
-    : []
-
-  return {
-    files: [
-      ...(diff.ok ? parseDiff(diff.out) : []),
-      ...untracked.map((path): FileDiff => ({ path, added: 0, removed: 0, lines: [] })),
-    ],
-    branch: branch.ok ? branch.out.trim() : '',
-  }
-}
+import { readTree, type TreeSnapshot } from '../lib/git'
 
 /// The working tree as a grouped diff: one row per file with its own counts, and
 /// the hunks underneath — which is how a change is actually read.
-export function ChangesPane({ workspace }: { workspace: WorkspaceInfo | null }) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+///
+/// `refreshKey` is for a host that already owns a Refresh: the GitHub pane bumps
+/// it so one click updates its header and this diff together, and the diff stays
+/// on screen while the read is in flight.
+export function ChangesPane({ workspace, refreshKey = 0 }: { workspace: WorkspaceInfo | null; refreshKey?: number }) {
+  const [snapshot, setSnapshot] = useState<TreeSnapshot | null>(null)
   const [openPath, setOpenPath] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -85,7 +32,8 @@ export function ChangesPane({ workspace }: { workspace: WorkspaceInfo | null }) 
   }, [workspace])
 
   // The pane is a view of a folder that changes while it is open, so the read
-  // belongs to the effect; the state it lands in is the repository's.
+  // belongs to the effect; the state it lands in is the repository's. The host's
+  // refresh is a second trigger for the same read.
   useEffect(() => {
     if (!workspace) return
     let alive = true
@@ -97,7 +45,7 @@ export function ChangesPane({ workspace }: { workspace: WorkspaceInfo | null }) 
     return () => {
       alive = false
     }
-  }, [workspace])
+  }, [refreshKey, workspace])
 
   return (
     <section className="changes">

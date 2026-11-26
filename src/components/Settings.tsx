@@ -1,15 +1,19 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { getVersion } from '@tauri-apps/api/app'
+import { useEffect, useState } from 'react'
 
 import { addMcpServer, errorText, agentStatus, importTheme, installTheme, markdownify, novaMcpList, openProviderSetup } from '../lib/ipc'
 import {
-  ACCENTS, AGENTS, type AgentId, type AgentStatus, type ColorTheme, type Preferences,
+  ACCENTS, AGENTS, PRESETS, findTheme, resetAppearance, type AgentId, type AgentStatus, type ColorTheme, type Preferences,
 } from '../lib/settings'
+import { AboutPane } from './AboutPane'
 import type { WorkspaceInfo } from '../lib/events'
 import { AgentMark } from './AgentMark'
 import { Markdown } from './Markdown'
 import { CREW, crewRoles, systemPrompt } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
+import { VoiceSettings } from './VoiceSettings'
+import { GeneralSettings } from './GeneralSettings'
+import { SchedulesSettings } from './SchedulesSettings'
+import { Group, Toggle } from './SettingsRows'
 
 const SECTIONS = [
   ['Recommended', '✧'], ['General', '◈'], ['Appearance', '◐'],
@@ -29,27 +33,6 @@ type Props = {
 
 const agentIds = Object.keys(AGENTS) as AgentId[]
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="settings-group">
-      {title && <h2>{title}</h2>}
-      {children}
-    </section>
-  )
-}
-
-function Toggle({ title, detail, checked, onChange }: {
-  title: string; detail?: string; checked: boolean; onChange: (value: boolean) => void
-}) {
-  return (
-    <label className="settings-row">
-      <span><strong>{title}</strong>{detail && <small>{detail}</small>}</span>
-      <input {...{ switch: '' }} className="settings-switch" type="checkbox" role="switch"
-        checked={checked} onChange={(event) => onChange(event.target.checked)} />
-    </label>
-  )
-}
-
 export function Settings({ preferences: p, update, workspace, onClose, initialSection, initialTab }: Props) {
   const [section, setSection] = useState<Section>(initialSection)
   const [tab, setTab] = useState(initialTab)
@@ -59,7 +42,6 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
   const [themeId, setThemeId] = useState('')
   const [themeBusy, setThemeBusy] = useState(false)
   const [status, setStatus] = useState('')
-  const [version, setVersion] = useState('')
   const [servers, setServers] = useState<string | null>(null)
   const [mcpBusy, setMcpBusy] = useState(false)
   const [checkInput, setCheckInput] = useState(() => JSON.stringify(p.checks[workspace?.root ?? ''] ?? []))
@@ -67,10 +49,22 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
   const [converted, setConverted] = useState('')
   const [converting, setConverting] = useState(false)
   const root = workspace?.root ?? ''
+  // The custom accent is stored per scheme, and App paints the current scheme
+  // onto the document, so read it back rather than threading the OS media query in.
+  const lightScheme = document.documentElement.dataset.appearance === 'light'
+  const customColor = lightScheme ? p.customAccentLight : p.customAccent
+  const applyCustom = (color: string) => {
+    const patch: Partial<Preferences> = {
+      accent: 'Custom',
+      recentAccents: [color, ...p.recentAccents.filter((entry) => entry !== color)].slice(0, 6),
+    }
+    if (lightScheme) patch.customAccentLight = color
+    else patch.customAccent = color
+    update(patch)
+  }
 
   useEffect(() => {
     void agentStatus().then(setStatuses).catch((err) => setStatus(errorText(err)))
-    void getVersion().then(setVersion).catch(() => {})
   }, [])
 
   const changeSection = (next: Section) => { setSection(next); setStatus('') }
@@ -165,6 +159,31 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
               <Toggle title="Still sky" detail="Pause wallpaper motion."
                 checked={p.still} onChange={(still) => update({ still })} />
             </Group>
+            <Group title="Nova presets">
+              <div className="settings-presets" aria-label="Color presets">
+                {PRESETS.map((preset) => (
+                  <button key={preset.id} type="button" aria-pressed={p.themeId === preset.id}
+                    onClick={() => update({ themeId: preset.id })}>
+                    <span className="settings-preset-chips" aria-hidden="true">
+                      <i style={{ background: preset.colors['editor.background'] }} />
+                      <i style={{ background: preset.colors.focusBorder }} />
+                      <i style={{ background: preset.colors['editor.foreground'] }} />
+                    </span>
+                    <span>{preset.title}<small>{preset.mode}</small></span>
+                  </button>
+                ))}
+              </div>
+              <div className="settings-action">
+                <button type="button" aria-pressed={p.themeId === ''} onClick={() => update({ themeId: '' })}>
+                  Shipped look
+                </button>
+                <button type="button" onClick={() => update(resetAppearance(p))}>Reset appearance</button>
+              </div>
+              <p className="settings-help">
+                A preset repaints the sidebar, chat ground, panels, dock and scrollbars together.
+                Reset restores the shipped look and keeps the themes you installed.
+              </p>
+            </Group>
             <Group title="Accent color">
               <div className="settings-swatches" aria-label="Accent colors">
                 {Object.entries(ACCENTS).map(([name, [color]]) => (
@@ -174,15 +193,35 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                   </button>
                 ))}
                 <label className="settings-custom">
-                  <input type="color" aria-label="Custom accent" value={p.customAccent}
-                    onChange={(event) => update({ accent: 'Custom', customAccent: event.target.value })} />
+                  <input type="color" aria-label="Custom accent" value={customColor}
+                    onChange={(event) => applyCustom(event.target.value)} />
                   Custom
                 </label>
               </div>
+              {p.accentFromTheme && findTheme(p) && (
+                <p className="settings-help">
+                  This theme supplies the accent. Turn off “Use the theme's accent” to keep the one you picked.
+                </p>
+              )}
+              {p.recentAccents.length > 0 && (
+                <div className="settings-swatches" aria-label="Recent accent colors">
+                  <span className="settings-hint">Recent</span>
+                  {p.recentAccents.map((color) => (
+                    <button key={color} type="button" aria-label={`Use ${color}`}
+                      aria-pressed={p.accent === 'Custom' && color === customColor}
+                      onClick={() => applyCustom(color)}>
+                      <span className="settings-swatch" style={{ background: color }} />
+                    </button>
+                  ))}
+                </div>
+              )}
+              <Toggle title="Use the theme's accent"
+                detail="Colour themes carry their own accent; turn this off to keep the one you picked."
+                checked={p.accentFromTheme} onChange={(accentFromTheme) => update({ accentFromTheme })} />
             </Group>
             <Group title="VS Code themes">
               <div className="settings-themes">
-                {([{ id: '', title: 'Nova', mode: 'Built in', colors: {} as ColorTheme['colors'] }, ...p.themes]).map((theme) => (
+                {p.themes.map((theme) => (
                   <div className="settings-theme" key={theme.id}>
                     <button type="button" aria-pressed={p.themeId === theme.id} onClick={() => update({ themeId: theme.id })}>
                       <span className="settings-theme-sample" style={{ background: theme.colors['editor.background'] ?? 'var(--accent)' }} />
@@ -319,25 +358,21 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
               <Group title="Model overrides">{agentIds.map((id) => <div key={id}>{modelRow(id, AGENTS[id].name)}</div>)}</Group>
             </>}
           </>}
-          {section === 'General' && <Group title="Workspace behavior">
-            <Toggle title="Reopen last folder" checked={p.restoreFolder} onChange={(restoreFolder) => update({ restoreFolder })} />
-            <Toggle title="Render Markdown in chat" checked={p.markdown} onChange={(markdown) => update({ markdown })} />
-            {root && <Toggle title="Allow Nova to trust this folder on startup"
-              detail="Nova saves the folder approval in its CLI configuration. Revoke it with nova paths revoke."
-              checked={p.trustedWorkspaces.includes(root)} onChange={(enabled) => update({
-                trustedWorkspaces: enabled ? [...p.trustedWorkspaces, root]
-                  : p.trustedWorkspaces.filter((path) => path !== root),
-              })} />}
-          </Group>}
-          {section === 'Voice' && <Group title="Read responses aloud">
-            <Toggle title="Speak finished replies" detail="Uses your operating system’s available voices."
-              checked={p.speak} onChange={(speak) => update({ speak })} />
-            <div className="settings-action">
-              <button type="button" disabled={!('speechSynthesis' in window)}
-                onClick={() => window.speechSynthesis.speak(new SpeechSynthesisUtterance('Nova Desktop is ready.'))}>Preview voice</button>
-              <button type="button" disabled={!('speechSynthesis' in window)} onClick={() => window.speechSynthesis.cancel()}>Stop speaking</button>
-            </div>
-          </Group>}
+          {section === 'General' && <GeneralSettings preferences={p} update={update} workspace={workspace} />}
+          {section === 'Voice' && <>
+            {/* Reading replies aloud stays first: it is the one voice feature that
+                needs no download, and it is already switched on for some people. */}
+            <Group title="Read responses aloud">
+              <Toggle title="Speak finished replies" detail="Uses your operating system’s available voices."
+                checked={p.speak} onChange={(speak) => update({ speak })} />
+              <div className="settings-action">
+                <button type="button" disabled={!('speechSynthesis' in window)}
+                  onClick={() => window.speechSynthesis.speak(new SpeechSynthesisUtterance('Nova Desktop is ready.'))}>Preview voice</button>
+                <button type="button" disabled={!('speechSynthesis' in window)} onClick={() => window.speechSynthesis.cancel()}>Stop speaking</button>
+              </div>
+            </Group>
+            <VoiceSettings preferences={p} update={update} />
+          </>}
           {section === 'Tools' && <>
             {checks}
             <Group title="Markdownify">
@@ -391,49 +426,14 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
               <div className="settings-action"><button type="submit" disabled={!root || mcpBusy}>Add server</button></div>
             </form>
           </Group>}
-          {section === 'Schedules' && <Group title="Scheduled prompts">
-            <p className="settings-help">Runs when Nova Desktop is open, the same folder is active, and no turn is running.</p>
-              <form className="settings-convert" aria-label="Schedule a prompt" onSubmit={(event) => {
-              event.preventDefault()
-              if (!root) return
-              const form = new FormData(event.currentTarget)
-              const prompt = String(form.get('prompt') ?? '').trim()
-              const at = new Date(String(form.get('at') ?? '')).getTime()
-              if (!prompt || !Number.isFinite(at) || at <= Date.now()) {
-                setStatus('Enter a prompt and a future date and time.')
-                return
-              }
-              const agent = String(form.get('agent')) as AgentId
-              update({ schedules: [...p.schedules, { id: crypto.randomUUID(), prompt, workspace: root,
-                agent, at, daily: form.has('daily') }] })
-              event.currentTarget.reset()
-              setStatus('Prompt scheduled.')
-            }}>
-              <label>Prompt<textarea name="prompt" required rows={3} maxLength={12000} disabled={!root} /></label>
-              <label>Run at<input type="datetime-local" name="at" required disabled={!root} /></label>
-              <label>Agent<select name="agent" defaultValue={p.defaultAgent} disabled={!root}>
-                {agentIds.map((id) => <option key={id} value={id}>{AGENTS[id].name}</option>)}
-              </select></label>
-              <label className="settings-inline"><input type="checkbox" name="daily" disabled={!root} /> Repeat daily</label>
-              <div className="settings-action"><button type="submit" disabled={!root}>Schedule prompt</button></div>
-            </form>
-            {p.schedules.map((item) => <div key={item.id} className="settings-row">
-              <span><strong>{item.prompt.slice(0, 80)}</strong><small>
-                {new Date(item.at).toLocaleString()} · {AGENTS[item.agent].name}{item.daily ? ' · Daily' : ''}
-              </small></span>
-              <button type="button" onClick={() => update({ schedules: p.schedules.filter(({ id }) => id !== item.id) })}>Remove</button>
-            </div>)}
-          </Group>}
+          {section === 'Schedules' && <SchedulesSettings preferences={p} update={update} workspace={workspace} />}
           {section === 'Recommended' && <Group title="Set up your workspace">
             <div className="settings-row"><span><strong>Choose your default agent</strong><small>Configure the harness and model used for new tasks.</small></span>
               <button type="button" onClick={() => changeSection('Agents')}>Open Agents</button></div>
             <div className="settings-row"><span><strong>Check your tool connections</strong><small>Review the MCP servers configured for Nova.</small></span>
               <button type="button" onClick={() => changeSection('Connections')}>Open Connections</button></div>
           </Group>}
-          {section === 'About' && <Group title="Nova Desktop">
-            <div className="settings-row"><strong>Version</strong><span>{version || 'Development build'}</span></div>
-            <div className="settings-row"><span><strong>Workspace</strong><small>{workspace?.root ?? 'No folder open'}</small></span></div>
-          </Group>}
+          {section === 'About' && <AboutPane preferences={p} update={update} />}
           <p className="settings-status" role="status">{status}</p>
         </div>
       </main>

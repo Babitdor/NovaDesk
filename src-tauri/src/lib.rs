@@ -3,8 +3,10 @@ mod commands;
 mod error;
 mod events;
 mod proc;
+mod recovery;
 #[cfg(test)]
 mod testtmp;
+pub mod voice;
 mod workspace;
 
 use std::collections::HashMap;
@@ -38,6 +40,11 @@ pub struct AppState {
     procs: Arc<Mutex<HashMap<String, CancellationToken>>>,
     terminals: Arc<Mutex<HashMap<String, commands::terminal::Terminal>>>,
     agents: AgentRegistry,
+    /// The resident speech model, if one is loaded. One per process: loading is
+    /// hundreds of megabytes and the engine drops idle weights itself.
+    voice: Arc<voice::engine::VoiceEngine>,
+    /// Live model downloads, so Cancel can reach a transfer already streaming.
+    voice_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl AppState {
@@ -60,6 +67,8 @@ impl AppState {
             procs: Arc::new(Mutex::new(HashMap::new())),
             terminals: Arc::new(Mutex::new(HashMap::new())),
             agents,
+            voice: Arc::new(voice::engine::VoiceEngine::default()),
+            voice_downloads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -84,6 +93,39 @@ impl AppState {
         {
             terminal.cancel.cancel();
         }
+        for token in self
+            .voice_downloads
+            .lock()
+            .expect("voice downloads mutex poisoned")
+            .values()
+        {
+            token.cancel();
+        }
+    }
+}
+
+/// When the process started, for the About page's uptime row. A static rather
+/// than a field because uptime belongs to the process, not to one state clone.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Read-only counters for the About page, so its snapshot cannot reach the maps
+/// themselves.
+impl AppState {
+    /// Turns holding a live cancel token, i.e. agents working right now.
+    pub fn live_turns(&self) -> usize {
+        self.turns.lock().expect("turns mutex poisoned").len()
+    }
+
+    /// Terminals the dock still owns, open or backgrounded.
+    pub fn open_terminals(&self) -> usize {
+        self.terminals
+            .lock()
+            .expect("terminals mutex poisoned")
+            .len()
+    }
+
+    pub fn uptime(&self) -> std::time::Duration {
+        STARTED.get_or_init(std::time::Instant::now).elapsed()
     }
 }
 
@@ -103,6 +145,7 @@ pub fn run() {
         commands::agent::cancel_turn,
         commands::agent::respond_approval,
         commands::agent::agent_status,
+        commands::agent::prewarm_nova,
         agent::models::agent_models,
         commands::process::run_command,
         commands::process::kill_process,
@@ -125,10 +168,41 @@ pub fn run() {
         commands::settings::open_nova_terminal,
         commands::settings::markdownify,
         commands::settings::open_link,
+        commands::app::app_report,
+        commands::app::check_app_update,
+        commands::github::github_account,
+        commands::github::github_repos,
+        commands::github::github_activity,
+        commands::github::github_set_token,
+        commands::github::github_clone,
+        commands::github::clone_parent_pick,
+        commands::voice::voice_catalog,
+        commands::voice::voice_installed,
+        commands::voice::voice_download,
+        commands::voice::voice_cancel,
+        commands::voice::voice_delete,
+        commands::voice::voice_transcribe,
+        commands::voice::voice_engine_ready,
+        commands::launcher::set_quick_launcher,
+        commands::launcher::open_launcher,
+        commands::launcher::set_widget,
+        commands::recovery::set_crash_policy,
+        commands::recovery::crash_reports,
+        commands::recovery::clear_crash_reports,
+        commands::recovery::report_crash,
     ];
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Registered empty: the chord itself comes from the saved preference, and
+        // a plugin with no shortcuts costs nothing until one is set.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::new())
+        .setup(|app| {
+            // Installed before any window exists: a panic during boot is exactly
+            // the crash the policy is for.
+            recovery::install_panic_hook(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(move |invoke| {
             if invoke.message.webview().label() != "main" {
                 invoke

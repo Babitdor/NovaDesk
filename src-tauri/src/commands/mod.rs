@@ -1,6 +1,11 @@
 pub mod agent;
+pub mod app;
 pub mod browser;
+pub mod github;
+pub mod launcher;
 pub mod process;
+pub mod recovery;
 pub mod settings;
 pub mod terminal;
+pub mod voice;
 pub mod workspace;

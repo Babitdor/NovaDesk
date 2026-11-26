@@ -26,6 +26,13 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bootstrap failures print a wall of text; the last lines explain them.
 const STDERR_TAIL: usize = 40;
 
+/// Chat sessions plus the four crew roles stay warm; older entries are evicted.
+const SESSION_CACHE: usize = 12;
+
+/// How long a `/clear` handshake may take before a reused session is judged
+/// wedged and a fresh process is spawned instead.
+const CLEAR_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Talks to `nova --mode pipe`: a long-lived child that owns one session and
 /// speaks newline-delimited JSON on stdio.
 ///
@@ -73,12 +80,18 @@ impl Session {
         model: Option<String>,
         trust_workspace: bool,
         personality: Option<&Personality>,
+        requests_file: Option<&Path>,
     ) -> Result<Self, AppError> {
         let mut command = match personality {
             Some(profile) => super::cli::nova_personality(profile)?,
             None => super::cli::command("nova")?,
         };
         command.args(["--mode", "pipe"]).env("NO_COLOR", "1");
+        // The documented drop point for agent-originated requests. Passing it is
+        // the whole contract: a harness that ignores the variable is unaffected.
+        if let Some(path) = requests_file {
+            command.env(super::requests::ENV, path);
+        }
         if trust_workspace {
             command.arg("--trust-workspace");
         }
@@ -246,6 +259,35 @@ async fn write_frame(stdin: &Arc<Mutex<ChildStdin>>, frame: Value) -> Result<(),
         .map_err(|err| AppError::Agent(format!("could not flush nova: {err}")))
 }
 
+/// Clears a warm session's conversation in place (`/clear` keeps the agent, the
+/// tools and the process; it resets the thread, todos and steering). Returns
+/// false when the command was rejected, timed out or the child died, so the
+/// caller spawns a fresh session rather than continuing a polluted context.
+async fn reset_conversation(session: &mut Session) -> bool {
+    let frame = json!({
+        "type": "command",
+        "id": uuid::Uuid::new_v4().to_string(),
+        "content": "/clear",
+    });
+    if write_frame(&session.stdin, frame).await.is_err() {
+        return false;
+    }
+    let wait = async {
+        while let Some(line) = session.lines.recv().await {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if value["type"].as_str() == Some("command_result") {
+                return value["ok"].as_bool().unwrap_or(false);
+            }
+        }
+        false
+    };
+    tokio::time::timeout(CLEAR_TIMEOUT, wait)
+        .await
+        .unwrap_or(false)
+}
+
 /// Folds one line of Nova output into UI events.
 fn handle_frame(line: &str, pid: &str, sink: &EventSink, state: &mut TurnFrames) -> Frame {
     // Noise is never fatal: the protocol explicitly allows unparseable lines.
@@ -346,7 +388,31 @@ fn handle_frame(line: &str, pid: &str, sink: &EventSink, state: &mut TurnFrames)
                 output: frame["usage"]["output_tokens"].as_u64().unwrap_or(0),
             });
         }
+        "subagent_task" => {
+            let _ = sink.send(AgentEvent::SubagentTask {
+                task_id: frame["task_id"].as_str().unwrap_or("").to_string(),
+                status: frame["status"].as_str().unwrap_or("running").to_string(),
+                label: frame["label"].as_str().map(str::to_owned),
+                subagent_type: frame["subagent_type"].as_str().map(str::to_owned),
+                duration_ms: frame["duration_ms"].as_u64(),
+            });
+        }
+        "subagent_preview" => {
+            if let Some(text) = frame["text"].as_str().filter(|text| !text.is_empty()) {
+                let _ = sink.send(AgentEvent::SubagentPreview {
+                    task_id: frame["task_id"].as_str().unwrap_or("").to_string(),
+                    text: clip(text, 8_000),
+                });
+            }
+        }
         "done" => {
+            if frame["status"].as_str() == Some("approval_timeout") {
+                let _ = sink.send(AgentEvent::Notice {
+                    level: "error".to_string(),
+                    message: "An approval was not answered in time — Nova stopped waiting."
+                        .to_string(),
+                });
+            }
             return Frame::Finished(match frame["status"].as_str() {
                 Some("cancelled") => FinishReason::Cancelled,
                 _ if frame["ok"] == true => FinishReason::Completed,
@@ -388,27 +454,57 @@ impl AgentBackend for NovaAgent {
             }
             let mut guard = self.session.lock().await;
             let root = req.workspace.as_ref().ok_or(AppError::NoWorkspace)?.root();
+            // Chat turns reuse their chat's session. Personality turns reuse the
+            // role's warm process — the conversation is reset below, so each
+            // stage still starts with a clean context but pays no boot.
+            let key = match &req.personality {
+                Some(profile) => format!(
+                    "personality:{}:{}:{}",
+                    profile.role,
+                    root.display(),
+                    req.model.as_deref().unwrap_or("")
+                ),
+                None => req.chat_id.clone(),
+            };
             let previous = guard
                 .iter()
-                .position(|(id, _)| id == &req.chat_id)
+                .position(|(id, _)| id == &key)
                 .and_then(|index| guard.remove(index))
                 .map(|(_, session)| session)
-                .filter(|session| {
-                    req.personality.is_none()
-                        && session.root == root
-                        && session.model_override == req.model
-                });
+                .filter(|session| session.root == root && session.model_override == req.model);
             let previous = if let Some(mut session) = previous {
                 matches!(session.child.try_wait(), Ok(None)).then_some(session)
             } else {
                 None
             };
-            let mut session = match previous {
+            // No cached chat session: adopt a prewarmed one for this workspace,
+            // if the workspace was opened ahead of the first turn. Only plain
+            // turns match — a personality or model override spawns its own.
+            let mut previous = previous;
+            if previous.is_none() && req.personality.is_none() && req.model.is_none() {
+                let prewarm_key = format!("prewarm:{}", root.display());
+                if let Some(index) = guard.iter().position(|(id, _)| *id == prewarm_key) {
+                    let (_, mut candidate) = guard.remove(index).expect("position was valid");
+                    if candidate.root == root && matches!(candidate.child.try_wait(), Ok(None)) {
+                        previous = Some(candidate);
+                    }
+                }
+            }
+            // A reused process still owns the previous stage's conversation, so
+            // clear it; a wedged or rejected reset falls back to a fresh spawn.
+            let mut reused = None;
+            if let Some(mut session) = previous {
+                if req.personality.is_none() || reset_conversation(&mut session).await {
+                    reused = Some(session);
+                }
+            }
+            let mut session = match reused {
                 Some(session) => session,
                 _ => {
                     let session = tokio::select! {
                         _ = cancel.cancelled() => return Ok(FinishReason::Cancelled),
-                        session = Session::spawn(root, req.model, req.trust_workspace, req.personality.as_ref()) => session?,
+                        session = Session::spawn(root, req.model.clone(), req.trust_workspace,
+                            req.personality.as_ref(), req.requests_file.as_deref()) => session?,
                     };
                     let _ = sink.send(AgentEvent::Notice {
                         level: "info".to_string(),
@@ -432,14 +528,11 @@ impl AgentBackend for NovaAgent {
             // A session whose child died is not worth keeping; the next turn
             // spawns a fresh one instead of failing forever.
             *self.input.lock().await = None;
-            if req.personality.is_none()
-                && outcome.is_ok()
-                && matches!(session.child.try_wait(), Ok(None))
-            {
-                if guard.len() >= 8 {
+            if outcome.is_ok() && matches!(session.child.try_wait(), Ok(None)) {
+                if guard.len() >= SESSION_CACHE {
                     guard.pop_front();
                 }
-                guard.push_back((req.chat_id, session));
+                guard.push_back((key, session));
             }
             outcome
         })
@@ -480,6 +573,26 @@ impl AgentBackend for NovaAgent {
                 }),
             };
             write_frame(&stdin, frame).await
+        })
+    }
+
+    fn prewarm<'a>(&'a self, root: &'a Path) -> BoxFut<'a, Result<(), AppError>> {
+        Box::pin(async move {
+            let mut guard = self.session.lock().await;
+            let key = format!("prewarm:{}", root.display());
+            if guard.iter().any(|(id, _)| *id == key) {
+                return Ok(());
+            }
+            // Spawned silently: the session sits in the cache until a turn
+            // adopts it, and boot cost is paid while the user is not waiting.
+            // A prewarmed session is never asked to run a turn, so it gets no
+            // request file; the key below cannot match a chat or personality.
+            let session = Session::spawn(root, None, true, None, None).await?;
+            if guard.len() >= SESSION_CACHE {
+                guard.pop_front();
+            }
+            guard.push_back((key, session));
+            Ok(())
         })
     }
 }
@@ -682,6 +795,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn subagent_rows_stream_then_upsert() {
+        let (sink, seen) = collect_events();
+        let mut state = TurnFrames::default();
+        for line in [
+            r#"{"type":"subagent_task","request_id":"p1","task_id":"ptc_1","status":"running","subagent_type":"research","label":"research: docling"}"#,
+            r#"{"type":"subagent_preview","request_id":"p1","task_id":"ptc_1","kind":"text","text":"reading the spec"}"#,
+            r#"{"type":"subagent_task","request_id":"p1","task_id":"ptc_1","status":"done","duration_ms":42000}"#,
+            // A row for another prompt belongs to another turn.
+            r#"{"type":"subagent_task","request_id":"old","task_id":"ptc_2","status":"running"}"#,
+        ] {
+            handle_frame(line, "p1", &sink, &mut state);
+        }
+        let events = seen.lock().expect("event sink mutex poisoned").clone();
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::SubagentTask {
+                    task_id: "ptc_1".into(),
+                    status: "running".into(),
+                    label: Some("research: docling".into()),
+                    subagent_type: Some("research".into()),
+                    duration_ms: None,
+                },
+                AgentEvent::SubagentPreview {
+                    task_id: "ptc_1".into(),
+                    text: "reading the spec".into(),
+                },
+                AgentEvent::SubagentTask {
+                    task_id: "ptc_1".into(),
+                    status: "done".into(),
+                    label: None,
+                    subagent_type: None,
+                    duration_ms: Some(42000),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_approval_timeout_fails_the_turn_with_a_word() {
+        let (events, finished) = feed(
+            r#"{"type":"done","request_id":"p1","status":"approval_timeout","ok":false}"#,
+            "p1",
+        );
+        assert!(finished);
+        assert!(matches!(
+            &events[0],
+            AgentEvent::Notice { level, message }
+                if level == "error" && message.contains("approval")
+        ));
+    }
+
     /// The only test that talks to a real `nova`: it proves the spawn, the
     /// `ready` handshake, frame routing and turn end against the actual CLI
     /// rather than a recorded sample. Ignored by default — it needs `nova` on
@@ -699,6 +865,7 @@ mod tests {
             personality: None,
             session: None,
             trust_workspace: true,
+            requests_file: None,
             prompt: "Reply with exactly the word: pong".to_string(),
             workspace: Some(WorkspaceGuard::new(std::env::temp_dir()).expect("temp dir")),
         };

@@ -31,6 +31,7 @@
   --accent: #f7b98a;
   --on-accent: #030e3e;
   --accent-wash: #2a1a38;
+  --accent-line: color-mix(in srgb, var(--accent) 55%, transparent);
   --proof: #b96f6e;
   --proof-ink: #d89593;
   --proof-wash: rgba(185, 111, 110, 0.14);
@@ -62,6 +63,7 @@
   --accent: #9e4a52;
   --on-accent: #fad9b6;
   --accent-wash: #ffe9cf;
+  --accent-line: color-mix(in srgb, var(--accent) 55%, transparent);
   --proof: #7a2f3a;
   --proof-ink: #7a2f3a;
   --proof-wash: rgba(122, 47, 58, 0.1);
@@ -318,9 +320,16 @@ button.stop:hover:not(:disabled) {
 .notice button { flex: none; min-height: 26px; }
 
 /* shell ------------------------------------------------------------ */
+/* Two rows. The switcher spans the transcript and the panel above them, because
+   it is the one control that has to survive the panel closing — Chat is what
+   closes it, and a control inside the panel could not reopen it. */
 .shell {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 42px auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'sidebar views views'
+    'sidebar chat panel';
   height: 100vh;
   padding: 8px;
 }
@@ -371,6 +380,7 @@ button.stop:hover:not(:disabled) {
 
 /* task rail -------------------------------------------------------- */
 .rail {
+  grid-area: sidebar;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -634,63 +644,81 @@ button.stop:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-/* pane rail -------------------------------------------------------- */
-/* The strip of controls between the transcript and the panel. It is the only
-   way to close the panel, which is why it never hides with it. */
-.panel-rail {
+/* view bar --------------------------------------------------------- */
+/* The strip of views above the shell. Chat is a view rather than a tab that
+   closes something, so the panel's "closed" state is simply the Chat view and
+   there is never a second place to look for it. */
+.viewbar {
+  grid-area: views;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 4px;
-  flex: none;
-  align-self: center;
-  justify-self: center;
-  width: 34px;
-  padding: 4px 0;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel);
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 0 6px 8px;
 }
 
-.rail-btn {
+.view-tabs {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.view-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font: 500 11px var(--f-mono);
+  letter-spacing: 0;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 5px;
+  white-space: nowrap;
 }
 
-.rail-btn:hover:not(:disabled) {
+.view-tab:hover:not(:disabled) {
   color: var(--accent);
-  border-color: var(--line);
+  border-color: transparent;
 }
 
-.rail-btn.is-on {
+.view-tab.is-on {
   color: var(--accent);
   background: var(--accent-wash);
   border-color: var(--line);
 }
 
-.rail-glyph {
+.view-tab svg {
+  flex: none;
+}
+
+/* The divider the rail drew between panes and the terminal, kept for the same
+   reason: the terminal is a different kind of control, not a sixth view. */
+.view-rule {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
+.view-glyph {
+  font-family: var(--f-mono);
   font-size: 11px;
   line-height: 1;
   letter-spacing: 0;
 }
 
-.rail-rule {
-  width: 18px;
-  height: 1px;
-  margin: 2px 0;
-  background: var(--line);
-}
-
 /* right panel ------------------------------------------------------ */
 .right {
+  grid-area: panel;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -708,36 +736,6 @@ button.stop:hover:not(:disabled) {
   width: 0;
   border-width: 0;
   overflow: hidden;
-}
-
-.tabs {
-  display: flex;
-  gap: 2px;
-  flex: none;
-  padding: 6px;
-  overflow: hidden;
-  border-bottom: 1px solid var(--line);
-}
-
-.tab {
-  padding: 5px 9px;
-  font: 500 11px var(--f-mono);
-  letter-spacing: 0;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 5px;
-}
-
-.tab:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: transparent;
-}
-
-.tab.is-active {
-  color: var(--accent);
-  background: var(--wash);
-  border-color: var(--line);
 }
 
 /* Every pane stays mounted and is hidden here: the terminal keeps its output and
@@ -849,13 +847,16 @@ button.stop:hover:not(:disabled) {
 
 /* chat ------------------------------------------------------------- */
 .main {
+  grid-area: chat;
   /* A column, not a grid: the approval bar, the notice and the terminal dock all
      come and go, and the transcript is whatever is left. */
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  margin-inline-start: 8px;
+  /* The gutter the pane rail used to hold: the panel sits directly beside the
+     transcript now, so the two keep their own air. */
+  margin-inline: 8px;
   border: 1px solid var(--line);
   --conversation-width: 804px;
   --conversation-gutter: clamp(12px, 2vw, 24px);
@@ -1528,6 +1529,490 @@ code {
   overflow: visible;
 }
 
+/* github ------------------------------------------------------------ */
+/* Branch, drift, dirty count and the last commits over the same diff the changes
+   pane draws: a diff belongs next to the branch it will land on. */
+.github {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.github-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.github-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.commit-list {
+  flex: none;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 11px;
+  font-size: 11px;
+}
+
+.commit-hash {
+  flex: none;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.commit-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-when {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* github browser ----------------------------------------------------- */
+/* The mock is a full-window two-column browser; the panel is 380-560 px wide,
+   so the same pieces stack: the switch, who we are, the filter, the list, and
+   then the repository that was chosen. Every colour here is a theme token, so a
+   preset or an imported theme repaints this pane along with the rest. */
+.github-modes {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.github-mode {
+  flex: 1 1 0;
+  padding: 5px 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.github-mode.is-on {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.github-mode.is-on:hover:not(:disabled) {
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.github-browse {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.github-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font: 11px var(--f-mono);
+}
+
+.github-account-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.github-login {
+  display: flex;
+  flex: 1 1 150px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.github-login input,
+.repo-filter input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: var(--screen);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  outline: none;
+}
+
+.github-login input::placeholder,
+.repo-filter input::placeholder {
+  color: var(--muted);
+}
+
+.github-login input:focus,
+.repo-filter input:focus {
+  border-color: var(--accent);
+}
+
+.github-clone-root {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 10px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font: 10.5px var(--f-mono);
+}
+
+.github-clone-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-filter {
+  display: flex;
+  flex: none;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.repo-list {
+  flex: 0 1 auto;
+  max-height: 42%;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 0;
+  overflow: auto;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.repo-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 10px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--ink);
+  font: 11.5px var(--f-mono);
+}
+
+.repo-row:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: transparent;
+  border-left-color: var(--line);
+}
+
+.repo-row.is-on {
+  background: var(--accent-wash);
+  border-left-color: var(--accent);
+}
+
+.repo-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-lock {
+  flex: none;
+  color: var(--muted);
+}
+
+.repo-owner,
+.repo-stars,
+.repo-when {
+  flex: none;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-owner {
+  max-width: 34%;
+}
+
+.repo-detail {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.repo-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 10px 10px 4px;
+}
+
+.repo-title {
+  flex: 1 1 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font: 13px/1.3 var(--f-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-meta {
+  margin: 0;
+  padding: 0 10px 8px;
+  color: var(--muted);
+  font: 10.5px var(--f-mono);
+}
+
+.repo-clone {
+  padding: 5px 10px;
+  letter-spacing: 0.08em;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.repo-clone:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.repo-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 0 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.repo-tab {
+  flex: none;
+  padding: 6px 8px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  font: 500 11px var(--f-mono);
+}
+
+.repo-tab:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: transparent;
+  border-bottom-color: var(--line);
+}
+
+.repo-tab.is-on {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.repo-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.repo-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 14px;
+  text-align: center;
+  border-top: 1px solid var(--line);
+}
+
+.repo-empty-title {
+  margin: 0;
+  color: var(--ink);
+  font: 13px/1.3 var(--f-mono);
+}
+
+.repo-empty .hint {
+  max-width: 34ch;
+  padding: 0;
+}
+
+.repo-path {
+  overflow-wrap: anywhere;
+}
+
+.repo-progress {
+  align-self: stretch;
+  max-height: 120px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--screen-ink);
+  background: var(--screen);
+  border: 1px solid var(--line);
+  font: 10.5px/1.5 var(--f-mono);
+}
+
+/* board ------------------------------------------------------------- */
+/* Three columns over the same task list the rail shows: the cards are a reading
+   of `chats` in another shape, not a second store of them. */
+.board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  overflow: auto;
+}
+
+.board-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  background: var(--wash);
+  border: 1px solid var(--line);
+}
+
+.board-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  padding: 0 2px 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.board-count {
+  font-family: var(--f-mono);
+  letter-spacing: 0.02em;
+}
+
+.board-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.board-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.board-card.is-on {
+  border-color: var(--accent);
+}
+
+.board-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  --portrait-size: 22px;
+}
+
+.board-card-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  overflow-wrap: anywhere;
+}
+
+.board-card-title:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.board-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.board-card-move {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.board-card-move button {
+  padding: 1px 7px;
+  font-size: 10px;
+}
+
 /* browser ---------------------------------------------------------- */
 .browser {
   display: flex;
@@ -2065,7 +2550,7 @@ code {
   white-space: nowrap;
 }
 
-.rail, .panel-rail, .rail-btn, .right, .tab, .dock, .dock-body { border-radius: 0; }
+.rail, .right, .dock, .dock-body, .viewbar, .view-tabs, .view-tab { border-radius: 0; }
 
 .settings-view {
   --settings-surface: color-mix(in srgb, var(--ground) 82%, var(--panel));
@@ -2243,6 +2728,99 @@ code {
 .settings-status { min-height: 1.45em; color: var(--accent); }
 .settings-action { display: flex; gap: 8px; padding: 0 15px 12px; }
 .settings-row + .settings-action { padding-top: 2px; }
+
+/* --- About pane and presets ---------------------------------------- */
+.settings-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+  padding: 11px 12px;
+}
+.settings-presets button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.settings-presets button:hover { border-color: var(--accent-line); }
+.settings-preset-chips { display: inline-flex; flex: 0 0 auto; }
+.settings-preset-chips i { width: 11px; height: 22px; border: 1px solid var(--settings-rule); }
+.settings-preset-chips i:first-child { border-radius: 4px 0 0 4px; }
+.settings-preset-chips i:last-child { border-radius: 0 4px 4px 0; }
+.settings-hint { color: var(--muted); font-size: 12px; }
+.about-value { color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.about-buttons { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.about-note { margin: 0; color: var(--muted); font-size: 12px; }
+.about-details {
+  margin: 0;
+  padding: 12px 15px;
+  border-top: 1px solid var(--settings-rule);
+  font: 12px/1.55 var(--f-mono);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.notices-sheet {
+  width: min(620px, 92vw);
+  max-height: min(78vh, 760px);
+  padding: 0;
+  border: 1px solid var(--accent-line);
+  border-radius: 9px;
+  background: var(--ground);
+  color: var(--ink);
+}
+.notices-sheet::backdrop { background: rgb(0 0 0 / 45%); }
+.notices-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--settings-rule);
+  background: var(--ground);
+}
+.notices-head h2 {
+  margin: 0 auto 0 0;
+  font: 500 11px/1.3 var(--f-mono);
+  text-transform: uppercase;
+  letter-spacing: .11em;
+  color: var(--accent);
+}
+.notices-head input { flex: 1 1 160px; }
+.notices-summary {
+  margin: 0;
+  padding: 9px 15px;
+  border-bottom: 1px solid var(--settings-rule);
+  color: var(--muted);
+  font-size: 12px;
+}
+.notices-list { overflow: auto; max-height: calc(min(78vh, 760px) - 112px); padding: 4px 15px 14px; }
+.notices-list h3 {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 15px 0 6px;
+  font: 500 11px/1.3 var(--f-mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--accent);
+}
+.notices-list h3 span { color: var(--muted); }
+.notices-list ul { list-style: none; margin: 0; padding: 0; }
+.notices-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--settings-rule);
+  font-size: 12px;
+}
+.notices-list li span { overflow-wrap: anywhere; }
+.notices-list code { color: var(--muted); }
 .settings-view .agent-status {
   background: transparent;
   border: 0;
@@ -2448,8 +3026,8 @@ code {
   opacity: 0;
 }
 
-/* tabs --------------------------------------------------------------- */
-.tab {
+/* views -------------------------------------------------------------- */
+.view-tab {
   transition:
     color var(--t-tick) var(--ease-state),
     background-color var(--t-tick) var(--ease-state),
@@ -2531,7 +3109,7 @@ code {
   .chat-flow > *,
   .right,
   .rail,
-  .tab,
+  .view-tab,
   .rail-list,
   .rail-filter,
   .rail-foot,
@@ -2546,3 +3124,366 @@ code {
     view-transition-name: none;
   }
 }
+
+/* --- voice --------------------------------------------------------------- */
+/* The microphone controls, the two-pane model browser and the composer's
+   dictation button. Every colour is a token the rest of settings already uses,
+   so both themes follow without a second palette. */
+
+.voice-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.voice-row-controls .voice-icon {
+  padding: 5px 9px;
+  letter-spacing: 0;
+}
+.voice-level {
+  height: 4px;
+  margin: 0 15px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  overflow: hidden;
+}
+.voice-level > i,
+.voice-meter > i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+  transition: width 90ms linear;
+}
+.voice-clip {
+  display: block;
+  width: calc(100% - 30px);
+  margin: 0 15px 12px;
+}
+.voice-error {
+  color: color-mix(in srgb, #ff6b81 82%, var(--ink));
+}
+
+/* Languages | Models */
+.voice-panes {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+  padding: 0 15px 15px;
+}
+.voice-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 300px;
+  max-height: 440px;
+  border: 1px solid var(--settings-rule);
+  border-radius: 9px;
+  background: var(--ground);
+}
+.voice-pane h3 {
+  margin: 0;
+  padding: 11px 12px;
+  font: 500 11px/1.3 var(--f-mono);
+  text-transform: uppercase;
+  letter-spacing: .11em;
+  color: var(--accent);
+  border-bottom: 1px solid var(--settings-rule);
+}
+.voice-search {
+  width: calc(100% - 24px);
+  margin: 10px 12px;
+}
+.settings-row select.voice-wide { width: clamp(210px, 30vw, 330px); }
+.voice-languages ul {
+  flex: 1;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 8px;
+}
+.voice-languages button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+.voice-languages button:hover:not(:disabled) { background: var(--wash); }
+.voice-languages button:hover { background: var(--wash); }
+.voice-languages button[aria-pressed='true'] { background: var(--wash); color: var(--accent); }
+
+.voice-cards {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding: 0 12px 12px;
+}
+.voice-card {
+  padding: 12px;
+  border: 1px solid var(--settings-rule);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+}
+.voice-card header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.voice-card header strong { font-size: 13px; }
+.voice-card p {
+  margin: 6px 0 5px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.voice-card small {
+  display: block;
+  font-size: 11.5px;
+}
+.voice-licence { margin-top: 2px; opacity: .85; }
+.voice-badge {
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  font: 500 9.5px/1 var(--f-mono);
+  font-style: normal;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.voice-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  min-height: 30px;
+}
+.voice-progress {
+  flex: 1 1 120px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  overflow: hidden;
+}
+.voice-progress > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+.voice-installed { font-size: 11.5px; color: var(--muted); }
+.voice-card[data-installed='true'] { border-color: color-mix(in srgb, var(--accent) 38%, var(--settings-rule)); }
+
+/* composer */
+.voice-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.voice-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+.voice-trigger[data-state='recording'] .voice-dot {
+  background: var(--accent);
+  animation: voice-pulse 1.1s ease-in-out infinite;
+}
+.voice-trigger[data-state='transcribing'] .voice-dot {
+  background: var(--accent);
+  animation: voice-pulse .5s linear infinite;
+}
+.voice-meter {
+  width: 46px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  overflow: hidden;
+}
+.composer-voice-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, #ff6b81 82%, var(--ink));
+}
+
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-dot { animation: none !important; }
+}
+
+/* Under this width the labels cost more room than they earn: the icons still
+   carry the switcher, and every title names its view. */
+@media (max-width: 1120px) {
+  .view-label { display: none; }
+  .view-tab { padding: 5px 7px; }
+}
+
+@media (max-width: 980px) {
+  .voice-panes { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* --- General, Schedules, launcher and widget ---------------------------- */
+/* Interface size. The document is scaled with CSS `zoom` by lib/settings.ts;
+   this rule is the fallback for a host that ignores it, and it is scoped to the
+   flagged case so the two never multiply into a double scale. */
+html[data-zoom='fallback'] #root { zoom: var(--ui-scale, 1); }
+
+/* Compact conversation: the same transcript with less air, not smaller text. */
+.chat-log[data-compact='true'] .chat-flow { gap: 8px; padding-block: 12px 14px; }
+.chat-log[data-compact='true'] .msg { padding: 6px 10px; line-height: 1.45; }
+.chat-log[data-compact='true'] .msg-tool > summary { padding-block: 3px; }
+
+.settings-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.settings-stepper output {
+  min-width: 4.2ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.settings-row-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.shortcut-input { display: inline-flex; align-items: center; gap: 6px; }
+.shortcut-input small { color: var(--muted); margin: 0; }
+.shortcut-input button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
+.settings-row input[type='number'] { width: 76px; text-align: right; }
+
+/* The scheduled-prompt form and the preset cards share the settings surface. */
+.settings-convert { display: grid; gap: 9px; padding: 12px 15px 4px; }
+.settings-convert label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.settings-convert label.settings-inline { display: flex; align-items: center; gap: 7px; }
+.settings-convert input:not([type='checkbox']), .settings-convert select, .settings-convert textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid var(--settings-rule);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+.settings-convert textarea { resize: vertical; }
+.settings-presets button { flex-direction: column; align-items: flex-start; gap: 2px; }
+.settings-presets button small { margin-top: 1px; }
+
+/* Crash report dialog: above every plate, keyboard-reachable, dismissible. */
+.crash-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 62%, transparent);
+}
+.crash-card {
+  width: min(680px, 100%);
+  max-height: min(78vh, 620px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ground);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.crash-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.crash-card h2 { margin: 0; font: 500 13px/1.3 var(--f-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+.crash-message { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.crash-location, .crash-backtrace {
+  margin: 0;
+  overflow: auto;
+  max-height: 260px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--screen);
+  color: var(--screen-ink);
+  font: 11.5px/1.5 var(--f-mono);
+  white-space: pre-wrap;
+}
+.crash-card .settings-action { padding: 0; }
+
+/* The two auxiliary windows. Neither paints the shell, so both stand alone. */
+html[data-window] { background: transparent; }
+html[data-window] body { margin: 0; background: var(--ground); }
+.launcher {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100vh;
+  padding: 0 14px;
+  background: color-mix(in srgb, var(--ground) 92%, var(--panel));
+  border: 1px solid var(--accent-line);
+  border-radius: 12px;
+  box-sizing: border-box;
+}
+.launcher-mark { color: var(--accent); font-size: 15px; }
+.launcher input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 14px var(--f-mono);
+  outline: none;
+}
+.launcher input::placeholder { color: var(--muted); }
+.launcher-go { flex-shrink: 0; }
+.agent-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px 12px;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--ground) 94%, var(--panel));
+  border: 1px solid var(--accent-line);
+  border-radius: 10px;
+  font: 12px var(--f-mono);
+}
+.agent-widget header { display: flex; align-items: center; gap: 7px; color: var(--accent); }
+.agent-widget header strong { font-weight: 600; letter-spacing: .06em; text-transform: uppercase; font-size: 10.5px; }
+.agent-widget header small { margin-left: auto; color: var(--muted); }
+.agent-widget ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.agent-widget li button {
+  width: 100%;
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  padding: 6px 8px;
+}
+.agent-widget li button strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-widget li button small { color: var(--muted); }
+.agent-widget-empty { margin: 0; color: var(--muted); }
+.agent-widget-close { margin-left: 4px; padding: 0 5px; line-height: 1; }
+

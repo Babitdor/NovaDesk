@@ -15,11 +15,18 @@ export type AgentEvent =
   | { type: 'toolCall'; callId: string; name: string; input: string }
   | { type: 'toolResult'; callId: string; ok: boolean; output: string }
   | { type: 'fileEdit'; path: string; diff: string }
+  | { type: 'subagentTask'; taskId: string; status: string; label?: string | null; subagentType?: string | null; durationMs?: number | null }
+  | { type: 'subagentPreview'; taskId: string; text: string }
   | { type: 'approvalRequired'; interruptId: string; kind: string; payload: unknown }
   | { type: 'notice'; level: string; message: string }
   | { type: 'processOutput'; stream: OutputStream; chunk: string }
   | { type: 'turnError'; message: string; kind?: string }
   | { type: 'turnFinished'; reason: FinishReason }
+  /// The harness asked Nova to start a new task later. Requested through
+  /// `NOVA_DESKTOP_REQUESTS`, never through a command.
+  | { type: 'wakeupRequested'; prompt: string; agent?: string | null; afterSeconds?: number | null }
+  /// The harness asked Nova to put a message in another task.
+  | { type: 'threadMessage'; thread: string; text: string }
 
 export type WorkspaceInfo = { root: string; name: string }
 

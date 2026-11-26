@@ -87,6 +87,79 @@ but cannot drive a workspace):
 npm run dev            # http://localhost:1420
 ```
 
+## Voice
+
+Voice turns speech into text on this machine. The microphone is captured in the
+webview, the samples are resampled to 16 kHz mono in Rust, and a local ONNX model
+transcribes them; nothing is uploaded, and the recording is discarded once the text
+is in the composer. Speech is transcribed by [`transcribe-rs`](https://github.com/cjpais/transcribe-rs)
+on top of ONNX Runtime.
+
+Turn it on in **Settings → Voice**: download a model, set *Send microphone audio to*
+to **On-device**, then press `Ctrl+Shift+Space` or the **Dictate** button in the
+composer. The shortcut can toggle or record only while held. The first time the
+microphone is opened, WebView2 asks whether Nova may use it — that dialog is the
+system's, and nothing records until it is allowed.
+
+The catalogue lists 52 models with the copy, error rates, decode speeds, sizes and
+licences the vendors publish. Nine can run on this build:
+
+| Model | Languages | Download | Licence |
+| --- | --- | --- | --- |
+| Parakeet TDT 0.6B v2 | English | 661 MB | CC-BY-4.0 |
+| Parakeet TDT 0.6B v3 | 25 European languages | 671 MB | CC-BY-4.0 |
+| Canary 180M Flash | English, German, Spanish, French | 213 MB | CC-BY-4.0 |
+| Canary 1B Flash | English, German, Spanish, French | 939 MB | CC-BY-4.0 |
+| Canary 1B v2 | 25 European languages | 1.03 GB | CC-BY-4.0 |
+| Cohere Transcribe (int4) | 14 languages incl. Chinese, Japanese, Korean | 1.3 GB | Apache-2.0 |
+| SenseVoice Small | Mandarin, English, Japanese, Korean, Cantonese | 160 MB | FunASR Model License 1.1 |
+| Moonshine Base | English | 58 MB | MIT |
+| Moonshine Tiny | English | 32 MB | MIT |
+
+The other cards are listed, not hidden, and say why they cannot run yet: Whisper needs
+the whisper.cpp engine, which this build does not link; the streaming exports (Moonshine
+Streaming, Nemotron Speech Streaming, Parakeet Multitalker, Voxtral Realtime) assume a
+live audio feed and Nova transcribes each recording after you stop; the remaining
+families (Qwen3-ASR, Voxtral, Granite Speech, Fun-ASR, MOSS, Breeze, Canary-Qwen, Cohere
+Arabic, the Parakeet CTC, RNN-T and 1.1B variants, Orukeet, Primeline, Parakeet Ultra)
+have no loader in Nova. Each of those cards shows *Not supported yet* instead of a
+download button, with the reason in its tooltip.
+
+Sizes on the cards and in this table are the bytes the download fetches, not the
+publisher's rounded figure, because the progress bar and the post-download size check
+read the same number. Grades and speeds are unchanged from the vendors' benchmark.
+
+Every installable model is fetched on demand — none ships inside the installer — and lands in
+`%APPDATA%\app.novacode.desktop\voice\<model>\` (a `.nova-model.json` marker is
+written last, so a half-finished download never looks installed). Deleting a model
+from the same page removes the folder.
+
+Keep an eye on the disk: Parakeet is the everyday choice at 671 MB, and Cohere holds
+about 1.3 GB and needs several GB of free memory while a model is loaded. Only one
+model is resident at a time, and it is dropped after five idle minutes.
+
+Canary's own ONNX export ships no `nemo128.onnx` (the 128-bin NeMo feature
+extractor), so it is fetched from the Parakeet export of the same upstream pipeline;
+the catalogue in `src-tauri/src/voice/catalog.rs` is the one place those URLs live.
+
+The accuracy grades and decode speeds on the cards come from the
+[Handy](https://github.com/cjpais/Handy) models benchmark; sizes are the published
+file sizes of the download a card offers.
+
+ONNX Runtime is linked into the executable at build time (ort's prebuilt binaries are
+static), so the app ships no separate runtime library to lose. Settings → Voice asks
+ort to start its environment when the page opens and reports it if that fails, rather
+than letting the first transcription die with a stack trace.
+
+To check inference without the UI, run the ignored integration test against a
+downloaded model and any 16 kHz mono WAV:
+
+```powershell
+$env:NOVA_VOICE_MODEL="C:\path\to\model-dir"   # the four extracted files
+$env:NOVA_VOICE_WAV="C:\path\to\speech.wav"
+cargo test --test voice_engine --manifest-path src-tauri/Cargo.toml -- --ignored
+```
+
 ## Build installers
 
 ```powershell
@@ -134,12 +207,64 @@ Tags are plain `v<version>` — `git tag -l` lists them, and `gh release list` s
 shipped with each one. Nothing in the app depends on a release existing; the portable
 `novacode-desktop.exe` from a local build is the same binary.
 
+## General, Schedules and agent requests
+
+The **General** pane is where the window and the process are configured, and every
+control in it is wired to something real:
+
+| Control | What it changes |
+| --- | --- |
+| Interface size | CSS `zoom` on the document (`preferences.interfaceSize`, 50-200). Ctrl +, Ctrl - and Ctrl 0 do the same. |
+| Compact conversation / Expand tool activity | Transcript density and whether tool details open by default. |
+| Global quick launcher | A chord registered with the OS (`tauri-plugin-global-shortcut`) that opens a 560x96 frameless window. It hands one prompt to the main window through `nova:quick-task` and has no commands of its own. |
+| Running agents widget | A frameless companion window fed by `nova:widget-state`; clicking a row emits `nova:focus-chat`. Pinning keeps it above other applications. |
+| Restart after a crash / Crash reports | Written to `recovery.json` in the app data folder, where the panic hook reads it. Reports land in `crashes/crash-<ms>.json`; the restart budget is three per fifteen minutes. |
+| Keep unsent drafts | Composer text in `nova.drafts.v1`, 30 days and a 200k-character cap. |
+| Projects | The folders you opened, newest first. Remove forgets the entry; the folder and its workspace trust are untouched. |
+
+**Schedules** gained four shapes besides "once at a date": daily (all days or
+weekdays only), every N minutes, after the running task finishes, and a chain of
+prompts. The engine is `src/lib/scheduler.ts` - pure functions, run with
+`node --test` - so "a due run fires once" is a property of the data instead of a
+side effect of the 5-second ticker. Old `{ at, daily }` entries migrate on load.
+Pause all suppresses new runs; a run already going is left alone.
+
+### The agent request file
+
+An agent cannot call a command: the invoke guard admits the main window only, and
+there is no CLI flag to invent. The contract is a file instead.
+
+```text
+NOVA_DESKTOP_REQUESTS=<app data>/requests/<task or personality>.jsonl
+```
+
+The variable is set on every harness process Nova Desktop spawns. The file is cleared
+before a turn and read after it - at most 20 lines and 64 KiB of strict JSON, one
+object per line - and each valid line becomes one event:
+
+```json
+{"type":"wakeup","prompt":"re-run the failing tests","agent":"nova","afterSeconds":60}
+{"type":"threadMessage","thread":"<task id>","text":"the schema changed"}
+```
+
+Anything malformed, too long or of an unknown type is dropped, and a harness that
+ignores the variable behaves exactly as before. Both requests pass two gates in
+**Schedules**: *Let agents schedule wake-ups* (off by default) and *Ask before agents
+message other threads* (on by default, which shows an approval card in the task the
+request came from). *Agent limit per thread* (1-100, default 10) counts running
+agent-originated work plus the queue. Every refusal is written to the Schedules
+activity log rather than silently dropped.
+
+What this is not: it cannot restart the process after an OS kill or a driver fault,
+the widget cannot start or stop a turn, and a schedule only runs while the window is
+open and the same folder is active.
 ## Checks
 
 ```powershell
-npm run lint           # oxlint
-npm run build          # tsc -b && vite build
-cargo test              # inside src-tauri
+npm run lint                          # oxlint
+npm run build                         # tsc -b && vite build
+node --test src/lib/*.test.ts         # scheduler engine and preferences migration
+cargo test                            # inside src-tauri
 ```
 
 CI runs exactly those on every push and pull request: the frontend job on Ubuntu, the

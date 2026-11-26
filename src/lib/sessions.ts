@@ -14,6 +14,9 @@ export type Chat = {
   createdAt: number
   items: ChatItem[]
   state: 'idle' | 'running'
+  /// Where the card sits on the board. Optional because the board arrived after
+  /// the first saved sessions, so an unset column is derived rather than trusted.
+  column?: Column
   /// Pinned chats sort to the top of the rail; nothing else about them changes.
   pinned?: boolean
   workspace?: string
@@ -24,6 +27,20 @@ export type Chat = {
   connectionId?: string
   session?: string
   usage?: { input: number; output: number }
+}
+
+/// The board's columns, in the order they are read: what is not started, what is
+/// in flight, what is finished. A saved `column` wins; without one the task's
+/// own state answers, so a session written before the board still lands somewhere
+/// sensible instead of in a fourth bucket named "unknown".
+export const COLUMNS = ['todo', 'doing', 'done'] as const
+
+export type Column = (typeof COLUMNS)[number]
+
+export function boardColumn(chat: Chat): Column {
+  if (chat.column) return chat.column
+  if (chat.state === 'running') return 'doing'
+  return chat.items.length ? 'done' : 'todo'
 }
 
 const KEY = 'nova.chats.v1'
@@ -54,6 +71,17 @@ export function titleFromPrompt(prompt: string): string {
   const line = prompt.trim().split('\n')[0]?.trim() ?? ''
   if (!line) return 'New task'
   return line.length > 48 ? `${line.slice(0, 48)}…` : line
+}
+
+/// A list of tasks is scanned, not read: the stamp is the coarse distance, and a
+/// live turn is the only state worth a word. The rail and the board share it.
+export function stamp(chat: Chat): string {
+  if (chat.state === 'running') return 'live'
+  const minutes = Math.round((Date.now() - chat.createdAt) / 60000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
 }
 
 /// Folds a backend event into the chat that started the turn.
@@ -91,6 +119,9 @@ export function load(): Chat[] {
       .map((chat) => ({
         ...chat,
         state: 'idle' as const,
+        // An unknown column is dropped rather than invented: `boardColumn`
+        // derives it from the task itself, which is truer than a stored guess.
+        column: COLUMNS.includes(chat.column as Column) ? chat.column : undefined,
         items: chat.items.slice(-MAX_ITEMS),
       }))
   } catch {

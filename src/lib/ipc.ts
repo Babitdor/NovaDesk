@@ -32,6 +32,10 @@ export const respondApproval = (turnId: string, interruptId: string, reply: Inte
   invoke<void>('respond_approval', { turnId, interruptId, reply })
 
 export const agentStatus = (versions = false) => invoke<AgentStatus[]>('agent_status', { versions })
+
+/// Spawns Nova's pipe session for the open workspace in the background; the
+/// first turn of a task then streams immediately instead of paying the boot.
+export const prewarmNova = () => invoke<void>('prewarm_nova')
 export const importTheme = () => invoke<ColorTheme[]>('import_theme')
 export const installTheme = (id: string) => invoke<ColorTheme[]>('install_theme', { id })
 export const novaMcpList = () => invoke<string>('nova_mcp_list')
@@ -40,6 +44,33 @@ export const openProviderSetup = (id: string) => invoke<void>('open_provider_set
 export const openNovaTerminal = () => invoke<void>('open_nova_terminal')
 export const markdownify = (html: string) => invoke<string>('markdownify', { html })
 export const openLink = (url: string) => invoke<void>('open_link', { url })
+
+// --- about ----------------------------------------------------------
+// Mirrors `AppReport` and `UpdateCheck` in src-tauri/src/commands/app.rs.
+export type AppReport = {
+  version: string
+  identifier: string
+  os: string
+  arch: string
+  /// Working set of the native process, in bytes; null when the query failed.
+  rssBytes: number | null
+  uptimeSecs: number
+  agents: number
+  terminals: number
+  dataDir: string | null
+}
+
+export type UpdateCheck = {
+  current: string
+  latest: string
+  url: string | null
+  publishedAt: string | null
+  notes: string | null
+  available: boolean
+}
+
+export const appReport = () => invoke<AppReport>('app_report')
+export const checkAppUpdate = () => invoke<UpdateCheck>('check_app_update')
 
 export const runCommand = (
   commandId: string,
@@ -92,6 +123,38 @@ export const browserHistory = (direction: 'back' | 'forward') =>
   invoke<void>('browser_history', { direction })
 
 export const browserClose = () => invoke<void>('browser_close')
+
+// --- launcher, widget and crash recovery ------------------------------
+// The two auxiliary windows are created and placed by Rust; the page only asks
+// for a state. Mirrors commands::launcher and commands::recovery.
+
+/// Registers (or clears) the global chord and remembers it in the app data dir.
+/// Rejects with the platform's own message when the chord is already taken.
+export const setQuickLauncher = (enabled: boolean, accelerator: string) =>
+  invoke<void>('set_quick_launcher', { enabled, accelerator })
+
+export const openLauncher = () => invoke<void>('open_launcher')
+
+export const setWidget = (enabled: boolean, pinned: boolean) =>
+  invoke<void>('set_widget', { enabled, pinned })
+
+/// Mirrors `CrashReport` in src-tauri/src/recovery.rs.
+export type CrashReport = {
+  path: string
+  at: number
+  source: string
+  message: string
+  location: string
+  backtrace: string
+}
+
+export const setCrashPolicy = (restartAfterCrash: boolean, crashReports: boolean) =>
+  invoke<void>('set_crash_policy', { restartAfterCrash, crashReports })
+
+export const crashReports = () => invoke<CrashReport[]>('crash_reports')
+export const clearCrashReports = () => invoke<void>('clear_crash_reports')
+export const reportCrash = (message: string, location: string, source = 'webview') =>
+  invoke<void>('report_crash', { message, location, source })
 export const browserLocalServers = () => invoke<string[]>('browser_local_servers')
 
 /// Commands reject with `{ kind, message }` (see error.rs), not an `Error`, so

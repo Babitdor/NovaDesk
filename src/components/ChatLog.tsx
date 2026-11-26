@@ -8,8 +8,8 @@ import { NovaCoin } from './NovaCoin'
 
 const FOLLOW_DISTANCE = 32
 
-const ConversationItem = memo(function ConversationItem({ item, markdown, backend }: {
-  item: ChatItem; markdown: boolean; backend: string
+const ConversationItem = memo(function ConversationItem({ item, markdown, backend, expand }: {
+  item: ChatItem; markdown: boolean; backend: string; expand: boolean
 }) {
   const [copy, setCopy] = useState('')
   switch (item.kind) {
@@ -51,7 +51,7 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
       return <div className="msg msg-error">{item.text}</div>
     case 'tool':
       return (
-        <details className="msg msg-tool">
+        <details className="msg msg-tool" open={expand}>
           <summary>
             <span className="tool-name">{item.label}</span>
             <span className={item.ok === undefined ? 'badge' : item.ok ? 'badge ok' : 'badge bad'}>
@@ -66,8 +66,9 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
   }
 })
 
-export function ChatLog({ items, busy, markdown, backend, workspaceReady }: {
+export function ChatLog({ items, busy, markdown, backend, workspaceReady, compact, expandTools }: {
   items: ChatItem[]; busy: boolean; markdown: boolean; backend: string; workspaceReady: boolean
+  compact: boolean; expandTools: boolean
 }) {
   const viewport = useRef<HTMLDivElement>(null)
   const flow = useRef<HTMLDivElement>(null)
@@ -100,6 +101,7 @@ export function ChatLog({ items, busy, markdown, backend, workspaceReady }: {
   return (
     <div className="chat-area">
       <div className="chat-log" ref={viewport} role="region" aria-label="Conversation" tabIndex={0}
+        data-compact={compact ? 'true' : undefined}
         onScroll={(event) => {
           const el = event.currentTarget
           following.current = el.scrollHeight - el.clientHeight - el.scrollTop <= FOLLOW_DISTANCE
@@ -113,7 +115,8 @@ export function ChatLog({ items, busy, markdown, backend, workspaceReady }: {
               {!workspaceReady && <p>Open a workspace to start a task.</p>}
             </div>
           )}
-          {items.map((item) => <ConversationItem key={item.id} item={item} markdown={markdown} backend={backend} />)}
+          {items.map((item) => <ConversationItem key={item.id} item={item} markdown={markdown}
+            backend={backend} expand={expandTools} />)}
         </div>
       </div>
       {showLatest && <button type="button" className="jump-to-latest" onClick={() => {
