@@ -1,5 +1,5 @@
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{cli, drive_turn, Personality, TurnRequest, DEFAULT_BACKEND};
@@ -97,8 +97,19 @@ pub async fn start_turn(
         if !turns.is_empty() {
             return Err(AppError::Agent("Wait for the active turn to finish".into()));
         }
-        turns.insert(turn_id.clone(), (cancel.clone(), agent.clone()));
+        turns.insert(
+            turn_id.clone(),
+            crate::LiveTurn {
+                cancel: cancel.clone(),
+                agent: agent.clone(),
+                chat_id: chat_id.clone(),
+                harness: backend.clone(),
+            },
+        );
     }
+    // Which task this turn belongs to, kept for the queue drain below: the
+    // request below takes ownership of the id.
+    let queued_for = chat_id.clone();
 
     // One request file per task, or per personality stage: the path is fixed for
     // the life of a reused harness process, so it must not change per turn.
@@ -120,6 +131,13 @@ pub async fn start_turn(
         trust_workspace,
         personality,
         requests_file,
+        // Only when this launch is serving them: with the switch off, a turn's
+        // argv must be exactly what it was before the tools existed.
+        tools: state
+            .tools
+            .enabled()
+            .then(|| crate::tools::bridge(&state.tools))
+            .flatten(),
     };
 
     tauri::async_runtime::spawn(async move {
@@ -169,6 +187,17 @@ pub async fn start_turn(
             .expect("turns mutex poisoned")
             .remove(&turn_id);
         let _ = on_event.send(AgentEvent::TurnFinished { reason });
+        // A message queued while this turn ran is delivered now. The queue is
+        // Rust's, but the next turn needs the webview's channel, so the page is
+        // told which task has work waiting and it starts the turn itself — the
+        // one place that knows what the composer would have sent.
+        if let Some(queued) = state.tools.queue_pop(&queued_for) {
+            let _ = app.emit_to(
+                tauri::EventTarget::webview("main"),
+                "nova:queue-ready",
+                serde_json::json!({ "chatId": queued_for, "message": queued }),
+            );
+        }
     });
 
     Ok(())
@@ -189,7 +218,7 @@ pub async fn respond_approval(
         .lock()
         .expect("turns mutex poisoned")
         .get(&turn_id)
-        .map(|(_, agent)| agent.clone())
+        .map(|turn| turn.agent.clone())
         .ok_or_else(|| AppError::Agent("This turn has already finished".into()))?;
     agent.respond(interrupt_id, reply).await
 }
@@ -210,18 +239,5 @@ pub async fn agent_status(versions: bool, app: AppHandle) -> Vec<cli::AgentStatu
 
 #[tauri::command]
 pub async fn cancel_turn(turn_id: String, state: State<'_, AppState>) -> Result<bool, AppError> {
-    let token = state
-        .turns
-        .lock()
-        .expect("turns mutex poisoned")
-        .get(&turn_id)
-        .map(|(token, _)| token.clone());
-
-    match token {
-        Some(token) => {
-            token.cancel();
-            Ok(true)
-        }
-        None => Ok(false),
-    }
+    Ok(state.cancel_turn(&turn_id))
 }

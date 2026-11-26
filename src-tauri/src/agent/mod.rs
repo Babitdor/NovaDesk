@@ -39,6 +39,10 @@ pub struct TurnRequest {
     /// `NOVA_DESKTOP_REQUESTS`. Keyed by task (not by turn) so a reused session
     /// keeps a valid path for as long as it lives.
     pub requests_file: Option<std::path::PathBuf>,
+    /// Nova Desktop Tools, when this launch is hosting them. A backend that
+    /// cannot be told about an MCP server ignores it; the registry says which
+    /// ones those are, so the pane never claims otherwise.
+    pub tools: Option<crate::tools::Bridge>,
 }
 
 #[derive(Clone, serde::Deserialize)]

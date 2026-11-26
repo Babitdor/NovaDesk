@@ -13,7 +13,6 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::cli;
@@ -427,18 +426,15 @@ pub async fn github_set_token(
 /// first clone (when no parent has been chosen yet).
 async fn pick_parent(app: &AppHandle) -> Result<Option<PathBuf>, AppError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().pick_folder(move |picked| {
+    crate::commands::dialogs::pick_folder(app, move |picked| {
         let _ = tx.send(picked);
     });
-    let Some(picked) = rx
+    let Some(path) = rx
         .await
         .map_err(|_| failure("folder picker closed unexpectedly"))?
     else {
         return Ok(None);
     };
-    let path = picked
-        .into_path()
-        .map_err(|e| failure(format!("unsupported folder selection: {e}")))?;
     Ok(Some(WorkspaceGuard::new(path)?.root().to_path_buf()))
 }
 

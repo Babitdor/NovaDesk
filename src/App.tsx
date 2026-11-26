@@ -24,9 +24,11 @@ import type { AgentEvent, FinishReason, InterruptReply, WorkspaceInfo } from './
 import { VIEWS, type Pane, type View } from './lib/panes'
 import {
   cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval,
-  setCrashPolicy, setQuickLauncher, setWidget, setWorkspace, startTurn,
+  setCrashPolicy, setQuickLauncher, setWidget, setWorkspace, startTurn, type TerminalShell,
 } from './lib/ipc'
 import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
+import { startToolBridge, type ToolHandler } from './lib/toolBridge'
+import { taskTools } from './lib/tasks'
 import { advance, dueAfterThread, dueSchedules, promptFor, withinLimit } from './lib/scheduler'
 import { speakReply, stopSpeaking } from './lib/speak'
 import {
@@ -93,6 +95,19 @@ export default function App() {
   const [offeredWorkspace, setOfferedWorkspace] = useState<string | null>(null)
   const [view, setView] = useState<View>('Chat')
   const [dock, setDock] = useState<Dock>('closed')
+  /// Requests from a tool that has to move the UI: the file to show, the page
+  /// to open, the shell to start. Each carries a nonce so asking for the same
+  /// file twice still counts as a new request.
+  const [fileToOpen, setFileToOpen] = useState<{ path: string; nonce: number } | null>(null)
+  const [browserTarget, setBrowserTarget] = useState<{ url: string; nonce: number } | null>(null)
+  const [shellToSpawn, setShellToSpawn] = useState<{ shell: TerminalShell; nonce: number } | null>(null)
+  /// The tool handler for the current render, and the deferred send a tool
+  /// asked for on a task that was not open yet.
+  const toolHandler = useRef<ToolHandler>(() => {
+    throw new Error('the tool bridge is not ready yet')
+  })
+  const startInRef = useRef<(chatId: string, text: string) => Promise<boolean>>(async () => false)
+  const deferredSend = useRef<{ chatId: string; text: string; settle: (ok: boolean) => void } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [railWidth, setRailWidth] = useState(defaultRailWidth)
   const [panelWidth, setPanelWidth] = useState(defaultPanelWidth)
@@ -227,10 +242,45 @@ export default function App() {
     const dismiss = listen('nova:widget-dismiss', () => {
       setPreferences((current) => ({ ...current, widgetEnabled: false }))
     })
+    // Tools act on the window through these: opening a file, a page or a shell
+    // is a UI decision (which pane, how it is sized), so Rust asks and the page
+    // does it rather than growing a second opinion about the layout.
+    const openFile = listen<{ path?: string }>('nova:open-file', (event) => {
+      const path = String(event.payload?.path ?? '')
+      if (!path) return
+      setFileToOpen({ path, nonce: Date.now() })
+      withViewTransition(() => setView('Files'))
+    })
+    const openTerminal = listen<{ shell?: string }>('nova:open-terminal', (event) => {
+      const shell = String(event.payload?.shell ?? 'powershell')
+      if (shell !== 'powershell' && shell !== 'cmd' && shell !== 'gitbash') return
+      setShellToSpawn({ shell, nonce: Date.now() })
+      setDock('open')
+    })
+    const openBrowser = listen<{ url?: string }>('nova:browser-open', (event) => {
+      const url = String(event.payload?.url ?? '')
+      if (!url) return
+      setBrowserTarget({ url, nonce: Date.now() })
+      withViewTransition(() => setView('Preview'))
+    })
+    // A message queued while a turn was running. Rust popped it, so this is the
+    // only copy: if the turn cannot start, say so instead of losing it.
+    const queueReady = listen<{ chatId?: string; message?: { text?: string } }>('nova:queue-ready', (event) => {
+      const chatId = String(event.payload?.chatId ?? '')
+      const text = String(event.payload?.message?.text ?? '').trim()
+      if (!chatId || !text) return
+      void startInRef.current(chatId, text).then((ok) => {
+        if (!ok) setNotice('A queued message could not start: another turn is still running.')
+      })
+    })
     return () => {
       void quick.then((off) => off()).catch(() => {})
       void focusChat.then((off) => off()).catch(() => {})
       void dismiss.then((off) => off()).catch(() => {})
+      void openFile.then((off) => off()).catch(() => {})
+      void openTerminal.then((off) => off()).catch(() => {})
+      void openBrowser.then((off) => off()).catch(() => {})
+      void queueReady.then((off) => off()).catch(() => {})
     }
   }, [chats])
 
@@ -837,6 +887,77 @@ export default function App() {
   // keystroke always uses the current render's state. Assigned from an effect
   // because a ref must not change during render.
   useEffect(() => { submitRef.current = submit })
+
+  /// Runs a prompt in one task, whether or not it is open. A tool that asked for
+  /// another task switches to it and settles when the composer's own path has
+  /// run, so the answer it returns is the real outcome rather than a guess.
+  const startIn = (chatId: string, text: string) => new Promise<boolean>((resolve) => {
+    if (live.current) {
+      resolve(false)
+      return
+    }
+    if (chatId === active.id) {
+      resolve(submitRef.current(text))
+      return
+    }
+    deferredSend.current = { chatId, text, settle: resolve }
+    setActiveId(chatId)
+  })
+
+  useEffect(() => {
+    const request = deferredSend.current
+    if (!request || request.chatId !== active.id) return
+    deferredSend.current = null
+    request.settle(submitRef.current(request.text))
+  }, [active.id])
+
+  /// The handler the tool bridge calls. Kept in a ref updated after every
+  /// render so the listener registered once still answers from current state.
+  useEffect(() => {
+    startInRef.current = startIn
+    toolHandler.current = taskTools({
+      chats: () => chats,
+      activeId: () => active.id,
+      liveChat: () => live.current?.chatId ?? null,
+      // The same two calls openChat makes, written out because that function is
+      // declared below this effect and reading it here would be a use before
+      // declaration for no benefit.
+      open: (id) => withViewTransition(() => { setActiveId(id); setView('Chat') }),
+      create: (title, agent) => {
+        const chat: Chat = { ...createChat(), title, ...(agent ? { agent } : {}) }
+        addTasks([chat])
+        return chat
+      },
+      update: (id, patch) => setChats((previous) => previous.map(
+        (chat) => chat.id === id ? { ...chat, ...patch } : chat)),
+      archive: (id) => {
+        // Same rule as the rail's ×: deleting under a live turn would leave the
+        // stream with nowhere to land.
+        if (live.current?.chatId === id) return 'Stop the running turn before deleting this task.'
+        const index = chats.findIndex((chat) => chat.id === id)
+        const remaining = chats.filter((chat) => chat.id !== id)
+        if (!remaining.length) remaining.push(createChat())
+        setChats(remaining)
+        if (activeId === id) setActiveId(remaining[Math.min(index, remaining.length - 1)].id)
+        return null
+      },
+      start: startIn,
+    })
+  })
+
+  /// One listener for the whole session: Rust emits nova:tool-call and waits on
+  /// a one-shot for the answer, so a second registration would answer twice.
+  useEffect(() => {
+    let dispose: (() => void) | null = null
+    let cancelled = false
+    void startToolBridge(() => (name, args) => toolHandler.current(name, args))
+      .then((off) => { if (cancelled) off(); else dispose = off })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      if (dispose) dispose()
+    }
+  }, [])
   const bridge = bridgeQueue.find((request) => request.needsApproval)
   const busy = running?.chatId === active.id
   const interrupt = busy ? interrupts[0] : undefined
@@ -986,13 +1107,14 @@ export default function App() {
             usage={active.usage} workspace={workspace?.name ?? null}
             keepDrafts={preferences.keepDrafts} onSend={submit} onStop={stopTurn} />
           <TerminalDock key={workspace?.root} dock={dock} height={dockHeight} onDock={setDock} onHeight={setDockHeight}
-            workspaceReady={!!workspace} obscured={settings} />
+            workspaceReady={!!workspace} obscured={settings} spawn={shellToSpawn} />
         </main>
 
         <RightPanel workspace={workspace} tab={pane} open={panelOpen} obscured={settings}
           width={panelWidth} onWidth={setPanelWidth} sidebarWidth={sidebarOpen ? railWidth : railCollapsed}
           chats={chats} activeId={active.id} preferences={preferences} onOpenChat={openChat}
-          onMove={moveChat} onUpdatePreferences={update} onOpenFolder={(path) => void openFolder(path)} />
+          onMove={moveChat} onUpdatePreferences={update} onOpenFolder={(path) => void openFolder(path)}
+          fileToOpen={fileToOpen} browserTarget={browserTarget} />
       </div>
       {settings && <Settings key={workspace?.root} preferences={preferences} update={update}
         initialSection={settingsPage.section} initialTab={settingsPage.tab}

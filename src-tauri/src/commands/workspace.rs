@@ -1,5 +1,4 @@
-use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
+use tauri::{AppHandle, Manager, State};
 
 use crate::error::AppError;
 use crate::workspace::WorkspaceGuard;
@@ -43,36 +42,44 @@ pub async fn pick_workspace(
     state: State<'_, AppState>,
 ) -> Result<Option<WorkspaceInfo>, AppError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().pick_folder(move |picked| {
+    crate::commands::dialogs::pick_folder(&app, move |picked| {
         let _ = tx.send(picked);
     });
 
-    let Some(picked) = rx
+    // The helper normalises the plugin's path type away, so a dismissed dialog is
+    // simply None and the app never has to name FilePath.
+    let Some(path) = rx
         .await
         .map_err(|_| AppError::Agent("folder picker closed unexpectedly".to_string()))?
     else {
         return Ok(None);
     };
-
-    let path = picked
-        .into_path()
-        .map_err(|e| AppError::Agent(format!("unsupported folder selection: {e}")))?;
-    set_root(WorkspaceGuard::new(path)?, &state).await.map(Some)
+    set_root(WorkspaceGuard::new(path)?, &state, &app)
+        .await
+        .map(Some)
 }
 
 #[tauri::command]
 pub async fn set_workspace(
     path: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<WorkspaceInfo, AppError> {
-    set_root(WorkspaceGuard::new(path)?, &state).await
+    set_root(WorkspaceGuard::new(path)?, &state, &app).await
 }
 
 async fn set_root(
     guard: WorkspaceGuard,
     state: &State<'_, AppState>,
+    app: &AppHandle,
 ) -> Result<WorkspaceInfo, AppError> {
     let info = info(&guard);
+    // The project list is what the list_projects tool answers from, so it is
+    // written where a tool can find it; a failure here must not stop a folder
+    // from opening, because losing the history is the smaller loss.
+    if let Ok(data) = app.path().app_data_dir() {
+        let _ = crate::tools::projects::register(&data, guard.root());
+    }
     *state.guard.write().await = Some(guard);
     Ok(info)
 }

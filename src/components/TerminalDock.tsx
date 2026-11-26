@@ -14,12 +14,15 @@ type Props = {
   onHeight: (height: number) => void
   workspaceReady: boolean
   obscured: boolean
+  /// A tool asked for a shell. The nonce makes the same shell a new tab.
+  spawn?: { shell: TerminalShell; nonce: number } | null
 }
 
-export function TerminalDock({ dock, height, onDock, onHeight, workspaceReady, obscured }: Props) {
+export function TerminalDock({ dock, height, onDock, onHeight, workspaceReady, obscured, spawn }: Props) {
   const [terminals, setTerminals] = useState<{ id: number; shell: TerminalShell }[]>([])
   const [selected, select] = useState<number | null>(null)
   const [next, setNext] = useState(1)
+  const [seenSpawn, setSeenSpawn] = useState(0)
   const [shellMenu, setShellMenu] = useState(false)
   const shellMenuId = useId()
   const menuButton = useRef<HTMLButtonElement>(null)
@@ -30,6 +33,18 @@ export function TerminalDock({ dock, height, onDock, onHeight, workspaceReady, o
     setTerminals([{ id: 1, shell: 'powershell' }])
     select(1)
     setNext(2)
+  }
+
+  // A tool's open_terminal lands here: the dock owns its tabs, so it adds one
+  // rather than being told about a terminal it never created. Done during
+  // render, like the first-terminal seed above, so the tab exists in the same
+  // paint as the request.
+  if (spawn && spawn.nonce !== seenSpawn) {
+    setSeenSpawn(spawn.nonce)
+    const id = next
+    setTerminals((current) => [...current, { id, shell: spawn.shell }])
+    select(id)
+    setNext(id + 1)
   }
 
   return (

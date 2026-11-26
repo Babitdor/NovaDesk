@@ -38,6 +38,11 @@ pub enum AppError {
     /// point at different controls on the same page.
     #[error("{0}")]
     Speak(String),
+    /// Nova Desktop Tools have their own kind: "no browser is open", "the
+    /// token is wrong" and "that harness cannot take a mid-turn message" all
+    /// need different words in the pane and in a tool reply.
+    #[error("{0}")]
+    Tools(String),
 }
 
 impl AppError {
@@ -56,6 +61,7 @@ impl AppError {
             AppError::Agent(_) => "agent",
             AppError::Voice(_) => "voice",
             AppError::Speak(_) => "speak",
+            AppError::Tools(_) => "tools",
         }
     }
 

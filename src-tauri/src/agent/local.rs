@@ -133,6 +133,7 @@ mod tests {
             prompt: prompt.to_string(),
             workspace: None,
             requests_file: None,
+            tools: None,
         }
     }
 

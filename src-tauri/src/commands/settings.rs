@@ -5,7 +5,6 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State, Url};
-use tauri_plugin_dialog::DialogExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
@@ -99,16 +98,13 @@ pub struct ColorTheme {
 #[tauri::command]
 pub async fn import_theme(app: AppHandle) -> Result<Vec<ColorTheme>, AppError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .add_filter("VS Code theme extension", &["vsix"])
-        .pick_file(move |path| {
-            let _ = tx.send(path);
-        });
+    crate::commands::dialogs::pick_file(&app, "VS Code theme extension", "vsix", move |path| {
+        let _ = tx.send(path);
+    });
     let Some(path) = rx.await.map_err(failure)? else {
         return Ok(Vec::new());
     };
-    read_vsix(&path.into_path().map_err(failure)?).await
+    read_vsix(&path).await
 }
 
 #[tauri::command]

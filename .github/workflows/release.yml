@@ -37,6 +37,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # tauri-action bundles what tauri.conf.json names in bundle.externalBin,
+      # and that file only exists once the shim has been built and copied.
+      - name: Build the tool shim
+        run: npm run tools:shim
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

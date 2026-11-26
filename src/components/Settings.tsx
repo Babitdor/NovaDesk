@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react'
 
-import { addMcpServer, errorText, agentStatus, importTheme, installTheme, markdownify, novaMcpList, openProviderSetup } from '../lib/ipc'
+import { addMcpServer, errorText, agentStatus, importTheme, installTheme, novaMcpList, openProviderSetup } from '../lib/ipc'
 import {
   ACCENTS, AGENTS, PRESETS, findTheme, resetAppearance, type AgentId, type AgentStatus, type ColorTheme, type Preferences,
 } from '../lib/settings'
 import { AboutPane } from './AboutPane'
 import type { WorkspaceInfo } from '../lib/events'
 import { AgentMark } from './AgentMark'
-import { Markdown } from './Markdown'
 import { CREW, crewRoles, systemPrompt } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
 import { SpeakSettings } from './SpeakSettings'
@@ -15,6 +14,7 @@ import { VoiceSettings } from './VoiceSettings'
 import { GeneralSettings } from './GeneralSettings'
 import { SchedulesSettings } from './SchedulesSettings'
 import { Group, Toggle } from './SettingsRows'
+import { ToolsSettings } from './ToolsSettings'
 
 const SECTIONS = [
   ['Recommended', '✧'], ['General', '◈'], ['Appearance', '◐'],
@@ -46,9 +46,6 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
   const [servers, setServers] = useState<string | null>(null)
   const [mcpBusy, setMcpBusy] = useState(false)
   const [checkInput, setCheckInput] = useState(() => JSON.stringify(p.checks[workspace?.root ?? ''] ?? []))
-  const [html, setHtml] = useState('')
-  const [converted, setConverted] = useState('')
-  const [converting, setConverting] = useState(false)
   const root = workspace?.root ?? ''
   // The custom accent is stored per scheme, and App paints the current scheme
   // onto the document, so read it back rather than threading the OS media query in.
@@ -407,26 +404,11 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
           </>}
           {section === 'Tools' && <>
             {checks}
-            <Group title="Markdownify">
-              <form className="settings-convert" aria-label="Convert HTML to Markdown" onSubmit={async (event) => {
-                event.preventDefault()
-                setConverting(true)
-                setStatus('')
-                try { setConverted(await markdownify(html)) }
-                catch (err) { setStatus(errorText(err)) }
-                finally { setConverting(false) }
-              }}>
-                <label>HTML<textarea name="html" value={html} onChange={(event) => setHtml(event.target.value)} rows={5} required
-                  placeholder="<h1>Hello</h1>" maxLength={512 * 1024} /></label>
-                <div className="settings-action"><button type="submit" disabled={converting}>
-                  {converting ? 'Converting…' : 'Convert to Markdown'}
-                </button></div>
-                {converted && <>
-                  <label>Markdown<textarea value={converted} readOnly rows={5} /></label>
-                  <Markdown text={converted} />
-                </>}
-              </form>
-            </Group>
+            {/* The catalogue is the whole section now: what exists, which
+                harness can call it, and what is deliberately absent. The
+                Markdownify form moved to General — it converts a paste, it is
+                not a tool surface. */}
+            <ToolsSettings />
           </>}
           {section === 'Connections' && <Group title="Nova MCP servers">
             <p className="settings-help">Reads configured servers from the current workspace using Nova’s CLI.</p>

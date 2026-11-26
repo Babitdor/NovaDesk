@@ -320,6 +320,9 @@ pub struct AgentStatus {
     latest: Option<String>,
     update_available: bool,
     executable: Option<String>,
+    /// How this harness can be given Nova Desktop Tools, so the status API and
+    /// the Tools pane tell the same story.
+    tools: crate::tools::Injection,
 }
 
 pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
@@ -381,6 +384,7 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
                     latest,
                     update_available,
                     executable: path.as_ref().map(Executable::display),
+                    tools: crate::tools::injection(id),
                 },
             )
         });
@@ -458,6 +462,87 @@ impl Drop for CommandCodePromptMod {
     }
 }
 
+/// The variable a harness passes to the shim: a path, never a secret.
+pub const TOOLS_FILE_ENV: &str = "NOVA_TOOLS_FILE";
+
+/// Nova Desktop Tools credentials for one turn: the endpoint and the token, in
+/// a file this user alone can read, deleted when the child exits.
+///
+/// The alternative is argv, and a command line is readable by every process on
+/// the machine and ends up in a crash report. The shim reads the file (see
+/// src/bin/nova-tools.rs), so a harness only ever carries its path.
+struct BridgeFile {
+    path: PathBuf,
+}
+
+impl BridgeFile {
+    fn write(bridge: &crate::tools::Bridge) -> Result<Self, AppError> {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("nova-tools-{}.json", uuid::Uuid::new_v4()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&path)
+            .map_err(|error| AppError::Io(error.to_string()))?;
+        let body = json!({ "url": bridge.url, "token": bridge.token }).to_string();
+        let result = file.write_all(body.as_bytes());
+        drop(file);
+        result.map_err(|error| AppError::Io(error.to_string()))?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for BridgeFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// OpenCode takes one inline configuration document, so the personality and the
+/// tool server have to be merged instead of both setting the variable.
+fn opencode_config(
+    personality: Option<&super::Personality>,
+    credentials: Option<&Path>,
+    shim: Option<&Path>,
+) -> Result<String, AppError> {
+    let raw = std::env::var("OPENCODE_CONFIG_CONTENT").unwrap_or_else(|_| "{}".into());
+    let mut config: Value = serde_json::from_str(&raw).map_err(|_| {
+        AppError::Agent("OpenCode inline configuration must be JSON for personalities".into())
+    })?;
+    if !config.is_object()
+        || config.get("agent").is_some_and(|value| !value.is_object())
+        || config.get("mcp").is_some_and(|value| !value.is_object())
+    {
+        return Err(AppError::Agent(
+            "Invalid OpenCode inline configuration".into(),
+        ));
+    }
+    if let Some(profile) = personality {
+        config["agent"]["nova-desktop-personality"] = json!({
+            "mode": "primary", "prompt": &profile.system_prompt
+        });
+    }
+    if let Some(credentials) = credentials {
+        let mut environment = serde_json::Map::new();
+        environment.insert(
+            TOOLS_FILE_ENV.to_string(),
+            json!(credentials.display().to_string()),
+        );
+        config["mcp"]["nova-desktop"] = json!({
+            "type": "local",
+            "command": [shim.map(|shim| shim.display().to_string()).unwrap_or_default()],
+            "enabled": true,
+            "environment": environment,
+        });
+    }
+    Ok(config.to_string())
+}
+
 impl AgentBackend for CliAgent {
     fn start<'a>(
         &'a self,
@@ -467,7 +552,22 @@ impl AgentBackend for CliAgent {
     ) -> BoxFut<'a, Result<FinishReason, AppError>> {
         Box::pin(async move {
             let root = req.workspace.as_ref().ok_or(AppError::NoWorkspace)?.root();
-            let (args, stdin_prompt) = arguments(self.0, &req);
+            // The credentials file lives exactly as long as the child: it holds
+            // this launch's endpoint and token, and only its path travels on the
+            // command line.
+            let mut credentials = None;
+            if let Some(bridge) = req
+                .tools
+                .as_ref()
+                .filter(|_| crate::tools::injection(self.0).per_turn())
+            {
+                credentials = Some(BridgeFile::write(bridge)?);
+            }
+            let (args, stdin_prompt) = arguments(
+                self.0,
+                &req,
+                credentials.as_ref().map(|file| file.path.as_path()),
+            );
             let mut process = command(self.0)?;
             // Same request-file contract as Nova: a harness may write requests and
             // Nova reads them when the turn ends. Ignoring the variable is fine.
@@ -488,29 +588,21 @@ impl AgentBackend for CliAgent {
                     "hermes" => {
                         process.env("HERMES_EPHEMERAL_SYSTEM_PROMPT", &profile.system_prompt);
                     }
-                    "opencode" => {
-                        let raw = std::env::var("OPENCODE_CONFIG_CONTENT")
-                            .unwrap_or_else(|_| "{}".into());
-                        let mut config: Value = serde_json::from_str(&raw).map_err(|_| {
-                            AppError::Agent(
-                                "OpenCode inline configuration must be JSON for personalities"
-                                    .into(),
-                            )
-                        })?;
-                        if !config.is_object()
-                            || config.get("agent").is_some_and(|value| !value.is_object())
-                        {
-                            return Err(AppError::Agent(
-                                "Invalid OpenCode inline configuration".into(),
-                            ));
-                        }
-                        config["agent"]["nova-desktop-personality"] = json!({
-                            "mode": "primary", "prompt": &profile.system_prompt
-                        });
-                        process.env("OPENCODE_CONFIG_CONTENT", config.to_string());
-                    }
+                    // OpenCode personality and tools are one document, so both
+                    // are written below rather than fighting over the variable.
+                    "opencode" => {}
                     _ => {}
                 }
+            }
+            if self.0 == "opencode" && (req.personality.is_some() || credentials.is_some()) {
+                process.env(
+                    "OPENCODE_CONFIG_CONTENT",
+                    opencode_config(
+                        req.personality.as_ref(),
+                        credentials.as_ref().map(|file| file.path.as_path()),
+                        req.tools.as_ref().map(|bridge| bridge.shim.as_path()),
+                    )?,
+                );
             }
             let mut child = process
                 .args(args)
@@ -607,7 +699,7 @@ impl AgentBackend for CliAgent {
     }
 }
 
-fn arguments(id: &str, req: &TurnRequest) -> (Vec<String>, bool) {
+fn arguments(id: &str, req: &TurnRequest, credentials: Option<&Path>) -> (Vec<String>, bool) {
     let session = req.session.as_deref().filter(|id| valid_session(id));
     let mut args: Vec<String> = match id {
         "pi" => vec!["--mode", "json", "--print", "--session-id", &req.chat_id],
@@ -650,6 +742,67 @@ fn arguments(id: &str, req: &TurnRequest) -> (Vec<String>, bool) {
     .into_iter()
     .map(str::to_owned)
     .collect();
+    // Nova Desktop Tools, per harness. Verified flags, not guesses: claude
+    // takes the server as JSON through --mcp-config, codex takes dotted TOML
+    // overrides, and opencode is configured through OPENCODE_CONFIG_CONTENT in
+    // start() because its config is a document rather than flags. Everything
+    // else only reads its own config file, and a saved entry would carry a token
+    // that dies with this launch, so nothing is injected for them.
+    //
+    // Only the credentials file's path travels in argv. The endpoint and the
+    // token live inside it, readable by this user alone and deleted when the
+    // turn ends, because a command line is visible to every process on the
+    // machine and ends up in crash reports.
+    if let (Some(bridge), Some(credentials)) = (&req.tools, credentials) {
+        let server = "mcp_servers.nova_desktop";
+        let file = credentials.display().to_string();
+        let mut env = serde_json::Map::new();
+        env.insert(TOOLS_FILE_ENV.to_string(), json!(file));
+        match id {
+            "claude" => args.extend([
+                "--mcp-config".to_owned(),
+                json!({
+                    "mcpServers": {
+                        "nova-desktop": {
+                            "command": bridge.shim.display().to_string(),
+                            "args": [],
+                            "env": env,
+                        }
+                    }
+                })
+                .to_string(),
+                // --print cannot answer a permission prompt, so an MCP tool
+                // call that is not pre-approved is refused outright. The
+                // allowlist entry names the server segment literally and
+                // wildcards only the tool: mcp__<server>__* is the one shape
+                // Claude Code accepts for "every tool on this server", and a
+                // bare mcp__<server> is not a rule it recognises.
+                "--allowedTools".to_owned(),
+                "mcp__nova-desktop__*".to_owned(),
+            ]),
+            "codex" => args.extend([
+                "-c".to_owned(),
+                format!(
+                    "{server}.command={}",
+                    json!(bridge.shim.display().to_string())
+                ),
+                "-c".to_owned(),
+                format!("{server}.args=[]"),
+                "-c".to_owned(),
+                format!("{server}.env.{TOOLS_FILE_ENV}={}", json!(file)),
+                // The base argv above runs with --ask-for-approval never, and
+                // under that policy codex refuses every MCP call with "MCP tool
+                // call requires approval, but approval policy is never" — the
+                // server is announced, listed, and then unusable. Per-server
+                // approval mode is the knob that lifts this without a prompt:
+                // its values are auto, prompt, writes and approve, and only
+                // approve answers the call outright.
+                "-c".to_owned(),
+                format!("{server}.default_tools_approval_mode=\"approve\""),
+            ]),
+            _ => {}
+        }
+    }
     if let Some(model) = req.model.as_deref() {
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
@@ -1005,16 +1158,88 @@ mod tests {
             trust_workspace: false,
             personality: None,
             requests_file: None,
+            tools: None,
         };
-        let (pi, _) = arguments("pi", &request);
+        let (pi, _) = arguments("pi", &request, None);
         assert!(pi
             .windows(2)
             .any(|pair| pair == ["--model", "provider/model"]));
         assert!(pi.windows(2).any(|pair| pair == ["--thinking", "high"]));
-        let (codex, _) = arguments("codex", &request);
+        let (codex, _) = arguments("codex", &request, None);
         assert!(codex
             .windows(2)
             .any(|pair| pair == ["-c", "model_reasoning_effort=\"high\""]));
+    }
+
+    /// With the tool switch off, a turn's argv is exactly what it was before
+    /// Nova Desktop Tools existed; with it on, only the credentials file's path
+    /// is added, never the token.
+    #[test]
+    fn tools_change_the_argv_only_when_a_bridge_is_present() {
+        let mut request = TurnRequest {
+            prompt: "Hello".into(),
+            workspace: None,
+            chat_id: "task".into(),
+            model: None,
+            effort: None,
+            session: None,
+            trust_workspace: false,
+            personality: None,
+            requests_file: None,
+            tools: None,
+        };
+
+        for &(backend, _) in AGENTS.iter().filter(|(id, _)| *id != "nova") {
+            let (plain, _) = arguments(backend, &request, None);
+            assert!(
+                !plain
+                    .iter()
+                    .any(|arg| arg.contains("nova-tools") || arg.contains("NOVA_TOOLS_FILE")),
+                "{backend} was given a shim it was not offered"
+            );
+        }
+
+        request.tools = Some(crate::tools::Bridge {
+            shim: PathBuf::from("C:/tools/nova-tools.exe"),
+            url: "http://127.0.0.1:9/mcp".into(),
+            token: "secret-token".into(),
+        });
+        let credentials = Path::new("C:/temp/nova-tools-1.json");
+
+        let (claude, _) = arguments("claude", &request, Some(credentials));
+        assert!(claude.iter().any(|arg| arg == "--mcp-config"));
+        assert!(claude.iter().any(|arg| arg.contains("NOVA_TOOLS_FILE")));
+        // --print cannot answer a permission prompt, so the server's tools are
+        // pre-approved; without this every MCP call comes back denied.
+        assert!(claude
+            .windows(2)
+            .any(|pair| pair == ["--allowedTools", "mcp__nova-desktop__*"]));
+        assert!(
+            !claude.iter().any(|arg| arg.contains("secret-token")),
+            "the token must not reach a command line"
+        );
+
+        let (codex, _) = arguments("codex", &request, Some(credentials));
+        assert!(codex
+            .iter()
+            .any(|arg| arg == "mcp_servers.nova_desktop.command=\"C:/tools/nova-tools.exe\""));
+        assert!(codex.iter().any(|arg| arg
+            == "mcp_servers.nova_desktop.env.NOVA_TOOLS_FILE=\"C:/temp/nova-tools-1.json\""));
+        // Without this, --ask-for-approval never makes codex refuse each call.
+        assert!(codex
+            .iter()
+            .any(|arg| arg == "mcp_servers.nova_desktop.default_tools_approval_mode=\"approve\""));
+        assert!(!codex.iter().any(|arg| arg.contains("secret-token")));
+
+        // A harness that only reads its own config file is offered nothing, even
+        // with a bridge: the pane explains that rather than claiming support.
+        for backend in ["pi", "commandcode", "hermes"] {
+            let (plain, _) = arguments(backend, &request, Some(credentials));
+            assert!(
+                !plain.iter().any(|arg| arg.contains("nova-tools")),
+                "{backend} must not be handed the shim"
+            );
+        }
     }
 
     #[test]
@@ -1032,19 +1257,20 @@ mod tests {
                 system_prompt: "Stay in scope.".into(),
             }),
             requests_file: None,
+            tools: None,
         };
         let profile = request.personality.as_ref().unwrap();
         assert!(AGENTS
             .iter()
             .all(|&(backend, _)| profile.validate(backend).is_ok()));
         assert!(profile.validate("local").is_err());
-        let (pi, _) = arguments("pi", &request);
+        let (pi, _) = arguments("pi", &request, None);
         assert!(pi
             .windows(2)
             .any(|pair| pair == ["--append-system-prompt", "Stay in scope."]));
         assert_eq!(pi.last().unwrap(), "Find the caller");
         request.personality.as_mut().unwrap().role = "nora".into();
-        let (codex, _) = arguments("codex", &request);
+        let (codex, _) = arguments("codex", &request, None);
         assert!(codex
             .windows(2)
             .any(|pair| pair == ["-c", "developer_instructions=\"Stay in scope.\""]));

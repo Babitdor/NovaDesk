@@ -25,6 +25,10 @@ type Props = {
   onUpdatePreferences: (patch: Partial<Preferences>) => void
   /// A clone hands back a folder; the shell is the only owner of the workspace.
   onOpenFolder: (path: string) => void
+  /// Requests a tool made that this panel carries out: a file to show in the
+  /// tree's preview, a page the browser child should navigate to.
+  fileToOpen: { path: string; nonce: number } | null
+  browserTarget: { url: string; nonce: number } | null
 }
 
 /// Every pane stays mounted and is hidden with CSS: the browser keeps its page
@@ -36,7 +40,7 @@ type Props = {
 /// pane reopen it.
 export function RightPanel({
   workspace, tab, open, obscured, width, sidebarWidth, chats, activeId, preferences,
-  onOpenChat, onMove, onWidth, onUpdatePreferences, onOpenFolder,
+  onOpenChat, onMove, onWidth, onUpdatePreferences, onOpenFolder, fileToOpen, browserTarget,
 }: Props) {
   const pane = (name: Pane) => (name === tab ? 'pane' : 'pane is-hidden')
 
@@ -56,7 +60,7 @@ export function RightPanel({
       )}
 
       <div className={pane('Files')} role="tabpanel" aria-label="Files">
-        <FilesPane key={workspace?.root} workspace={workspace} />
+        <FilesPane key={workspace?.root} workspace={workspace} open={fileToOpen} />
       </div>
       <div className={pane('GitHub')} role="tabpanel" aria-label="GitHub">
         <GitHubPane workspace={workspace} preferences={preferences}
@@ -66,7 +70,7 @@ export function RightPanel({
         <BoardPane chats={chats} activeId={activeId} onOpen={onOpenChat} onMove={onMove} />
       </div>
       <div className={pane('Preview')} role="tabpanel" aria-label="Preview">
-        <BrowserPane active={open && !obscured && tab === 'Preview'} />
+        <BrowserPane active={open && !obscured && tab === 'Preview'} target={browserTarget} />
       </div>
     </section>
   )

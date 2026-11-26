@@ -1,0 +1,19 @@
+[package]
+name = "nova-tools"
+version = "0.4.0"
+edition = "2021"
+description = "Nova Desktop's stdio MCP shim"
+publish = false
+
+# The shim is a separate package on purpose. Tauri validates
+# bundle.externalBin while running the app's build script, so the file has to
+# exist before the app crate can compile at all; a binary that lives in the app
+# package could never satisfy that, because building it would run the same build
+# script. As its own package with no dependencies it builds in a fraction of a
+# second, first.
+
+[[bin]]
+name = "nova-tools"
+path = "src/main.rs"
+
+[dependencies]

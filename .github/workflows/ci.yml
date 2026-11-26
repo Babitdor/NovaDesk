@@ -70,14 +70,59 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
+      # The tool shim is a second binary in the same crate; building it here keeps
+      # the binaries/ copy that the bundle config points at in step with the
+      # source, and proves it compiles on the target platform.
+      - name: Build the tool shim
+        run: npm run tools:shim -- --debug
+
       - name: Format
         working-directory: src-tauri
         run: cargo fmt --all --check
 
+      # --workspace because src-tauri holds two packages now: the app and the
+      # nova-tools shim, and a lint or a test that only ever sees the app would
+      # leave half the shipped binaries unchecked.
       - name: Clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Test
+      # Three invocations, because the manifest rules differ per target kind.
+      #
+      # The binary unit tests link with the manifest tauri-build embeds and
+      # nothing else: a second one fails to link (LNK1123).
+      - name: Test the binaries
         working-directory: src-tauri
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features --bins
+
+      # Integration test binaries get their manifest from build.rs, which can
+      # target them by kind.
+      - name: Test the integration targets
+        working-directory: src-tauri
+        run: >-
+          cargo test -p novacode-desktop --all-features
+          --test speak_engine --test speak_onnx --test speak_service
+          --test tools_mcp --test tools_shim --test voice_engine
+
+      # The lib's unit-test binary cannot be reached from build.rs, so its
+      # manifest arrives through RUSTFLAGS. That code imports ComCtl32 v6's
+      # TaskDialogIndirect (rfd, through tauri-plugin-dialog); Windows loads v5
+      # for an executable with no manifest and the loader kills the process
+      # before the harness prints anything (STATUS_ENTRYPOINT_NOT_FOUND).
+      - name: Test the library
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          $manifest = Join-Path $env:RUNNER_TEMP 'comctl6.manifest'
+          @'
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <dependency>
+              <dependentAssembly>
+                <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*" />
+              </dependentAssembly>
+            </dependency>
+          </assembly>
+          '@ | Set-Content -Path $manifest -Encoding utf8
+          $env:RUSTFLAGS = "-C link-arg=/MANIFEST:EMBED -C link-arg=/MANIFESTINPUT:$manifest"
+          cargo test --workspace --all-features --lib

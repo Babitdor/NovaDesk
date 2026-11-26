@@ -27,7 +27,11 @@ function normalize(input: string): string {
 /// `browser_open` and placed over `.browser-stage`. It paints above the page and
 /// ignores the DOM, so this component's whole job is to keep its rectangle and
 /// its visibility honest.
-export function BrowserPane({ active }: { active: boolean }) {
+export function BrowserPane({ active, target }: {
+  active: boolean
+  /// A tool asked for this URL. The nonce makes the same address a new request.
+  target?: { url: string; nonce: number } | null
+}) {
   const host = useRef<HTMLDivElement>(null)
   const [url, setUrl] = useState('')
   const [loaded, setLoaded] = useState<string | null>(null)
@@ -75,6 +79,16 @@ export function BrowserPane({ active }: { active: boolean }) {
     },
     [box],
   )
+
+  // A tool's open_browser lands here: the pane owns the rectangle the native
+  // child is placed in, so it is the only component that can honour the request.
+  useEffect(() => {
+    if (!target?.url) return
+    // One tick later: this effect synchronises with the native child, and the
+    // pane's own setUrl would otherwise re-render inside the same commit.
+    const pending = setTimeout(() => void open(target.url), 0)
+    return () => clearTimeout(pending)
+  }, [target?.url, target?.nonce, open])
 
   const close = useCallback(async () => {
     try {

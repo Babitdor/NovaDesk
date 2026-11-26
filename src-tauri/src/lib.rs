@@ -8,6 +8,7 @@ mod recovery;
 pub mod speak;
 #[cfg(test)]
 mod testtmp;
+pub mod tools;
 pub mod transcribe;
 pub mod voice;
 mod workspace;
@@ -30,8 +31,18 @@ use crate::workspace::WorkspaceGuard;
 ///
 /// `Clone` is cheap — every field sits behind an Arc — so a spawned task can hold
 /// its own handle and `State<'_, AppState>` stays a borrow.
-/// A live turn: the token that stops it and the backend driving it.
-type LiveTurns = Arc<Mutex<HashMap<String, (CancellationToken, Arc<dyn AgentBackend>)>>>;
+/// A live turn: the token that stops it, the backend driving it, and the two
+/// facts a tool needs to act on it — which task it belongs to and which harness
+/// is running. The token alone cannot answer "what is running", and looking that
+/// up in the page would make a Rust tool depend on the UI being open.
+pub struct LiveTurn {
+    pub cancel: CancellationToken,
+    pub agent: Arc<dyn AgentBackend>,
+    pub chat_id: String,
+    pub harness: String,
+}
+
+type LiveTurns = Arc<Mutex<HashMap<String, LiveTurn>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -54,6 +65,9 @@ pub struct AppState {
     speak: Arc<speak::engine::SpeakEngine>,
     /// Live voice downloads, keyed by voice id.
     speak_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// The tool endpoint, its per-launch token, the browser snapshot refs and
+    /// the message queue: everything a harness can reach.
+    pub tools: tools::ToolsState,
 }
 
 impl AppState {
@@ -80,6 +94,7 @@ impl AppState {
             voice_downloads: Arc::new(Mutex::new(HashMap::new())),
             speak: Arc::new(speak::engine::SpeakEngine::default()),
             speak_downloads: Arc::new(Mutex::new(HashMap::new())),
+            tools: tools::ToolsState::default(),
         }
     }
 
@@ -90,9 +105,13 @@ impl AppState {
     /// Stops every turn and child process. Called when the window closes and when
     /// the app exits, so closing Nova never orphans a running build.
     pub fn cancel_all(&self) {
-        for (token, _) in self.turns.lock().expect("turns mutex poisoned").values() {
-            token.cancel();
+        for turn in self.turns.lock().expect("turns mutex poisoned").values() {
+            turn.cancel.cancel();
         }
+        // A closed window has nobody to answer the task tools and no pane to
+        // drive, so the endpoint stops answering rather than serving half a
+        // tool surface from a dead UI.
+        self.tools.shutdown();
         for token in self.procs.lock().expect("procs mutex poisoned").values() {
             token.cancel();
         }
@@ -133,6 +152,45 @@ impl AppState {
     /// Turns holding a live cancel token, i.e. agents working right now.
     pub fn live_turns(&self) -> usize {
         self.turns.lock().expect("turns mutex poisoned").len()
+    }
+
+    /// The live turn for one task, as (turn id, harness). The queue tools need
+    /// both: the id to cancel, the harness to explain what it can do.
+    pub fn live_turn(&self, chat_id: &str) -> Option<(String, String)> {
+        self.turns
+            .lock()
+            .expect("turns mutex poisoned")
+            .iter()
+            .find(|(_, turn)| turn.chat_id == chat_id)
+            .map(|(id, turn)| (id.clone(), turn.harness.clone()))
+    }
+
+    /// Every live turn, for list_subagents.
+    pub fn live_runs(&self) -> Vec<serde_json::Value> {
+        self.turns
+            .lock()
+            .expect("turns mutex poisoned")
+            .iter()
+            .map(|(id, turn)| {
+                serde_json::json!({ "turnId": id, "taskId": turn.chat_id, "harness": turn.harness })
+            })
+            .collect()
+    }
+
+    /// Cancels one turn by id. Returns whether anything was running.
+    pub fn cancel_turn(&self, turn_id: &str) -> bool {
+        match self
+            .turns
+            .lock()
+            .expect("turns mutex poisoned")
+            .get(turn_id)
+        {
+            Some(turn) => {
+                turn.cancel.cancel();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Terminals the dock still owns, open or backgrounded.
@@ -218,6 +276,13 @@ pub fn run() {
         commands::recovery::crash_reports,
         commands::recovery::clear_crash_reports,
         commands::recovery::report_crash,
+        commands::tools::tools_catalog,
+        commands::tools::tool_reply,
+        commands::tools::set_tools_enabled,
+        commands::tools::list_queue,
+        commands::tools::queue_message,
+        commands::tools::remove_queued,
+        commands::tools::tools_skills,
     ];
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -229,6 +294,17 @@ pub fn run() {
             // Installed before any window exists: a panic during boot is exactly
             // the crash the policy is for.
             recovery::install_panic_hook(app.handle().clone());
+            // The tool endpoint binds an ephemeral loopback port and keeps the
+            // token in memory. It is started off the UI thread because binding
+            // is async and boot must not wait on it; a failure is reported and
+            // the app still runs, since the pane can say why.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>().inner().clone();
+                if let Err(err) = tools::server::start(handle.clone(), state).await {
+                    eprintln!("Nova Desktop Tools are unavailable: {err}");
+                }
+            });
             Ok(())
         })
         .invoke_handler(move |invoke| {

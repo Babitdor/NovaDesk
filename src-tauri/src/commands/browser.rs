@@ -6,9 +6,11 @@ use tauri::{
 
 use crate::error::AppError;
 
+/// Loopback listeners, for both the pane's picker and the list_local_servers
+/// tool. One implementation so the tool and the UI cannot disagree about what
+/// is running.
 #[cfg(windows)]
-#[tauri::command]
-pub async fn browser_local_servers() -> Result<Vec<String>, AppError> {
+pub async fn discover_local_servers() -> Result<Vec<String>, AppError> {
     let system = std::env::var_os("SystemRoot")
         .ok_or_else(|| AppError::Io("SystemRoot is missing".into()))?;
     let output =
@@ -28,11 +30,15 @@ pub async fn browser_local_servers() -> Result<Vec<String>, AppError> {
 }
 
 #[cfg(not(windows))]
-#[tauri::command]
-pub async fn browser_local_servers() -> Result<Vec<String>, AppError> {
+pub async fn discover_local_servers() -> Result<Vec<String>, AppError> {
     Err(AppError::Agent(
         "Local server discovery requires Windows. Enter a URL or port to open it.".into(),
     ))
+}
+
+#[tauri::command]
+pub async fn browser_local_servers() -> Result<Vec<String>, AppError> {
+    discover_local_servers().await
 }
 
 #[cfg(any(windows, test))]

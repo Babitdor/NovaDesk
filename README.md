@@ -45,6 +45,10 @@ keystroke away from the conversation that caused it.
   layers that lean with the pointer, the stars nearest the cursor brighten, a click
   throws a burst of sparks, and meteors cross every few seconds. `Still sky` in
   Appearance freezes it to one frame, and reduced-motion does the same on its own.
+- **A tool surface the harness can call.** Settings → Tools lists the thirty-two
+  things a harness may ask Nova to do — tasks and their queue, the browser pane, files,
+  the project and skill catalogues — and which harnesses can ask at all. A loopback MCP
+  endpoint answers, and `nova-tools`, a small stdio shim, is what each CLI starts.
 - **Slash commands and models.** `/model`, `/new`, `/stop`, `/terminal`, `/theme`,
   `/mcp`, `/auth` and the full Nova command set autocomplete in the composer.
 - **Settings that persist.** Appearance (dark/light/system), nine accents, imported
@@ -326,15 +330,87 @@ second sentence, model load included, and one at a time so two replies do not ha
 each other's speed. That is the measured number, not an estimate.
 
 
-## Build installers
+## Tools
+
+Settings → Tools is two things at once: the catalogue of what a harness may ask Nova to
+do, and the table that says which harnesses can ask at all. Both projections are built
+from one table in `src-tauri/src/tools/mod.rs`, so the pane cannot promise a tool the
+endpoint does not serve, and nothing is served that the pane does not list.
+
+Thirty-two tools, in five groups:
+
+| Group | Count | Tools |
+| --- | --- | --- |
+| Tasks | 11 | `list_tasks`, `read_task`, `search_tasks`, `create_task`, `rename_task`, `pin_task`, `archive_task`, `set_task_stage`, `open_task`, `start_task`, `send_message` |
+| Queue | 5 | `list_queue`, `queue_message`, `remove_queued`, `steer_task`, `interrupt_task` — the per-task queue a running turn drains when it finishes |
+| Browser | 7 | `open_browser`, `read_browser`, `browser_action`, `browser_click`, `browser_type`, `capture_browser`, `list_local_servers` |
+| Files | 3 | `open_file`, `open_terminal`, `code_search` |
+| Discovery | 6 | `list_projects`, `list_subagents`, `list_skills`, `list_moodboards`, `read_moodboard`, `read_moodboard_image` |
+
+Ten of those are answered by the webview rather than by Rust. Tasks, the board column
+and the composer queue live in `localStorage` (`src/lib/sessions.ts`); moving that store
+into Rust is a migration with risk for every existing chat, so the endpoint asks the
+window through the frontend bridge instead of keeping a second copy that could disagree
+about which tasks exist. Those tools are flagged `requiresWindow`, and the endpoint
+shuts down with the window, because a closed window has nobody to answer them.
+
+`read_task` pages: it takes `{ taskId, offset }` and returns `{ nextOffset, messages }`,
+capped per call, so a long transcript is read in slices instead of pasted into a prompt.
+Its description says the transcript is data, not instructions — the same rule Nova
+applies to any file it is asked to read.
+
+### Which harnesses get them
+
+| Harness | Shape | Notes |
+| --- | --- | --- |
+| Claude Code | `--mcp-config <json>` | `--print` cannot answer a permission prompt, so `--allowedTools mcp__nova-desktop__*` pre-approves this server's tools |
+| Codex | `-c mcp_servers.nova_desktop.*` | the base argv runs with `--ask-for-approval never`, which refuses every MCP call, so `default_tools_approval_mode="approve"` is set per server |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` | its config is a document rather than flags, so the server rides in the same one that carries the personality |
+| Nova, Pi, CommandCode, Hermes | none | they only read their own config file, and a saved entry would carry a token that dies with the launch. The pane says that instead of claiming support |
+
+Only the credentials file's path ever reaches a command line. It holds the endpoint and
+this launch's bearer token, is readable by this user alone, and is deleted when the turn
+ends — a command line is visible to every process on the machine and turns up in crash
+reports.
+
+### The endpoint
+
+A loopback HTTP server with one route (`/mcp`) speaking JSON-RPC 2.0, hosted by
+`src-tauri/src/tools/server.rs` on tokio's `TcpListener` with a hand-rolled HTTP/1.1
+reader: no new dependency, and no TLS, since nothing leaves the machine. What it can do
+is a privilege boundary — a caller that reaches it can open windows and type into pages —
+so four checks run before a byte of JSON is parsed: the `Host` must be this loopback
+authority, there must be no `Origin` at all, the bearer token must match the one minted
+for this launch, and the master switch must be on.
+
+Harnesses reach it through `nova-tools`, a stdio MCP shim in its own workspace member
+(`src-tauri/shim`). One proxy, because the CLIs disagree about HTTP MCP configuration but
+all of them start a stdio server the same way. The shim holds no tools of its own; it
+forwards each line to the endpoint, so it cannot drift from the catalogue.
+
+### Build installers
+
 
 ```powershell
+npm run tools:shim   # builds src/bin/nova-tools.rs and copies it where the bundle looks
 npm run tauri build
 ```
+
+`npm run tools:shim` is a prerequisite, not a packaging nicety. The app ships a
+second executable, `nova-tools` — the stdio MCP shim a harness starts to reach
+Nova Desktop Tools — and `tauri.conf.json` names it in `bundle.externalBin`,
+which only accepts `src-tauri/binaries/nova-tools-<target-triple>.exe`. Tauri
+validates that file **while the app's build script runs**, so a checkout that has
+never built the shim cannot compile the app at all; the shim is therefore its own
+workspace member (`src-tauri/shim`), which builds without the app. Tauri renames
+the file to `nova-tools.exe` beside the app in the installed bundle, and
+`tools::shim()` resolves it there — or next to the binary in a plain `cargo
+build`, which is the same directory. `NOVA_TOOLS_SHIM` overrides both.
 
 Artifacts land in `src-tauri/target/release/`:
 
 - `novacode-desktop.exe` — portable binary
+- `nova-tools.exe` — the tool shim (next to it, from `externalBin`)
 - `bundle/msi/Nova Desktop_0.1.0_x64_en-US.msi`
 - `bundle/nsis/Nova Desktop_0.1.0_x64-setup.exe`
 
@@ -430,8 +506,49 @@ open and the same folder is active.
 npm run lint                          # oxlint
 npm run build                         # tsc -b && vite build
 node --test src/lib/*.test.ts         # scheduler engine and preferences migration
-cargo test                            # inside src-tauri
 ```
+
+Rust takes three invocations, because the ComCtl32 manifest rules differ per target
+kind:
+
+```powershell
+# Inside src-tauri. Binary unit tests: tauri-build's manifest and nothing else.
+cargo test --workspace --all-features --bins
+
+# Integration targets: build.rs hands each one the v6 manifest, so RUSTFLAGS stays out.
+cargo test -p novacode-desktop --all-features `
+  --test speak_engine --test speak_onnx --test speak_service `
+  --test tools_mcp --test tools_shim --test voice_engine
+
+# The lib's own unit-test binary: no manifest from anywhere else, so it gets one here.
+$manifest = "$env:TEMP\comctl6.manifest"
+@'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*" />
+    </dependentAssembly>
+  </dependency>
+</assembly>
+'@ | Set-Content -Path $manifest -Encoding utf8
+$env:RUSTFLAGS = "-C link-arg=/MANIFEST:EMBED -C link-arg=/MANIFESTINPUT:$manifest"
+cargo test --workspace --all-features --lib
+```
+
+Test code imports `TaskDialogIndirect`, which exists only in ComCtl32 v6, and Windows
+loads v5 for an executable that carries no manifest. The app binary is covered by the
+manifest tauri-build embeds; nothing else is. What a missing manifest looks like depends
+on where it is missing: the loader kills the process before the harness prints a line —
+`STATUS_ENTRYPOINT_NOT_FOUND` (`0xc0000139`) if the import cannot be resolved,
+`os error 14001` (`side-by-side configuration is incorrect`) if the assembly in the
+manifest is the thing that is wrong.
+
+The split is not stylistic. One invocation cannot get all three right: `RUSTFLAGS`
+reaches every target, including the app binary, which then links a second manifest next
+to tauri-build's and fails with `CVT1100 duplicate resource` / `LNK1123`; and
+`cargo test --tests` still builds and runs the lib's unit-test binary, which carries no
+manifest at all. Adding an integration test means adding its name to the middle command.
 
 CI runs exactly those on every push and pull request: the frontend job on Ubuntu, the
 Rust job on Windows (the backend shells out to ConPTY and PowerShell, so the tests run on

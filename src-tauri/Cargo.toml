@@ -1,6 +1,13 @@
+[workspace]
+# The tool shim is a member rather than a [[bin]] of this package: Tauri
+# validates bundle.externalBin while this crate's build script runs, so the file
+# has to exist before this crate can compile, and a binary inside this package
+# could never satisfy that (building it would run the same build script).
+members = ["shim"]
+
 [package]
 name = "novacode-desktop"
-version = "0.3.0"
+version = "0.4.0"
 description = "Nova Desktop — a Tauri shell for a desktop coding agent"
 edition = "2021"
 rust-version = "1.77"
@@ -33,7 +40,7 @@ serde_json = "1"
 semver = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
-tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "io-util", "macros", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "io-util", "macros", "fs", "net"] }
 tokio-util = "0.7"
 # On-device speech-to-text. The "onnx" feature pulls ort, ndarray and rustfft;
 # "whisper-cpp" pulls whisper-rs, which compiles whisper.cpp with CMake and
@@ -57,3 +64,15 @@ base64 = "0.22"
 # machine and would put GPLv3 espeak-ng inside this executable; the release zip
 # keeps both concerns outside the build. Added for the speech work below.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# The browser pane's screenshot goes through WebView2's own DevTools protocol
+# (Page.captureScreenshot), which needs the controller Tauri already holds. Both
+# crates are already in the tree through wry at exactly these versions, so this
+# adds no build time — only the bindings, which were previously unreachable.
+#
+# nova-tools is a second binary in this package (src/bin/nova-tools.rs). It is
+# deliberately dependency-free: it links nothing from the app, so building it
+# costs a fraction of a second and a harness starts it on every turn.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"

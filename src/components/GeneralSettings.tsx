@@ -6,6 +6,8 @@ import {
   clearCrashReports, crashReports, errorText, openLauncher, setQuickLauncher, setWidget, type CrashReport,
 } from '../lib/ipc'
 import { clampInterfaceSize, INTERFACE_MAX, INTERFACE_MIN, type Preferences } from '../lib/settings'
+import { markdownify } from '../lib/ipc'
+import { Markdown } from './Markdown'
 import { Group, Toggle } from './SettingsRows'
 import { ShortcutInput } from './ShortcutInput'
 
@@ -193,6 +195,10 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
           })} />}
       </Group>
 
+      {/* Markdownify lives here rather than in Tools: it converts a paste the
+          user made, and the Tools pane is about what a harness can call. */}
+      <Markdownify />
+
       <p className="settings-status" role="status">{status}</p>
 
       {dialog && latest && <CrashDialog report={latest} onClose={() => setDialog(false)}
@@ -200,6 +206,39 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
           () => { setLatest(null); setDialog(false); setStatus('Crash reports cleared.') },
           (err) => setStatus(errorText(err)))} />}
     </>
+  )
+}
+
+/// The HTML to Markdown converter, unchanged: it was in Tools only because that
+/// section had nowhere better to put it.
+function Markdownify() {
+  const [html, setHtml] = useState('')
+  const [converted, setConverted] = useState('')
+  const [converting, setConverting] = useState(false)
+  const [failure, setFailure] = useState('')
+
+  return (
+    <Group title="Markdownify">
+      <form className="settings-convert" aria-label="Convert HTML to Markdown" onSubmit={async (event) => {
+        event.preventDefault()
+        setConverting(true)
+        setFailure('')
+        try { setConverted(await markdownify(html)) }
+        catch (err) { setFailure(errorText(err)) }
+        finally { setConverting(false) }
+      }}>
+        <label>HTML<textarea value={html} onChange={(event) => setHtml(event.target.value)} rows={5} required
+          placeholder="<h1>Hello</h1>" maxLength={512 * 1024} /></label>
+        <div className="settings-action"><button type="submit" disabled={converting}>
+          {converting ? 'Converting…' : 'Convert to Markdown'}
+        </button></div>
+        {failure && <p className="settings-help">{failure}</p>}
+        {converted && <>
+          <label>Markdown<textarea value={converted} readOnly rows={5} /></label>
+          <Markdown text={converted} />
+        </>}
+      </form>
+    </Group>
   )
 }
 

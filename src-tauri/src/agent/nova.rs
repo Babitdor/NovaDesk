@@ -866,6 +866,7 @@ mod tests {
             session: None,
             trust_workspace: true,
             requests_file: None,
+            tools: None,
             prompt: "Reply with exactly the word: pong".to_string(),
             workspace: Some(WorkspaceGuard::new(std::env::temp_dir()).expect("temp dir")),
         };

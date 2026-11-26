@@ -1,13 +1,14 @@
 {
   "name": "nova-desktop",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "notices": "node scripts/notices.mjs",
+    "tools:shim": "node scripts/build-tools-shim.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
