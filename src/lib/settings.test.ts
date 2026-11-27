@@ -171,6 +171,17 @@ test('no saved profile means no profile id at all', () => {
   assert.deepEqual(preferences.speech.profiles, [])
 })
 
+/// Auto-approve widens what runs without asking, so the stored blob may only
+/// ever say one of the three strings the page offers.
+test('auto-approve is off unless the blob names an option', () => {
+  assert.equal(migratePreferences({}).autoApprove, 'off')
+  assert.equal(migratePreferences({ autoApprove: 'tools' }).autoApprove, 'tools')
+  assert.equal(migratePreferences({ autoApprove: 'all' }).autoApprove, 'all')
+  assert.equal(migratePreferences({ autoApprove: 'everything' }).autoApprove, 'off')
+  assert.equal(migratePreferences({ autoApprove: true }).autoApprove, 'off')
+  assert.equal(migratePreferences({ autoApprove: 'ALL' }).autoApprove, 'off')
+})
+
 test('a speaker number is a whole number inside the range the page offers', () => {
   assert.equal(migratePreferences({ speech: { speaker: 904 } }).speech.speaker, 904)
   assert.equal(migratePreferences({ speech: { speaker: -3 } }).speech.speaker, 0)

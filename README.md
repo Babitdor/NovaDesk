@@ -564,7 +564,19 @@ open and the same folder is active.
 npm run lint                          # oxlint
 npm run build                         # tsc -b && vite build
 node --test src/lib/*.test.ts         # scheduler engine and preferences migration
+npm run test:rust                     # cargo fmt --check, clippy and the Rust suites
 ```
+
+Launch time is two separate numbers, and `node scripts/measure-launch.mjs` reports both
+against a throwaway WebView2 profile and a release binary. Measured on this machine
+(2026-11-27, five launches, spread is scheduler load): **spawn to page target 315-475 ms,
+spawn to first paint 600-930 ms** for a returning user, and **8.3-9.2 s for the agent behind it**
+(`nova --mode pipe` to its `ready` frame, repeatable, and unchanged by `--bare`). The
+window half is WebView2's own start-up plus one 592 kB bundle; the agent half is Nova's
+bootstrap, so the app pays it once per workspace in the background — `prewarm_nova` starts it
+while the user is still typing, and the first plain turn adopts that session. Nova's `--bare`, `--no-prime` and `--no-agent-server` flags and WebView2's
+`--disable-features` set were all measured and are within noise or worse, which is why none of
+them are set here.
 
 On Windows with WebView2, build the shim and debug app, then run the desktop tool smoke test
 with port 1420 free. It calls every registered tool through the MCP shim using a temporary
@@ -577,7 +589,8 @@ node scripts/verify-tools.mjs
 ```
 
 Rust takes three invocations, because the ComCtl32 manifest rules differ per target
-kind:
+kind — `npm run test:rust` (scripts/test-rust.ps1) runs all three with the manifest
+wired up, which is what CI does:
 
 ```powershell
 # Inside src-tauri. Binary unit tests: tauri-build's manifest and nothing else.

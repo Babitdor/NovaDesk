@@ -1,6 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 // The extensions are required by `node --test`, which strips types without
 // resolving extensionless specifiers; everything else here is bundled by Vite.
+import { createDownloads } from './downloads.ts'
 import { errorText } from './ipc.ts'
 import type { Preferences, SpeechDestination, SpeechProfile, SpeechProvider } from './settings.ts'
 
@@ -114,6 +115,16 @@ export const downloadSpeakVoice = (id: string, onEvent: (progress: SpeakProgress
   channel.onmessage = onEvent
   return invoke<void>('speak_download', { id, onEvent: channel })
 }
+
+/// Progress and the transfer live outside the pane, on the same reasoning as the
+/// dictation downloads: Rust keeps writing after the pane is gone, and a row
+/// that forgot it would start a second writer. The first voice also installs
+/// Piper, so a new transfer begins at the runtime phase.
+export const speakDownloads = createDownloads<SpeakProgress>((id, onEvent) =>
+  downloadSpeakVoice(id, onEvent))
+
+export const downloadVoice = (id: string, total: number) =>
+  speakDownloads.start(id, { received: 0, total, phase: 'runtime' })
 
 export const cancelSpeakDownload = (id: string) => invoke<boolean>('speak_cancel', { id })
 export const deleteSpeakVoice = (id: string) => invoke<void>('speak_delete', { id })

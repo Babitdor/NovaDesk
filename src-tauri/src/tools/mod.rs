@@ -486,6 +486,9 @@ pub fn view(enabled: bool, endpoint: Option<&str>) -> Value {
     json!({
         "enabled": enabled,
         "endpoint": endpoint,
+        // Whether this build can hand a harness anything at all: without the
+        // shim the endpoint exists and every turn still goes out without it.
+        "shim": shim().map(|path| path.display().to_string()),
         "harnesses": harnesses,
         "tools": TOOLS
             .iter()

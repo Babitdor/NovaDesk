@@ -120,11 +120,17 @@ pub async fn speak_download(
     }
 
     let cancel = CancellationToken::new();
-    state
+    // One writer per voice, for the same reason as the dictation models: a
+    // second transfer writes into the same folder as the first.
+    if state
         .speak_downloads
         .lock()
         .expect("speech downloads mutex poisoned")
-        .insert(id.clone(), cancel.clone());
+        .insert(id.clone(), cancel.clone())
+        .is_some()
+    {
+        return Err(AppError::Speak("this voice is already downloading".into()));
+    }
 
     let result = download_voice(&app, voice, &cancel, &on_event).await;
 

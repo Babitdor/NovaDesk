@@ -2,7 +2,9 @@ import { useState, type FormEvent } from 'react'
 
 import type { WorkspaceInfo } from '../lib/events'
 import { describe as describeSchedule, MINUTE, nextRun } from '../lib/scheduler'
-import { AGENTS, type AgentId, type Preferences, type Schedule, type ScheduleSpec } from '../lib/settings'
+import {
+  AGENTS, type AgentId, type AutoApprove, type Preferences, type Schedule, type ScheduleSpec,
+} from '../lib/settings'
 import { Group, Toggle } from './SettingsRows'
 
 type Props = {
@@ -122,6 +124,20 @@ export function SchedulesSettings({ preferences: p, update, workspace }: Props) 
             onChange={(event) => update({
               agentLimit: Math.min(100, Math.max(1, Math.round(Number(event.target.value) || 1))),
             })} />
+        </label>
+        {/* One choice per kind of interrupt, and the default answers none of
+            them: widening what runs without asking is the user's call. */}
+        <label className="settings-row">
+          <span><strong>Auto-approve tool permissions</strong>
+            <small>Tool permission prompts are approved for you, and the task records that it
+              happened. A plan still asks unless you choose the last option, and a question
+              always asks.</small></span>
+          <select value={p.autoApprove} aria-label="Auto-approve tool permissions"
+            onChange={(event) => update({ autoApprove: event.target.value as AutoApprove })}>
+            <option value="off">Off</option>
+            <option value="tools">Tools only</option>
+            <option value="all">Tools and plans</option>
+          </select>
         </label>
       </Group>
 

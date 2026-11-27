@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import { errorText } from '../lib/ipc'
 import type { Preferences, SpeechProfile } from '../lib/settings'
 import { SPEED_MAX, SPEED_MIN } from '../lib/settings'
 import {
-  PROVIDERS, cancelSpeakDownload, deleteSpeakVoice, downloadSpeakVoice, formatBytes, providerInfo,
-  speakCatalog, speakInstalled, speakReply, speakRuntimeReady, stopSpeaking, voiceMeta,
-  type SpeakBadge, type SpeakPhase, type SpeakProgress, type SpeakVoice,
+  PROVIDERS, cancelSpeakDownload, deleteSpeakVoice, downloadVoice, formatBytes, providerInfo,
+  speakCatalog, speakDownloads, speakInstalled, speakReply, speakRuntimeReady, stopSpeaking, voiceMeta,
+  type SpeakBadge, type SpeakPhase, type SpeakVoice,
 } from '../lib/speak'
 
 type Props = {
@@ -54,7 +54,8 @@ export function SpeakSettings({ preferences: p, update }: Props) {
   const [voices, setVoices] = useState<SpeakVoice[]>([])
   const [installed, setInstalled] = useState<string[]>([])
   const [runtime, setRuntime] = useState(false)
-  const [progress, setProgress] = useState<Record<string, SpeakProgress>>({})
+  // From the module, not from state: the transfer outlives this pane.
+  const progress = useSyncExternalStore(speakDownloads.subscribe, speakDownloads.snapshot)
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
   const [search, setSearch] = useState('')
@@ -122,22 +123,13 @@ export function SpeakSettings({ preferences: p, update }: Props) {
 
   const download = async (voice: SpeakVoice) => {
     setStatus('')
-    setProgress((previous) => ({ ...previous, [voice.id]: { received: 0, total: voice.bytes, phase: 'runtime' } }))
     try {
-      await downloadSpeakVoice(voice.id, (frame) => {
-        setProgress((previous) => ({ ...previous, [voice.id]: frame }))
-      })
+      await downloadVoice(voice.id, voice.bytes)
       await refresh()
       setStatus(voice.name + ' is ready.')
       if (!speech.model) setSpeech({ model: voice.id })
     } catch (err) {
       setStatus(errorText(err))
-    } finally {
-      setProgress((previous) => {
-        const next = { ...previous }
-        delete next[voice.id]
-        return next
-      })
     }
   }
 
@@ -460,7 +452,7 @@ export function SpeakSettings({ preferences: p, update }: Props) {
               value={search} onChange={(event) => setSearch(event.target.value)} />
             <div className="voice-cards">
           {visible.map((voice) => {
-            const running = progress[voice.id]
+            const running = progress.get(voice.id)
             // Piper is shared by every Piper voice, so an installed voice is
             // only usable once the runtime is there too. An in-process voice
             // brings its own everything and has nothing to wait for.

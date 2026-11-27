@@ -15,7 +15,7 @@ import { ViewSwitcher } from './components/ViewSwitcher'
 import { appendUser } from './lib/chat'
 import {
   CREW, addressedCrew, crewPrompt, parseRetry, systemPrompt, teamOrder,
-  type CrewMode, type CrewRole, type Handoff,
+  type CrewMode, type CrewRole, type CrewSpeaker, type Handoff,
   type StageStatus, type TeamRun, type TeamStage,
 } from './lib/crew'
 import { clamp, defaultPanelWidth, defaultRailWidth, dockMax, dockMin, panelMax, panelMin, railCollapsed, railMax, railMin } from './lib/layout'
@@ -405,6 +405,32 @@ export default function App() {
     }
   }
 
+  /// Answers an approval the user has already decided about, in advance.
+  /// Returns whether it answered: when it did not, the caller shows the card as
+  /// before. Only a tool permission ('tools') and a plan ('all') are covered —
+  /// a question needs words, so it is never answered here.
+  const autoAnswer = useCallback((event: InterruptRequest, turnId: string, chatId: string, speaker?: CrewSpeaker) => {
+    const mode = preferences.autoApprove
+    const covered = event.kind === 'tool' ? mode !== 'off' : event.kind === 'plan' && mode === 'all'
+    if (!covered || replying.current || live.current?.turnId !== turnId) return false
+    replying.current = true
+    const reply: InterruptReply = event.kind === 'plan'
+      ? { kind: 'plan', approve: true }
+      : { kind: 'tool', approve: true }
+    void respondApproval(turnId, event.interruptId, reply)
+      // Visible, not silent: a decision made without the user has to be in the
+      // transcript where they will scroll past it.
+      .then(() => setChats((previous) => routeEvent(previous, chatId, {
+        type: 'notice', level: 'info',
+        message: event.kind === 'plan' ? 'Auto-approved the plan.' : 'Auto-approved a tool permission.',
+      }, speaker)))
+      .catch((err) => setNotice(errorText(err)))
+      .finally(() => {
+        if (live.current?.turnId === turnId) replying.current = false
+      })
+    return true
+  }, [preferences.autoApprove])
+
   const send = useCallback((prompt: string, chat: Chat, mode?: 'scheduled' | 'approveWorkspace') => {
     if (live.current || folderBusy || !workspace || (chat.workspace && chat.workspace !== workspace.root)) return false
     const fresh = mode === 'scheduled'
@@ -461,7 +487,9 @@ export default function App() {
       } else if (event.type === 'turnError') {
         awaitingWorkspaceApproval = event.kind === 'workspaceNotApproved'
       } else if (event.type === 'approvalRequired') {
-        setInterrupts((queue) => [...queue, event])
+        // Before the queue: an auto-approved request must never render a card,
+        // not even for one frame.
+        if (!autoAnswer(event, turnId, chatId)) setInterrupts((queue) => [...queue, event])
       } else if (event.type === 'notice') {
         setNotice(event.message)
       } else if (event.type === 'messageDelta') {
@@ -477,7 +505,7 @@ export default function App() {
       setChats((previous) => routeEvent(previous, chatId, { type: 'turnError', message: errorText(err) }))
     })
     return true
-  }, [folderBusy, preferences, workspace])
+  }, [autoAnswer, folderBusy, preferences, workspace])
 
   /// The schedule engine owns the decisions; this effect only starts turns and
   /// records what happened. The entry is advanced *before* the turn starts, so a
@@ -651,7 +679,9 @@ export default function App() {
             ? preferences.checks[workspace?.root ?? ''] : undefined,
         }, (event) => {
           if (event.type === 'turnStarted' && run.cancelled) void cancelTurn(turnId).catch(() => {})
-          if (event.type === 'approvalRequired') setInterrupts((queue) => [...queue, event])
+          if (event.type === 'approvalRequired' && !autoAnswer(event, turnId, chatId, speaker)) {
+            setInterrupts((queue) => [...queue, event])
+          }
           if (event.type === 'usage') {
             patchTeamRun(chatId, (teamRun) => ({ ...teamRun, usage: {
               input: teamRun.usage.input + event.input, output: teamRun.usage.output + event.output,

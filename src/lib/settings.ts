@@ -234,7 +234,16 @@ export type Preferences = {
   /// Concurrent agent-originated runs plus queued wake-ups one task may hold.
   agentLimit: number
   scheduleActivity: ScheduleRun[]
+
+  // --- Approvals ------------------------------------------------------
+  /// Which approval interrupts are answered without asking. Off by default:
+  /// the same hook answers a plan only when explicitly chosen, and never
+  /// answers a question on the user's behalf.
+  autoApprove: AutoApprove
 }
+
+/// 'tools' answers tool-permission requests only; 'all' also approves plans.
+export type AutoApprove = 'off' | 'tools' | 'all'
 
 const defaults: Preferences = {
   appearance: 'system', accent: 'Nova', customAccent: '#b891f7', customAccentLight: '#7a2f3a',
@@ -256,6 +265,7 @@ const defaults: Preferences = {
   disabledSkills: [],
   agentsMaySchedule: false, askBeforeCrossThread: true, pauseSchedules: false,
   agentLimit: 10, scheduleActivity: [],
+  autoApprove: 'off',
 }
 
 export const INTERFACE_MIN = 50
@@ -487,6 +497,11 @@ export function migratePreferences(raw: unknown): Preferences {
       ralphIterations: clampRange((stored.team as TeamPreferences | undefined)?.ralphIterations, 1, 5, defaults.team.ralphIterations),
       stageTimeoutMin: clampRange((stored.team as TeamPreferences | undefined)?.stageTimeoutMin, 1, 30, defaults.team.stageTimeoutMin),
     },
+    // Three spellings and nothing else: a stored blob cannot widen what the
+    // app approves without the user having picked it.
+    autoApprove: stored.autoApprove === 'tools' || stored.autoApprove === 'all'
+      ? stored.autoApprove
+      : defaults.autoApprove,
     interfaceSize: clampInterfaceSize(typeof stored.interfaceSize === 'number' ? stored.interfaceSize : defaults.interfaceSize),
     agentLimit: typeof stored.agentLimit === 'number'
       ? Math.min(100, Math.max(1, Math.round(stored.agentLimit)))

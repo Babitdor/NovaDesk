@@ -98,6 +98,9 @@ impl Session {
         personality: Option<&Personality>,
         requests_file: Option<&Path>,
     ) -> Result<Self, AppError> {
+        // Debug builds time the boot: "slow to reply" is a number, and this is
+        // the half of it the app can act on.
+        let booted_at = std::time::Instant::now();
         let mut command = match personality {
             Some(profile) => super::cli::nova_personality(profile)?,
             None => super::cli::command("nova")?,
@@ -227,6 +230,13 @@ impl Session {
 
         match ready {
             Ok(Ok(Some(frame))) => {
+                if cfg!(debug_assertions) {
+                    eprintln!(
+                        "nova boot: {} ms in {}",
+                        booted_at.elapsed().as_millis(),
+                        root.display()
+                    );
+                }
                 session.id = frame["session_id"].as_str().map(str::to_owned);
                 session.model = frame["model"].as_str().unwrap_or("unknown").to_string();
                 session.supports_steer = frame["capabilities"]
@@ -568,12 +578,18 @@ impl AgentBackend for NovaAgent {
             // if the workspace was opened ahead of the first turn. Only plain
             // turns match — a personality or model override spawns its own.
             let mut previous = previous;
+            // Whether this turn is the one that spends the workspace's warm
+            // session, which is the only turn that owes the next new chat a
+            // replacement. Booting one after every turn would put an eight-
+            // second Nova start behind the reply the user is already typing.
+            let mut spent_prewarm = false;
             if previous.is_none() && req.personality.is_none() && req.model.is_none() {
                 let prewarm_key = format!("prewarm:{}", root.display());
                 if let Some(index) = guard.iter().position(|(id, _)| *id == prewarm_key) {
                     let (_, mut candidate) = guard.remove(index).expect("position was valid");
                     if candidate.root == root && matches!(candidate.child.try_wait(), Ok(None)) {
                         previous = Some(candidate);
+                        spent_prewarm = true;
                     }
                 }
             }
@@ -635,6 +651,53 @@ impl AgentBackend for NovaAgent {
                 guard.push_back((key, session));
             } else {
                 self.retire_if_last(&root, &guard);
+            }
+            // The turn that spent the prewarmed session is the one that owes the
+            // next new chat a replacement: it boots while the user reads the
+            // reply, so the second new chat streams instead of paying the whole
+            // start again. Only a plain session can stand in for a plain turn,
+            // and only when the cache has room: a full cache evicts a live
+            // conversation.
+            let prewarm_key = format!("prewarm:{}", root.display());
+            let replace = spent_prewarm
+                && !guard.iter().any(|(id, _)| id == &prewarm_key)
+                && guard.len() < SESSION_CACHE;
+            // The pool is released for the boot. The reply is already on screen,
+            // so the user's next message must not queue behind an eight-second
+            // Nova start — the spare session is only worth having if waiting for
+            // it is cheaper than booting one on demand.
+            drop(guard);
+            if replace {
+                // Bounded: this runs after the reply, so a boot that never
+                // reports ready must not hold the turn's finish too.
+                let booted = tokio::time::timeout(Duration::from_secs(20), async {
+                    tokio::select! {
+                        _ = cancel.cancelled() => None,
+                        session = Session::spawn(
+                            &root,
+                            None,
+                            req.trust_workspace,
+                            None,
+                            None,
+                        ) => session.ok(),
+                    }
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some(session) = booted {
+                    let mut guard = self.session.lock().await;
+                    // A turn that arrived while this booted may have installed
+                    // one first; this spare then goes away with its process.
+                    if !guard.iter().any(|(id, _)| id == &prewarm_key) {
+                        if guard.len() >= SESSION_CACHE {
+                            if let Some((_, evicted)) = guard.pop_front() {
+                                self.retire_if_last(&evicted.root, &guard);
+                            }
+                        }
+                        guard.push_back((prewarm_key, session));
+                    }
+                }
             }
             outcome
         })

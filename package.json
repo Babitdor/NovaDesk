@@ -1,14 +1,15 @@
 {
   "name": "nova-desktop",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/build-tools-shim.mjs --debug && vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "notices": "node scripts/notices.mjs",
     "tools:shim": "node scripts/build-tools-shim.mjs",
+    "test:rust": "powershell -ExecutionPolicy Bypass -File scripts/test-rust.ps1",
     "preview": "vite preview",
     "tauri": "tauri"
   },

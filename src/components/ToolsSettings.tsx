@@ -118,6 +118,17 @@ export function ToolsSettings({ extras, preferences, update, onChangeSection }: 
         </Group>
 
         <Group title="Harnesses">
+          {/* The one row the table cannot derive: a harness's badge says what the
+              app *intends* to do, this says the shim the intent depends on is
+              missing, which is why a turn comes back with no tools. */}
+          {catalog?.enabled && !catalog.shim && (
+            <div className="settings-row">
+              <span>
+                <strong>No tool shim for this build</strong>
+                <small>Harnesses get no Nova Desktop tools. Run npm run tools:shim.</small>
+              </span>
+            </div>
+          )}
           {catalog?.harnesses.map((harness) => (
             <div className="settings-row" key={harness.id}>
               <span>

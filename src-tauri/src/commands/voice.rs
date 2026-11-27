@@ -31,11 +31,18 @@ pub async fn voice_download(
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     let cancel = CancellationToken::new();
-    state
+    // One writer per model. A second transfer into the same folder would
+    // interleave two partial files, and the UI can lose track of the first
+    // one; refusing here makes a double click harmless.
+    if state
         .voice_downloads
         .lock()
         .expect("voice downloads mutex poisoned")
-        .insert(id.clone(), cancel.clone());
+        .insert(id.clone(), cancel.clone())
+        .is_some()
+    {
+        return Err(AppError::Voice("this model is already downloading".into()));
+    }
 
     let result = download::install(&app, &id, &cancel, &on_event).await;
 

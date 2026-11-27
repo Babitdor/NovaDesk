@@ -11,7 +11,9 @@
 //! that misses the deadline is reported as timed out. Both are told apart from
 //! an empty list, because a reader who sees "0 servers" would believe it.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -36,6 +38,14 @@ const DEADLINE: Duration = Duration::from_secs(15);
 /// One list is a line per server; nothing here needs a megabyte of it.
 const MAX_BYTES: u64 = 256 * 1024;
 
+/// Per-launch answers to "does CommandCode have Nova's server", keyed by the
+/// workspace, because the answer is a per-workspace scope in its config.
+static COMMANDCODE_ANSWERS: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+
+fn answers() -> &'static Mutex<HashMap<PathBuf, bool>> {
+    COMMANDCODE_ANSWERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub(crate) async fn commandcode_listing(
     workspace: &Path,
 ) -> Result<String, crate::error::AppError> {
@@ -46,6 +56,40 @@ pub(crate) async fn commandcode_listing(
         .args(["--no-auto-update", "mcp", "list"]);
     let bytes = capture(command, MAX_BYTES).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Whether CommandCode already has Nova's server, answered once per workspace
+/// per launch.
+///
+/// The turn path asks before every turn, and CommandCode health-checks its
+/// servers on that call, so the question used to cost seconds each time. The
+/// answer only changes when this app changes CommandCode's config, and both
+/// places that do so forget the entry.
+pub(crate) async fn commandcode_registered(workspace: &Path) -> bool {
+    if let Some(known) = answers()
+        .lock()
+        .expect("commandcode cache poisoned")
+        .get(workspace)
+    {
+        return *known;
+    }
+    let listed =
+        tokio::time::timeout(Duration::from_secs(10), commandcode_listing(workspace)).await;
+    let registered = listed
+        .is_ok_and(|result| result.is_ok_and(|listing| commandcode_tools_registered(&listing)));
+    answers()
+        .lock()
+        .expect("commandcode cache poisoned")
+        .insert(workspace.to_path_buf(), registered);
+    registered
+}
+
+/// Drops the cached answer, after this app changed CommandCode's own config.
+pub(crate) fn forget_commandcode_listing(workspace: &Path) {
+    answers()
+        .lock()
+        .expect("commandcode cache poisoned")
+        .remove(workspace);
 }
 
 pub(crate) fn commandcode_tools_registered(listing: &str) -> bool {

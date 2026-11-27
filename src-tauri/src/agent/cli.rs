@@ -580,15 +580,13 @@ impl AgentBackend for CliAgent {
             let mut credentials = None;
             if let Some(bridge) = req.tools.as_ref() {
                 let attach = if self.0 == "commandcode" {
-                    let listing = tokio::select! {
+                    // Answered once per workspace per launch: the listing is a
+                    // health check in CommandCode, seconds before every turn.
+                    let registered = tokio::select! {
                         _ = cancel.cancelled() => return Ok(FinishReason::Cancelled),
-                        listing = tokio::time::timeout(Duration::from_secs(10), crate::tools::mcp_servers::commandcode_listing(root)) => listing,
+                        registered = crate::tools::mcp_servers::commandcode_registered(root) => registered,
                     };
-                    listing.is_ok_and(|result| {
-                        result.is_ok_and(|listing| {
-                            crate::tools::mcp_servers::commandcode_tools_registered(&listing)
-                        })
-                    })
+                    registered
                 } else {
                     crate::tools::injection(self.0).per_turn()
                 };
@@ -661,6 +659,7 @@ impl AgentBackend for CliAgent {
                     )?,
                 );
             }
+            let spawned_at = std::time::Instant::now();
             let mut child = process
                 .args(args)
                 .current_dir(root)
@@ -699,6 +698,9 @@ impl AgentBackend for CliAgent {
                         stdin.write_all(req.prompt.as_bytes()).await?;
                     }
                     let mut line = Vec::new();
+                    // One line per turn per harness: spawn to first frame is the
+                    // boot the user feels, and it is not the same per CLI.
+                    let mut first = true;
                     loop {
                         line.clear();
                         if (&mut stdout).take(FRAME_LIMIT + 1).read_until(b'\n', &mut line).await? == 0 {
@@ -709,6 +711,16 @@ impl AgentBackend for CliAgent {
                         }
                         let raw = String::from_utf8_lossy(&line);
                         if let Ok(frame) = serde_json::from_str::<Value>(&raw) {
+                            if first {
+                                first = false;
+                                if cfg!(debug_assertions) {
+                                    eprintln!(
+                                        "{} first frame: {} ms from spawn",
+                                        self.0,
+                                        spawned_at.elapsed().as_millis()
+                                    );
+                                }
+                            }
                             handle_frame(self.0, &frame, &sink, &mut frames);
                         }
                     }

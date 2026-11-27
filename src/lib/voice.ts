@@ -1,5 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 
+import { createDownloads } from './downloads'
+
 import type { TranscriptionProfile, TranscriptionProvider } from './settings'
 
 // Voice: on-device dictation. The Rust side owns the catalogue, the downloads
@@ -55,6 +57,15 @@ export const downloadVoiceModel = (id: string, onEvent: (progress: VoiceProgress
   channel.onmessage = onEvent
   return invoke<void>('voice_download', { id, onEvent: channel })
 }
+
+/// Progress and the transfer itself live outside the pane: the Rust side keeps
+/// downloading across a tab switch, so the row must keep saying so.
+export const voiceDownloads = createDownloads<VoiceProgress>((id, onEvent) =>
+  downloadVoiceModel(id, onEvent))
+
+/// Resolves when the transfer ends; rejects with whatever Rust refused it for.
+export const downloadVoice = (id: string, total: number) =>
+  voiceDownloads.start(id, { received: 0, total })
 
 export const cancelVoiceDownload = (id: string) => invoke<boolean>('voice_cancel', { id })
 export const deleteVoiceModel = (id: string) => invoke<void>('voice_delete', { id })

@@ -2470,11 +2470,11 @@ dependencies = [
 
 [[package]]
 name = "nova-tools"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "novacode-desktop"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",

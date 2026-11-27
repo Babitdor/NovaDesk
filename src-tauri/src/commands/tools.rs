@@ -131,5 +131,9 @@ pub async fn register_commandcode_tools(state: State<'_, AppState>) -> Result<()
             &entry.to_string(),
         ]);
     capture(add, 128 * 1024).await?;
+    // The turn path caches "CommandCode has Nova's server" per workspace; this
+    // is the one thing that changes it, so the next turn must not read the
+    // answer from before.
+    tools::mcp_servers::forget_commandcode_listing(workspace.root());
     Ok(())
 }

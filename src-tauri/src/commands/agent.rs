@@ -32,6 +32,10 @@ pub async fn prewarm_nova(state: State<'_, AppState>) -> Result<(), AppError> {
                 eprintln!("nova-desktop entry for {}: {error}", root.display());
             }
         }
+    } else if state.tools.enabled() {
+        // Prewarm has no channel: this is the only place it can say the session
+        // it is about to boot will have no tools.
+        eprintln!("tools are on but the nova-tools shim was not found: prewarming without them");
     }
     tauri::async_runtime::spawn(async move {
         let _ = agent.prewarm(&root).await;
@@ -136,6 +140,23 @@ pub async fn start_turn(
             .unwrap_or_else(|| chat_id.clone());
         crate::agent::requests::path_for(&dir, &key)
     });
+    // Only when this launch is serving them: with the switch off, a turn's argv
+    // must be exactly what it was before the tools existed.
+    let tools = state
+        .tools
+        .enabled()
+        .then(|| crate::tools::bridge(&state.tools))
+        .flatten();
+    // The switch can be on while the shim is missing, which is how a dev build
+    // silently hands every harness nothing. The turn still runs; it says why it
+    // has no tools rather than letting the transcript look like a refusal.
+    if tools.is_none() && state.tools.enabled() {
+        let _ = on_event.send(AgentEvent::Notice {
+            level: "error".into(),
+            message: "Nova Desktop tools are unavailable in this build: the nova-tools shim was not found."
+                .into(),
+        });
+    }
     let state = state.inner().clone();
     let req = TurnRequest {
         turn_id: turn_id.clone(),
@@ -148,13 +169,7 @@ pub async fn start_turn(
         trust_workspace,
         personality,
         requests_file,
-        // Only when this launch is serving them: with the switch off, a turn's
-        // argv must be exactly what it was before the tools existed.
-        tools: state
-            .tools
-            .enabled()
-            .then(|| crate::tools::bridge(&state.tools))
-            .flatten(),
+        tools,
     };
 
     tauri::async_runtime::spawn(async move {

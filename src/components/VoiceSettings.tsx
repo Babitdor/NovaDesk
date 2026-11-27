@@ -1,19 +1,17 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import { errorText } from '../lib/ipc'
 import type { Preferences, TranscriptionProfile, TranscriptionProvider } from '../lib/settings'
 import {
   VOICE_SHORTCUT_LABEL, MicRecorder, cancelVoiceDownload, catalogueLanguages, deleteVoiceModel,
-  downloadVoiceModel, formatBytes, modelMeta, toWav, transcribeProviders, voiceCatalog, voiceEngineReady,
-  voiceInstalled, type TranscriptionProviderInfo, type VoiceBadge, type VoiceModel,
+  downloadVoice, formatBytes, modelMeta, toWav, transcribeProviders, voiceCatalog, voiceDownloads,
+  voiceEngineReady, voiceInstalled, type TranscriptionProviderInfo, type VoiceBadge, type VoiceModel,
 } from '../lib/voice'
 
 type Props = {
   preferences: Preferences
   update: (patch: Partial<Preferences>) => void
 }
-
-type Download = { received: number; total: number }
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -40,7 +38,9 @@ export function VoiceSettings({ preferences: p, update }: Props) {
   const voice = p.voice
   const [models, setModels] = useState<VoiceModel[]>([])
   const [installed, setInstalled] = useState<string[]>([])
-  const [progress, setProgress] = useState<Record<string, Download>>({})
+  // Read from the module, not from state: the transfer outlives this pane, so
+  // the row has to remember it across a section switch.
+  const progress = useSyncExternalStore(voiceDownloads.subscribe, voiceDownloads.snapshot)
   const [status, setStatus] = useState('')
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [language, setLanguage] = useState(voice.language)
@@ -115,22 +115,13 @@ export function VoiceSettings({ preferences: p, update }: Props) {
 
   const startDownload = async (model: VoiceModel) => {
     setStatus('')
-    setProgress((previous) => ({ ...previous, [model.id]: { received: 0, total: model.bytes } }))
     try {
-      await downloadVoiceModel(model.id, (frame) => {
-        setProgress((previous) => ({ ...previous, [model.id]: frame }))
-      })
+      await downloadVoice(model.id, model.bytes)
       await refreshModels()
       setStatus(model.name + ' is ready.')
       if (!voice.model) setVoice({ model: model.id })
     } catch (err) {
       setStatus(errorText(err))
-    } finally {
-      setProgress((previous) => {
-        const next = { ...previous }
-        delete next[model.id]
-        return next
-      })
     }
   }
 
@@ -458,7 +449,7 @@ export function VoiceSettings({ preferences: p, update }: Props) {
               onChange={(event) => setModelSearch(event.target.value)} />
             <div className="voice-cards">
               {visible.map((model) => {
-                const running = progress[model.id]
+                const running = progress.get(model.id)
                 const present = installed.includes(model.id)
                 return (
                   <article className="voice-card" key={model.id} data-installed={present}>

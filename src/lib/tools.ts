@@ -31,6 +31,9 @@ export type Catalog = {
   endpoint: string | null
   harnesses: HarnessRow[]
   tools: ToolRow[]
+  /// Where this build's shim is, or null when there is none — in which case no
+  /// harness is given the server whatever the switch says.
+  shim?: string | null
   listedTools?: string[]
 }
 
