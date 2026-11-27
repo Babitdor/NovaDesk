@@ -402,14 +402,15 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
             <SpeakSettings preferences={p} update={update} />
             <VoiceSettings preferences={p} update={update} />
           </>}
-          {section === 'Tools' && <>
-            {checks}
-            {/* The catalogue is the whole section now: what exists, which
-                harness can call it, and what is deliberately absent. The
-                Markdownify form moved to General — it converts a paste, it is
-                not a tool surface. */}
-            <ToolsSettings />
-          </>}
+          {section === 'Tools' && (
+            /* Two tabs, two questions: Add-ons is the catalogue — what exists,
+               which harness can call it, what is deliberately absent — and
+               Skills is the folder listing. The Markdownify form moved to
+               General: it converts a paste, it is not a tool surface. The
+               Project checks form goes in as `extras` so it lands inside
+               Add-ons instead of floating above the tab bar. */
+            <ToolsSettings extras={checks} />
+          )}
           {section === 'Connections' && <Group title="Nova MCP servers">
             <p className="settings-help">Reads configured servers from the current workspace using Nova’s CLI.</p>
             <div className="settings-action"><button type="button" disabled={!root || mcpBusy} onClick={async () => {
