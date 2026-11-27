@@ -223,6 +223,11 @@ async fn answer(request: &Request, config: &Config) -> (u16, Value) {
         Ok(value) => value,
         Err(_) => return (400, error_body(Value::Null, -32700, "the body is not JSON")),
     };
+    if call["jsonrpc"] == "2.0" && call["method"] == "tools/list" && call.get("id").is_some() {
+        if let Some(harness) = request.header("x-nova-harness") {
+            config.state.observe_list(harness);
+        }
+    }
     match dispatch(&call, config).await {
         // A notification carries no id, so it gets no body at all.
         Value::Null => (202, Value::Null),

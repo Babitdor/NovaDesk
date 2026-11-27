@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { filterSkills, skillRoots, skillsSummary, type Skill } from './skills.ts'
+import { filterSkills, skillRoots, skillsSummary, withSkillEnabled, type Skill } from './skills.ts'
 
-function skill(name: string, root: string, description = ''): Skill {
-  return { name, directory: name, root, description }
+function skill(name: string, root: string, description = '', enabled = true): Skill {
+  return { name, directory: name, root, description, enabled }
 }
 
 const ROWS: Skill[] = [
@@ -46,6 +46,12 @@ test('the root chip and the query narrow together', () => {
 test('skillRoots lists each contributing root once, in first-seen order', () => {
   assert.deepEqual(skillRoots(ROWS), ['.nova/skills', '~/.claude/skills', '~/.agents/skills'])
   assert.deepEqual(skillRoots([]), [])
+})
+
+test('the switch writes a directory name, once, in both directions', () => {
+  assert.deepEqual(withSkillEnabled([], 'adhd', false), ['adhd'])
+  assert.deepEqual(withSkillEnabled(['adhd'], 'adhd', false), ['adhd'])
+  assert.deepEqual(withSkillEnabled(['adhd', 'awwwards'], 'adhd', true), ['awwwards'])
 })
 
 test('the summary says when rows are hidden and when nothing was found', () => {

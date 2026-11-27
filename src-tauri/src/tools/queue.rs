@@ -1,15 +1,6 @@
 //! The message queue, and steering.
 //!
-//! A turn is a one-shot child process whose stdin closes after the prompt, so
-//! "send this when you finish" has to be Nova's own bookkeeping: the queue lives
-//! here, keyed by task, and the turn that ends drains its own task's queue.
-//!
-//! Steering is the same idea but refused, on purpose. Every harness Nova drives
-//! is started in a non-interactive mode (claude --print, codex exec, pi --print,
-//! opencode run), and none of those accept a second message mid-turn. A tool
-//! that accepted a "steer" and silently queued it would be lying about when the
-//! message lands, so it refuses and names the harness, and the caller can queue
-//! the message instead.
+//! Queued messages start a new turn. Steering goes through the active backend.
 
 use serde_json::{json, Value};
 
@@ -42,37 +33,19 @@ pub fn remove(tools: &ToolsState, id: &str) -> Value {
     json!({ "removed": tools.queue_remove(id) })
 }
 
-/// True when the harness can accept a message while a turn is running. Every
-/// harness Nova starts is non-interactive today, so this is the whole table —
-/// kept as a function so adding one is a one-line change with a place to say
-/// why.
-fn mid_turn_input(harness: &str) -> bool {
-    let _ = harness;
-    false
-}
-
-pub fn steer(
-    state: &crate::AppState,
-    tools: &ToolsState,
-    chat_id: &str,
-    text: &str,
-) -> Result<Value, AppError> {
+pub async fn steer(state: &crate::AppState, chat_id: &str, text: &str) -> Result<Value, AppError> {
+    if text.trim().is_empty() || text.len() > MAX_QUEUED_BYTES || text.contains('\0') {
+        return Err(AppError::Tools(format!(
+            "enter steering text of 1 to {MAX_QUEUED_BYTES} UTF-8 bytes"
+        )));
+    }
     let Some((turn_id, harness)) = state.live_turn(chat_id) else {
         return Err(AppError::Tools(format!(
             "task {chat_id} is not running, so there is nothing to steer; queue the message with queue_message"
         )));
     };
-    if mid_turn_input(&harness) {
-        // Unreachable until a harness is added to the table above; the queued
-        // path is the honest fallback either way.
-        return push(tools, chat_id, text).map(|mut value| {
-            value["steered"] = json!(turn_id);
-            value
-        });
-    }
-    Err(AppError::Tools(format!(
-        "{harness} cannot take a message mid-turn: Nova starts it in a non-interactive mode, so the turn ends before another message can land. Queue it with queue_message."
-    )))
+    state.agents.get(&harness)?.steer(&turn_id, text).await?;
+    Ok(json!({ "accepted": true, "turnId": turn_id, "harness": harness }))
 }
 
 pub fn interrupt(state: &crate::AppState, chat_id: &str) -> Result<Value, AppError> {
@@ -81,7 +54,11 @@ pub fn interrupt(state: &crate::AppState, chat_id: &str) -> Result<Value, AppErr
             "task {chat_id} is not running, so there is nothing to interrupt"
         )));
     };
-    state.cancel_turn(&turn_id);
+    if !state.cancel_turn(&turn_id) {
+        return Err(AppError::Tools(format!(
+            "task {chat_id} has already finished"
+        )));
+    }
     Ok(json!({ "interrupted": turn_id, "harness": harness }))
 }
 
@@ -121,14 +98,16 @@ mod tests {
         assert_eq!(drained.text, "first");
         assert_eq!(tools.queue_len("task-1"), 1);
         assert!(tools.queue_pop("task-2").is_none());
+        tools.queue_restore("task-1", drained.clone());
+        assert_eq!(tools.queue_pop("task-1").unwrap().id, drained.id);
+        assert_eq!(tools.queue_pop("task-1").unwrap().text, "second");
     }
 
-    /// The refusal has to name the harness, or the caller cannot decide whether
-    /// to queue instead.
-    #[test]
-    fn no_harness_takes_input_mid_turn_today() {
-        assert!(!mid_turn_input("claude"));
-        assert!(!mid_turn_input("codex"));
-        assert!(!mid_turn_input("nova"));
+    #[tokio::test]
+    async fn steering_an_idle_task_suggests_queuing() {
+        let error = steer(&crate::AppState::default(), "task-1", "hello")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("queue_message"));
     }
 }

@@ -50,7 +50,7 @@ async fn post(authority: &str, token: Option<&str>, body: &Value) -> (u16, Value
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
     let request = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {authority}\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: {authority}\r\n{auth}X-Nova-Harness: pi\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.expect("write");
@@ -110,6 +110,7 @@ async fn the_endpoint_speaks_mcp_over_a_socket() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["result"]["serverInfo"]["name"], "nova-desktop");
     assert!(body["result"]["protocolVersion"].is_string());
+    assert!(state.listed_tools().is_empty());
 
     // tools/list: exactly the registry, each with an object schema.
     let (status, body) = post(
@@ -119,6 +120,7 @@ async fn the_endpoint_speaks_mcp_over_a_socket() {
     )
     .await;
     assert_eq!(status, 200);
+    assert_eq!(state.listed_tools(), ["pi"]);
     let listed = body["result"]["tools"].as_array().expect("a tool list");
     assert_eq!(listed.len(), TOOLS.len());
     assert!(listed
@@ -197,6 +199,52 @@ async fn the_endpoint_speaks_mcp_over_a_socket() {
     )
     .await;
     assert_eq!(status, 503, "{body}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The skill switch, end to end through the dispatcher: a switched-off skill is
+/// left out of what a harness is told, and skills::list still reports it so the
+/// pane can show the switch that turned it off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switched_off_skill_is_hidden_from_a_harness_and_kept_in_the_list() {
+    let root = std::env::temp_dir().join(format!("nova-tools-skills-{}", std::process::id()));
+    let workspace = root.join("workspace");
+    let skill = workspace.join(".nova").join("skills").join("demo");
+    std::fs::create_dir_all(&skill).expect("skill folder");
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: demo\ndescription: local\n---\n",
+    )
+    .expect("skill file");
+
+    let tools = ToolsState::default();
+    tools.set_disabled_skills(vec!["demo".to_string()]);
+    let context = CallContext {
+        app: None,
+        state: None,
+        workspace: Some(workspace.clone()),
+        data_dir: Some(root.join("data")),
+    };
+
+    let listed = tools::dispatch::call(&context, &tools, "list_skills", json!({}))
+        .await
+        .expect("list_skills");
+    let rows = listed["skills"].as_array().expect("rows");
+    assert!(
+        !rows.iter().any(|row| row["directory"] == "demo"),
+        "a switched-off skill is not handed to a harness: {listed}"
+    );
+    assert_eq!(listed["count"], json!(rows.len()));
+
+    let pane = tools::skills::list(Some(&workspace), &tools.disabled_skills());
+    let demo = pane["skills"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["directory"] == "demo")
+        .expect("still listed for the pane");
+    assert_eq!(demo["enabled"], json!(false));
 
     let _ = std::fs::remove_dir_all(&root);
 }

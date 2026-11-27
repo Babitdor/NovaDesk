@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
-use std::path::Path;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use super::{AgentBackend, BoxFut, EventSink, Personality, TurnRequest};
@@ -45,7 +45,22 @@ pub struct NovaAgent {
     session: Mutex<VecDeque<(String, Session)>>,
     /// Held outside `session` so an approval reply can be written while a turn
     /// owns the session lock.
-    input: Mutex<Option<Arc<Mutex<ChildStdin>>>>,
+    input: Mutex<Option<ActiveInput>>,
+    /// Workspace roots with a live managed `nova-desktop` entry in their
+    /// `.nova/mcp.json`. The entry is written before the first session for the
+    /// workspace and removed when its last one ends.
+    injected: std::sync::Mutex<HashSet<PathBuf>>,
+}
+
+struct ActiveInput {
+    turn_id: String,
+    stdin: Arc<Mutex<ChildStdin>>,
+    steer: Option<mpsc::Sender<SteerRequest>>,
+}
+
+struct SteerRequest {
+    text: String,
+    reply: oneshot::Sender<Result<(), AppError>>,
 }
 
 struct Session {
@@ -58,6 +73,7 @@ struct Session {
     id: Option<String>,
     root: std::path::PathBuf,
     model_override: Option<String>,
+    supports_steer: bool,
 }
 
 enum Frame {
@@ -176,6 +192,7 @@ impl Session {
             id: None,
             root: root.to_path_buf(),
             model_override: model,
+            supports_steer: false,
         };
 
         // Nothing else is accepted before `ready`, so wait for it explicitly
@@ -212,6 +229,9 @@ impl Session {
             Ok(Ok(Some(frame))) => {
                 session.id = frame["session_id"].as_str().map(str::to_owned);
                 session.model = frame["model"].as_str().unwrap_or("unknown").to_string();
+                session.supports_steer = frame["capabilities"]
+                    .as_array()
+                    .is_some_and(|capabilities| capabilities.iter().any(|value| value == "steer"));
                 if let Some(cwd) = frame["cwd"].as_str() {
                     session.cwd = cwd.to_string();
                 }
@@ -405,6 +425,15 @@ fn handle_frame(line: &str, pid: &str, sink: &EventSink, state: &mut TurnFrames)
                 });
             }
         }
+        "steer_undelivered" => {
+            let count = frame["count"].as_u64().unwrap_or(1);
+            let _ = sink.send(AgentEvent::Notice {
+                level: "error".into(),
+                message: format!(
+                    "The Nova turn ended before consuming {count} steering request(s)."
+                ),
+            });
+        }
         "done" => {
             if frame["status"].as_str() == Some("approval_timeout") {
                 let _ = sink.send(AgentEvent::Notice {
@@ -436,6 +465,37 @@ fn clip(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect::<String>() + "…"
 }
 
+impl NovaAgent {
+    /// Removes the workspace's managed entry when no cached session for that
+    /// root remains: the last Nova session for the workspace has ended.
+    fn retire_if_last(&self, root: &Path, guard: &VecDeque<(String, Session)>) {
+        if guard.iter().any(|(_, session)| session.root == root) {
+            return;
+        }
+        let injected = self
+            .injected
+            .lock()
+            .expect("injected mutex poisoned")
+            .remove(root);
+        if injected {
+            crate::tools::nova_entry::remove_workspace_entry(root);
+        }
+    }
+
+    /// Writes the managed `nova-desktop` entry for a workspace before its
+    /// first session boots: the child reads MCP servers from the workspace
+    /// config at startup and never again.
+    fn write_injection(&self, root: &Path, bridge: &crate::tools::Bridge) -> Result<(), AppError> {
+        let credentials = crate::tools::nova_entry::launch_credentials(bridge)?;
+        crate::tools::nova_entry::ensure_workspace_entry(root, &credentials, &bridge.shim)?;
+        self.injected
+            .lock()
+            .expect("injected mutex poisoned")
+            .insert(root.to_path_buf());
+        Ok(())
+    }
+}
+
 impl AgentBackend for NovaAgent {
     fn start<'a>(
         &'a self,
@@ -445,15 +505,42 @@ impl AgentBackend for NovaAgent {
     ) -> BoxFut<'a, Result<FinishReason, AppError>> {
         Box::pin(async move {
             let slash = req.prompt.trim_start().starts_with('/');
-            let pid = uuid::Uuid::new_v4().to_string();
+            let pid = req.turn_id;
             let prompt = json!({ "type": "prompt", "id": pid, "content": req.prompt });
             if prompt.to_string().len() + 1 > MAX_PROMPT_FRAME {
                 return Err(AppError::Agent(
                     "The encoded Nova prompt exceeds 1 MiB".into(),
                 ));
             }
+            let root = req
+                .workspace
+                .as_ref()
+                .ok_or(AppError::NoWorkspace)?
+                .root()
+                .to_path_buf();
+            // The managed entry has to exist before the child boots. When the
+            // workspace cannot take it (unwritable, or a config this code
+            // cannot parse), the turn continues without the desktop tools and
+            // the reason lands in the transcript, rather than the session
+            // silently promising tools it cannot reach.
+            if let Some(bridge) = req.tools.as_ref() {
+                let already = self
+                    .injected
+                    .lock()
+                    .expect("injected mutex poisoned")
+                    .contains(&root);
+                if !already {
+                    if let Err(error) = self.write_injection(&root, bridge) {
+                        let _ = sink.send(AgentEvent::Notice {
+                            level: "error".to_string(),
+                            message: format!(
+                                "Nova Desktop tools are not available in this session: {error}"
+                            ),
+                        });
+                    }
+                }
+            }
             let mut guard = self.session.lock().await;
-            let root = req.workspace.as_ref().ok_or(AppError::NoWorkspace)?.root();
             // Chat turns reuse their chat's session. Personality turns reuse the
             // role's warm process — the conversation is reset below, so each
             // stage still starts with a clean context but pays no boot.
@@ -503,7 +590,7 @@ impl AgentBackend for NovaAgent {
                 _ => {
                     let session = tokio::select! {
                         _ = cancel.cancelled() => return Ok(FinishReason::Cancelled),
-                        session = Session::spawn(root, req.model.clone(), req.trust_workspace,
+                        session = Session::spawn(&root, req.model.clone(), req.trust_workspace,
                             req.personality.as_ref(), req.requests_file.as_deref()) => session?,
                     };
                     let _ = sink.send(AgentEvent::Notice {
@@ -518,23 +605,74 @@ impl AgentBackend for NovaAgent {
                     session
                 }
             };
-            *self.input.lock().await = Some(session.stdin.clone());
-
-            let outcome = match write_frame(&session.stdin, prompt).await {
-                Ok(()) => drive(&mut session, &pid, &sink, &cancel, slash).await,
+            let (steer, inbox) = mpsc::channel(1);
+            let mut input = self.input.lock().await;
+            let written = write_frame(&session.stdin, prompt).await;
+            if written.is_ok() {
+                *input = Some(ActiveInput {
+                    turn_id: pid.clone(),
+                    stdin: session.stdin.clone(),
+                    steer: session.supports_steer.then_some(steer),
+                });
+            }
+            drop(input);
+            let outcome = match written {
+                Ok(()) => drive(&mut session, &pid, &sink, &cancel, slash, inbox).await,
                 Err(err) => Err(err),
             };
 
             // A session whose child died is not worth keeping; the next turn
-            // spawns a fresh one instead of failing forever.
+            // spawns a fresh one instead of failing forever. Either way, a
+            // session that leaves the cache may have been the workspace's
+            // last one — its managed entry goes with it.
             *self.input.lock().await = None;
             if outcome.is_ok() && matches!(session.child.try_wait(), Ok(None)) {
                 if guard.len() >= SESSION_CACHE {
-                    guard.pop_front();
+                    if let Some((_, evicted)) = guard.pop_front() {
+                        self.retire_if_last(&evicted.root, &guard);
+                    }
                 }
                 guard.push_back((key, session));
+            } else {
+                self.retire_if_last(&root, &guard);
             }
             outcome
+        })
+    }
+
+    fn steer<'a>(&'a self, turn_id: &'a str, text: &'a str) -> BoxFut<'a, Result<(), AppError>> {
+        Box::pin(async move {
+            let (reply, response) = oneshot::channel();
+            {
+                let input = self.input.lock().await;
+                let active = input
+                    .as_ref()
+                    .filter(|active| active.turn_id == turn_id)
+                    .ok_or_else(|| {
+                        AppError::Tools("the Nova turn is starting or has already finished".into())
+                    })?;
+                let sender = active.steer.as_ref().ok_or_else(|| AppError::Tools(
+                    "this Nova CLI does not advertise live steering; update Nova or use queue_message".into(),
+                ))?;
+                sender
+                    .try_send(SteerRequest {
+                        text: text.to_owned(),
+                        reply,
+                    })
+                    .map_err(|_| {
+                        AppError::Tools(
+                            "the turn ended or another steering request is pending".into(),
+                        )
+                    })?;
+            }
+            tokio::time::timeout(Duration::from_secs(8), response)
+                .await
+                .map_err(|_| {
+                    AppError::Tools("Nova did not acknowledge the steering request in time".into())
+                })?
+                .map_err(|_| {
+                    AppError::Tools("the Nova turn ended before acknowledging steering".into())
+                })?
         })
     }
 
@@ -548,7 +686,8 @@ impl AgentBackend for NovaAgent {
                 .input
                 .lock()
                 .await
-                .clone()
+                .as_ref()
+                .map(|active| active.stdin.clone())
                 .ok_or_else(|| AppError::Agent("no live Nova session to approve".into()))?;
             let frame = match reply {
                 InterruptReply::Tool { approve } => json!({
@@ -589,7 +728,9 @@ impl AgentBackend for NovaAgent {
             // request file; the key below cannot match a chat or personality.
             let session = Session::spawn(root, None, true, None, None).await?;
             if guard.len() >= SESSION_CACHE {
-                guard.pop_front();
+                if let Some((_, evicted)) = guard.pop_front() {
+                    self.retire_if_last(&evicted.root, &guard);
+                }
             }
             guard.push_back((key, session));
             Ok(())
@@ -603,19 +744,29 @@ async fn drive(
     sink: &EventSink,
     cancel: &CancellationToken,
     slash: bool,
+    mut inbox: mpsc::Receiver<SteerRequest>,
 ) -> Result<FinishReason, AppError> {
     let mut state = TurnFrames {
         slash,
         ..TurnFrames::default()
     };
+    let mut pending = None::<(String, SteerRequest)>;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
                 let _ = write_frame(&session.stdin, json!({ "type": "cancel" })).await;
                 let finished = tokio::time::timeout(Duration::from_secs(4), async {
                     while let Some(line) = session.lines.recv().await {
-                        if serde_json::from_str::<Value>(&line).is_ok_and(|frame| frame["type"] == "done" && frame["request_id"] == pid) {
-                            return true;
+                        if let Ok(frame) = serde_json::from_str::<Value>(&line) {
+                            if frame["request_id"] != pid {
+                                continue;
+                            }
+                            if frame["type"] == "done" {
+                                return true;
+                            }
+                            if frame["type"] == "steer_undelivered" {
+                                handle_frame(&line, pid, sink, &mut state);
+                            }
                         }
                     }
                     false
@@ -629,10 +780,36 @@ async fn drive(
                 let Some(line) = line else {
                     return Err(AppError::Agent("nova exited during the turn".into()));
                 };
+                if let Some(frame) = pending.as_ref().and_then(|_| serde_json::from_str::<Value>(&line).ok()) {
+                    if frame["type"] == "steer_result" && frame["request_id"] == pid
+                        && pending.as_ref().is_some_and(|(id, _)| frame["id"] == id.as_str())
+                    {
+                        if let Some((_, request)) = pending.take() {
+                            let result = if frame["ok"] == true {
+                                Ok(())
+                            } else {
+                                Err(AppError::Tools(frame["error"].as_str().unwrap_or("Nova refused steering").to_owned()))
+                            };
+                            let _ = request.reply.send(result);
+                        }
+                        continue;
+                    }
+                }
                 match handle_frame(&line, pid, sink, &mut state) {
                     Frame::Continue => {}
                     Frame::Finished(reason) => return Ok(reason),
                 }
+            }
+            Some(request) = inbox.recv(), if pending.is_none() => {
+                if request.reply.is_closed() {
+                    continue;
+                }
+                let id = uuid::Uuid::new_v4().to_string();
+                let frame = json!({"type": "steer", "id": id, "request_id": pid, "content": request.text});
+                tokio::time::timeout(Duration::from_secs(5), write_frame(&session.stdin, frame))
+                    .await
+                    .map_err(|_| AppError::Agent("could not write to the Nova pipe in time".into()))??;
+                pending = Some((id, request));
             }
         }
     }
@@ -859,6 +1036,7 @@ mod tests {
         use crate::workspace::WorkspaceGuard;
 
         let req = TurnRequest {
+            turn_id: uuid::Uuid::new_v4().to_string(),
             chat_id: uuid::Uuid::new_v4().to_string(),
             model: None,
             effort: None,

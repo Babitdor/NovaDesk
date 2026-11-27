@@ -27,6 +27,7 @@ pub const DEFAULT_BACKEND: &str = "nova";
 /// Everything a backend needs for one turn, built by the command layer so a
 /// backend never resolves paths, tokens or capabilities itself.
 pub struct TurnRequest {
+    pub turn_id: String,
     pub prompt: String,
     pub workspace: Option<WorkspaceGuard>,
     pub chat_id: String,
@@ -83,6 +84,14 @@ pub trait AgentBackend: Send + Sync {
         sink: EventSink,
         cancel: CancellationToken,
     ) -> BoxFut<'a, Result<FinishReason, AppError>>;
+
+    fn steer<'a>(&'a self, _turn_id: &'a str, _text: &'a str) -> BoxFut<'a, Result<(), AppError>> {
+        Box::pin(async {
+            Err(AppError::Tools(
+                "this harness does not accept mid-turn input; use queue_message".into(),
+            ))
+        })
+    }
 
     /// Answers an `ApprovalRequired` event. Backends that never ask for a
     /// decision keep this default and reject the call instead of pretending.

@@ -18,6 +18,9 @@ export type Skill = {
   directory: string
   root: string
   description: string
+  /// False when the user switched it off. It stays in the list so the switch
+  /// can be found again, and Rust leaves it out of what a harness is handed.
+  enabled: boolean
 }
 
 export type Skills = { skills: Skill[]; count: number }
@@ -50,6 +53,13 @@ export function filterSkills(skills: Skill[], filter: SkillFilter): Skill[] {
     return skill.name.toLowerCase().includes(needle)
       || skill.description.toLowerCase().includes(needle)
   })
+}
+
+/// The disabled list after flipping one skill. The tab and the sheet both write
+/// through this, so the two switches cannot disagree about what to store.
+export function withSkillEnabled(disabled: string[], directory: string, enabled: boolean): string[] {
+  if (enabled) return disabled.filter((id) => id !== directory)
+  return disabled.includes(directory) ? disabled : [...disabled, directory]
 }
 
 /// The line above the rows: how many are shown out of how many exist, and

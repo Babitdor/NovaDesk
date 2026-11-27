@@ -37,6 +37,16 @@ test('every new preference arrives with its default', () => {
   assert.equal(preferences.askBeforeCrossThread, true)
   assert.deepEqual(preferences.projects, [])
   assert.deepEqual(preferences.scheduleActivity, [])
+  assert.deepEqual(preferences.disabledSkills, [])
+})
+
+test('a saved skill switch list is kept, and anything that is not a name is dropped', () => {
+  assert.deepEqual(migratePreferences({ disabledSkills: ['adhd', 'awwwards'] }).disabledSkills,
+    ['adhd', 'awwwards'])
+  // A blob written by something else: only the strings can name a skill folder.
+  assert.deepEqual(migratePreferences({ disabledSkills: ['adhd', 7, null, {}] }).disabledSkills,
+    ['adhd'])
+  assert.deepEqual(migratePreferences({ disabledSkills: 'adhd' }).disabledSkills, [])
 })
 
 test('out-of-range numbers are clamped rather than trusted', () => {

@@ -1,6 +1,6 @@
 import type { ChatItem } from './chat'
-import { MAX_CHATS, boardColumn, type Chat, type Column } from './sessions'
-import { AGENTS, type AgentId } from './settings'
+import { MAX_CHATS, boardColumn, type Chat, type Column } from './sessions.ts'
+import { AGENTS, type AgentId } from './settings.ts'
 
 /// One page of a transcript. Forty items is a screen of reading and small enough
 /// that a tool call never returns a whole conversation; nextOffset is how the
@@ -64,8 +64,6 @@ function summary(chat: Chat) {
   }
 }
 
-/// The seven task tools plus the two that start work. One function so the
-/// dispatch is a switch a reader can check against the registry at a glance.
 export function taskTools(deps: TaskDeps) {
   return async (name: string, args: Record<string, unknown>): Promise<unknown> => {
     const chats = deps.chats()
@@ -116,7 +114,8 @@ export function taskTools(deps: TaskDeps) {
 
       case 'create_task': {
         const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : 'New task'
-        const agent = typeof args.agent === 'string' && args.agent in AGENTS ? (args.agent as AgentId) : undefined
+        const agent = typeof args.agent === 'string' && Object.hasOwn(AGENTS, args.agent)
+          ? (args.agent as AgentId) : undefined
         const chat = deps.create(title, agent)
         return { taskId: chat.id, title: chat.title }
       }
@@ -158,7 +157,7 @@ export function taskTools(deps: TaskDeps) {
         const id = text(args, 'taskId')
         find(chats, id)
         deps.open(id)
-        return { taskId: id, opened: true }
+        return { opened: id }
       }
 
       case 'start_task':

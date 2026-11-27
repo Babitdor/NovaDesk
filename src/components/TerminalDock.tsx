@@ -29,22 +29,16 @@ export function TerminalDock({ dock, height, onDock, onHeight, workspaceReady, o
   const closed = dock === 'closed'
   const sized = !closed && dock !== 'max' && height !== null
 
-  if (!closed && workspaceReady && next === 1) {
-    setTerminals([{ id: 1, shell: 'powershell' }])
-    select(1)
-    setNext(2)
-  }
-
-  // A tool's open_terminal lands here: the dock owns its tabs, so it adds one
-  // rather than being told about a terminal it never created. Done during
-  // render, like the first-terminal seed above, so the tab exists in the same
-  // paint as the request.
   if (spawn && spawn.nonce !== seenSpawn) {
     setSeenSpawn(spawn.nonce)
     const id = next
     setTerminals((current) => [...current, { id, shell: spawn.shell }])
     select(id)
     setNext(id + 1)
+  } else if (!closed && workspaceReady && next === 1) {
+    setTerminals([{ id: 1, shell: 'powershell' }])
+    select(1)
+    setNext(2)
   }
 
   return (

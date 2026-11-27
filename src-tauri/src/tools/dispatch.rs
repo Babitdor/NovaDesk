@@ -96,7 +96,17 @@ async fn native(
             &text(arguments, "id")?,
             &text(arguments, "image")?,
         ),
-        "list_skills" => Ok(skills::list(context.workspace.as_deref())),
+        "list_skills" => {
+            // A switched-off skill is left out of the answer a harness reads,
+            // while the pane still lists it so the switch can be found again.
+            let disabled = tools.disabled_skills();
+            let mut listed = skills::list(context.workspace.as_deref(), &disabled);
+            if let Some(rows) = listed["skills"].as_array_mut() {
+                rows.retain(|row| row["enabled"] != json!(false));
+            }
+            listed["count"] = json!(listed["skills"].as_array().map_or(0, Vec::len));
+            Ok(listed)
+        }
         "code_search" => search::search(context.workspace.as_deref(), arguments).await,
         "list_local_servers" => Ok(json!({
             "servers": crate::commands::browser::discover_local_servers().await?,
@@ -120,31 +130,27 @@ async fn native(
             let state = require_state(context)?;
             queue::steer(
                 state,
-                tools,
                 &text(arguments, "taskId")?,
                 &text(arguments, "text")?,
             )
+            .await
         }
         "interrupt_task" => {
             let state = require_state(context)?;
             queue::interrupt(state, &text(arguments, "taskId")?)
         }
-        "open_task" => {
-            let task_id = text(arguments, "taskId")?;
-            emit(context, "nova:focus-chat", json!({ "chatId": task_id }))?;
-            Ok(json!({ "opened": task_id }))
-        }
         "open_file" => {
             let path = text(arguments, "path")?;
-            if let Some(workspace) = &context.workspace {
-                // Reject an escape here rather than opening a path the pane
-                // would then refuse: the error is clearer at the call site.
-                crate::workspace::WorkspaceGuard::new(workspace)?.resolve(&path)?;
+            let workspace = context.workspace.as_ref().ok_or(AppError::NoWorkspace)?;
+            let resolved = crate::workspace::WorkspaceGuard::new(workspace)?.resolve(&path)?;
+            if !resolved.is_file() {
+                return Err(AppError::Tools("open_file needs a file path".into()));
             }
             emit(context, "nova:open-file", json!({ "path": path }))?;
             Ok(json!({ "opened": path }))
         }
         "open_terminal" => {
+            context.workspace.as_ref().ok_or(AppError::NoWorkspace)?;
             let shell = arguments
                 .get("shell")
                 .and_then(Value::as_str)
@@ -163,25 +169,29 @@ async fn native(
                 .ok()
                 .filter(|url| matches!(url.scheme(), "http" | "https"))
                 .ok_or_else(|| AppError::Tools("enter an http or https URL".into()))?;
-            emit(
-                context,
-                "nova:browser-open",
+            crate::tools::frontend::ask(
+                context.app()?,
+                tools,
+                name,
                 json!({ "url": parsed.as_str() }),
-            )?;
-            Ok(json!({ "opened": parsed.as_str() }))
+            )
+            .await
         }
         "read_browser" => {
             let max = arguments
                 .get("maxElements")
                 .and_then(Value::as_u64)
                 .unwrap_or(60);
-            browser::read(context.app()?, tools, max).await
+            browser::read(context.app()?, max).await
         }
         "browser_action" => browser::action(context.app()?, &text(arguments, "action")?).await,
-        "browser_click" => browser::click(context.app()?, tools, &text(arguments, "ref")?).await,
+        "browser_click" => browser::click(context.app()?, &text(arguments, "ref")?).await,
         "browser_type" => {
             let reference = arguments.get("ref").and_then(Value::as_str);
-            browser::type_text(context.app()?, tools, reference, &text(arguments, "text")?).await
+            let contents = arguments["text"]
+                .as_str()
+                .ok_or_else(|| AppError::Tools("text must be a string".into()))?;
+            browser::type_text(context.app()?, reference, contents).await
         }
         "capture_browser" => browser::capture(context.app()?).await,
         other => Err(AppError::Tools(format!(

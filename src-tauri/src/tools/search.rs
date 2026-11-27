@@ -136,6 +136,7 @@ async fn ripgrep(cwd: &Path, pattern: &str) -> Option<Vec<(PathBuf, u64, String)
     let mut command = tokio::process::Command::new("rg");
     command
         .args([
+            "--no-config",
             "--json",
             "--max-count",
             "20",
@@ -207,8 +208,20 @@ fn walk(root: &Path, needle: &str) -> (Vec<(PathBuf, u64, String)>, usize) {
             continue;
         };
         for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if !kind.is_file() && !kind.is_dir() {
+                continue;
+            }
             let path = entry.path();
-            if path.is_dir() {
+            if !path
+                .canonicalize()
+                .is_ok_and(|resolved| resolved.starts_with(root))
+            {
+                continue;
+            }
+            if kind.is_dir() {
                 let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                 if !SKIP_DIRS.contains(&name.as_str()) {
                     stack.push(path);
@@ -284,11 +297,25 @@ mod tests {
         .unwrap();
         std::fs::write(root.path().join("node_modules/pkg/index.js"), "needle\n").unwrap();
 
-        let (found, scanned) = walk(root.path(), "needle");
+        let guard = WorkspaceGuard::new(root.path()).unwrap();
+        let (found, scanned) = walk(guard.root(), "needle");
         assert_eq!(found.len(), 1, "{found:?}");
-        assert_eq!(found[0].0, root.path().join("src/main.rs"));
+        assert_eq!(found[0].0, guard.root().join("src/main.rs"));
         assert_eq!(found[0].1, 2);
         assert!(scanned >= 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_walk_does_not_read_through_symlinks() {
+        let root = TempDir::new("search-links");
+        let outside = TempDir::new("search-outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "needle").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("linked-dir")).unwrap();
+        std::os::unix::fs::symlink(secret, root.path().join("linked-file")).unwrap();
+        let guard = WorkspaceGuard::new(root.path()).unwrap();
+        assert!(walk(guard.root(), "needle").0.is_empty());
     }
 
     /// Whichever engine this machine has, the answer has the same shape and the

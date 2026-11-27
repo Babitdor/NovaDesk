@@ -63,7 +63,11 @@ fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
     (name, description)
 }
 
-pub fn list(workspace: Option<&Path>) -> Value {
+/// `disabled` holds the skill directories the user switched off. A switched-off
+/// skill is still listed here — the pane has to show it to offer the switch back
+/// — but it carries `enabled: false`, and the list_skills tool drops those rows
+/// before a harness ever sees them.
+pub fn list(workspace: Option<&Path>, disabled: &[String]) -> Value {
     let mut skills: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for (label, root) in roots(workspace) {
@@ -88,12 +92,14 @@ pub fn list(workspace: Option<&Path>) -> Value {
                 .and_then(|_| std::fs::read_to_string(&manifest).ok())
                 .unwrap_or_default();
             let (name, description) = frontmatter(&text);
+            let enabled = !disabled.iter().any(|id| id == &directory);
             seen.push(directory.clone());
             skills.push(json!({
                 "name": name.unwrap_or_else(|| directory.clone()),
                 "directory": directory,
                 "root": label,
                 "description": description.unwrap_or_default(),
+                "enabled": enabled,
             }));
         }
     }
@@ -130,10 +136,30 @@ mod tests {
             "---\nname: demo\ndescription: local\n---\n",
         )
         .unwrap();
-        let listed = list(Some(root.path()));
+        let listed = list(Some(root.path()), &[]);
         let skills = listed["skills"].as_array().unwrap();
         let demo = skills.iter().find(|skill| skill["name"] == "demo").unwrap();
         assert_eq!(demo["description"], "local");
         assert_eq!(demo["root"], ".nova/skills");
+        assert_eq!(demo["enabled"], true);
+    }
+
+    #[test]
+    fn a_switched_off_skill_is_still_listed_but_marked_disabled() {
+        let root = TempDir::new("skills-disabled");
+        let dir = root.path().join(".nova/skills/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: local\n---\n",
+        )
+        .unwrap();
+        let listed = list(Some(root.path()), &["demo".to_string()]);
+        let skills = listed["skills"].as_array().unwrap();
+        let demo = skills
+            .iter()
+            .find(|skill| skill["directory"] == "demo")
+            .unwrap();
+        assert_eq!(demo["enabled"], false);
     }
 }

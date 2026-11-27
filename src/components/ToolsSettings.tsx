@@ -3,23 +3,20 @@ import type { ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
 import { errorText } from '../lib/ipc'
-import { filterSkills, skillRoots, skillsSummary, type Skills } from '../lib/skills'
+import type { Preferences } from '../lib/settings'
 import {
-  GROUP_LABELS, INJECTION_LABELS, setToolsEnabled, toolsCatalog,
-  type Catalog, type ToolGroup, type ToolRow,
-} from '../lib/tools'
+  filterSkills, skillRoots, skillsSummary, withSkillEnabled, type Skill, type Skills,
+} from '../lib/skills'
+import { INJECTION_LABELS, setToolsEnabled, toolsCatalog, type Catalog } from '../lib/tools'
+import { IntegrationsSheet } from './IntegrationsSheet'
 import { Group, Toggle } from './SettingsRows'
 
-/// The order the groups are read in, which is the order of the work a task does:
-/// start it, queue for it, look at the page, look at the code, look around.
-const ORDER: ToolGroup[] = ['tasks', 'queue', 'browser', 'files', 'discovery']
-
 /// One pane, two questions. Add-ons answers "what can this window offer a
-/// harness" — the tool server, the harnesses it reaches, the catalogue, and the
-/// app surface none of them reports. Skills answers "what does this workspace
-/// already know", which is a folder listing rather than a switch: the harnesses
-/// read SKILL.md themselves, so the tab lists them and does not pretend to turn
-/// any of them on or off.
+/// harness" — the switch, the endpoint, the harnesses it reaches — and hands the
+/// full list to the Manage sheet, which is where the four counted sections live
+/// because 32 tool cards do not fit in a settings tab. Skills answers "what does
+/// this workspace already know": a folder listing, each row with the switch that
+/// decides whether a harness is handed that skill.
 const TABS = ['Add-ons', 'Skills'] as const
 type Tab = typeof TABS[number]
 
@@ -33,7 +30,14 @@ type Tab = typeof TABS[number]
 /// `extras` is the Project checks form. It arrives from the settings view and
 /// belongs to the add-ons half: it is a command this window runs after a turn,
 /// not a skill a harness reads.
-export function ToolsSettings({ extras }: { extras?: ReactNode }) {
+export function ToolsSettings({ extras, preferences, update, onChangeSection }: {
+  extras?: ReactNode
+  preferences: Preferences
+  update: (patch: Partial<Preferences>) => void
+  /// The sheet and its footer buttons move the reader to another section, which
+  /// is the settings view's own navigation rather than a link to a document.
+  onChangeSection: (section: 'Voice' | 'Connections') => void
+}) {
   const [tab, setTab] = useState<Tab>('Add-ons')
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [status, setStatus] = useState('')
@@ -73,7 +77,6 @@ export function ToolsSettings({ extras }: { extras?: ReactNode }) {
   }
 
   const callable = catalog?.harnesses.filter((harness) => harness.callable) ?? []
-  const rows = (group: ToolGroup) => (catalog?.tools ?? []).filter((tool) => tool.group === group)
 
   return (
     <>
@@ -85,7 +88,19 @@ export function ToolsSettings({ extras }: { extras?: ReactNode }) {
       </nav>
 
       {tab === 'Add-ons' && <>
-        <Group title="Nova Desktop Tools">
+        <Group title="Tools & integrations">
+          <div className="settings-row">
+            <span>
+              <strong>Tools &amp; integrations</strong>
+              <small>
+                Every tool this window serves, the MCP servers each harness reports, the skills
+                this workspace mounts, and the models Nova has downloaded.
+              </small>
+            </span>
+            {/* toggle, not show: a second click on Manage has to dismiss the sheet,
+                or the one control that opened it cannot close it. */}
+            <button type="button" popoverTarget="nova-integrations" popoverTargetAction="toggle">Manage</button>
+          </div>
           <Toggle
             title="Offer the tool server to agents"
             checked={Boolean(catalog?.enabled)}
@@ -97,8 +112,8 @@ export function ToolsSettings({ extras }: { extras?: ReactNode }) {
           />
           <p className="settings-help">
             {callable.length
-              ? 'Turns started on ' + callable.map((harness) => harness.name).join(', ') + ' carry a stdio shim that speaks MCP back to this window.'
-              : 'No installed harness can be given the shim this launch, so nothing can call these tools yet.'}
+              ? 'Desktop can attach the shim to ' + callable.map((harness) => harness.name).join(', ') + '.'
+              : 'Reading harness compatibility…'}
           </p>
         </Group>
 
@@ -109,41 +124,20 @@ export function ToolsSettings({ extras }: { extras?: ReactNode }) {
                 <strong>{harness.name}</strong>
                 <small>{harness.note ?? INJECTION_LABELS[harness.injection]}</small>
               </span>
-              <span className={harness.callable ? 'tools-badge is-on' : 'tools-badge'}>
-                {harness.callable ? 'Can call tools' : 'Not callable'}
+              <span className={catalog.listedTools?.includes(harness.id) ? 'tools-badge is-on' : 'tools-badge'}>
+                {catalog.listedTools?.includes(harness.id) ? 'Listed tools this launch' : harness.callable ? 'Automatic setup' : 'Manual setup'}
               </span>
             </div>
           ))}
           {!catalog && <p className="settings-help">Loading the catalogue…</p>}
         </Group>
 
-        {ORDER.map((group) => {
-          const tools = rows(group)
-          if (!tools.length) return null
-          return (
-            <Group title={GROUP_LABELS[group]} key={group}>
-              {tools.map((tool) => <ToolCard key={tool.id} tool={tool} callable={callable.length} />)}
-            </Group>
-          )
-        })}
-
-        <Group title="Apps">
-          <div className="settings-row">
-            <span>
-              <strong>Apps</strong>
-              <small>
-                None of the harnesses Nova drives reports an app surface, so this list
-                is empty. It stays empty rather than listing something invented.
-              </small>
-            </span>
-            <span className="tools-badge">Not reported</span>
-          </div>
-        </Group>
+        <IntegrationsSheet preferences={preferences} update={update} onSection={onChangeSection} />
 
         {extras}
       </>}
 
-      {tab === 'Skills' && <SkillsPane />}
+      {tab === 'Skills' && <SkillsPane preferences={preferences} update={update} />}
 
       <p className="settings-status" role="status">{status}</p>
     </>
@@ -154,10 +148,17 @@ export function ToolsSettings({ extras }: { extras?: ReactNode }) {
 ///
 /// The list is the answer of tools_skills and nothing else: the filtering lives
 /// in src/lib/skills.ts so node --test covers it, and this component only wires
-/// the search box and the folder chips to it. Loading happens once when the tab
-/// opens — a folder listing does not change while the pane is on screen, and a
-/// poll would report edits the harnesses have already read.
-function SkillsPane() {
+/// the search box, the folder chips and the switches to it. Loading happens once
+/// when the tab opens — a folder listing does not change while the pane is on
+/// screen, and a poll would report edits the harnesses have already read.
+///
+/// A switch stores the directory name in preferences; the page pushes that list
+/// to Rust (App.tsx), which stops reporting the skill to a harness. The row flips
+/// immediately and the folder on disk is untouched.
+function SkillsPane({ preferences, update }: {
+  preferences: Preferences
+  update: (patch: Partial<Preferences>) => void
+}) {
   const [skills, setSkills] = useState<Skills | null>(null)
   const [status, setStatus] = useState('')
   const [query, setQuery] = useState('')
@@ -175,6 +176,14 @@ function SkillsPane() {
   const all = skills?.skills ?? []
   const roots = skillRoots(all)
   const shown = filterSkills(all, { root, query })
+
+  const flip = (skill: Skill, enabled: boolean) => {
+    update({ disabledSkills: withSkillEnabled(preferences.disabledSkills, skill.directory, enabled) })
+    setSkills((current) => current && {
+      skills: current.skills.map((row) => row.directory === skill.directory ? { ...row, enabled } : row),
+      count: current.count,
+    })
+  }
 
   return (
     <>
@@ -205,6 +214,9 @@ function SkillsPane() {
               <small>{skill.description || 'No description in SKILL.md.'}</small>
             </span>
             <span className="tools-badge">{skill.root}</span>
+            <input {...{ switch: '' }} type="checkbox" role="switch" className="settings-switch"
+              aria-label={'Hand ' + skill.name + ' to agents'} checked={skill.enabled}
+              onChange={(event) => flip(skill, event.target.checked)} />
           </div>
         ))}
         {skills && !shown.length && (
@@ -218,22 +230,5 @@ function SkillsPane() {
       </Group>
       <p className="settings-status" role="status">{status}</p>
     </>
-  )
-}
-
-function ToolCard({ tool, callable }: { tool: ToolRow; callable: number }) {
-  return (
-    <div className="settings-row tools-card">
-      <span>
-        <strong>{tool.title}</strong>
-        <small>{tool.description}</small>
-      </span>
-      <span className="tools-badges">
-        <span className="tools-badge">{tool.id}</span>
-        <span className="tools-badge">{tool.handler === 'frontend' ? 'answered by the window' : 'answered by Rust'}</span>
-        {tool.requiresWindow && <span className="tools-badge">needs the window</span>}
-        {!callable && <span className="tools-badge">no harness can call it yet</span>}
-      </span>
-    </div>
   )
 }

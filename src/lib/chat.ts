@@ -1,5 +1,5 @@
 import type { AgentEvent } from './events'
-import { CREW, type CrewMode, type CrewSpeaker } from './crew'
+import { CREW, type CrewMode, type CrewSpeaker } from './crew.ts'
 
 export type ChatItem =
   | { id: string; kind: 'user'; text: string; recipient?: CrewMode }

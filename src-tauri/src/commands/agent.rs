@@ -1,5 +1,5 @@
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{cli, drive_turn, Personality, TurnRequest, DEFAULT_BACKEND};
@@ -17,6 +17,22 @@ pub async fn prewarm_nova(state: State<'_, AppState>) -> Result<(), AppError> {
     let guard = state.require_guard().await?;
     let agent = state.agents.get(DEFAULT_BACKEND)?;
     let root = guard.root().to_path_buf();
+    // The entry must exist before the prewarmed child boots: it reads its MCP
+    // servers from the workspace config at startup and never again.
+    if let Some(bridge) = state
+        .tools
+        .enabled()
+        .then(|| crate::tools::bridge(&state.tools))
+        .flatten()
+    {
+        if let Ok(credentials) = crate::tools::nova_entry::launch_credentials(&bridge) {
+            if let Err(error) =
+                crate::tools::nova_entry::ensure_workspace_entry(&root, &credentials, &bridge.shim)
+            {
+                eprintln!("nova-desktop entry for {}: {error}", root.display());
+            }
+        }
+    }
     tauri::async_runtime::spawn(async move {
         let _ = agent.prewarm(&root).await;
     });
@@ -122,6 +138,7 @@ pub async fn start_turn(
     });
     let state = state.inner().clone();
     let req = TurnRequest {
+        turn_id: turn_id.clone(),
         prompt,
         workspace: Some(workspace.clone()),
         chat_id,
@@ -187,16 +204,20 @@ pub async fn start_turn(
             .expect("turns mutex poisoned")
             .remove(&turn_id);
         let _ = on_event.send(AgentEvent::TurnFinished { reason });
-        // A message queued while this turn ran is delivered now. The queue is
-        // Rust's, but the next turn needs the webview's channel, so the page is
-        // told which task has work waiting and it starts the turn itself — the
-        // one place that knows what the composer would have sent.
+        // The next turn needs the webview's channel. Give the message back to
+        // the queue if the composer cannot start it.
         if let Some(queued) = state.tools.queue_pop(&queued_for) {
-            let _ = app.emit_to(
-                tauri::EventTarget::webview("main"),
-                "nova:queue-ready",
-                serde_json::json!({ "chatId": queued_for, "message": queued }),
-            );
+            if crate::tools::frontend::ask(
+                &app,
+                &state.tools,
+                "deliver_queued_message",
+                serde_json::json!({ "chatId": queued_for, "text": queued.text }),
+            )
+            .await
+            .is_err()
+            {
+                state.tools.queue_restore(&queued_for, queued);
+            }
         }
     });
 

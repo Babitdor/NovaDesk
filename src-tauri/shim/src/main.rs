@@ -31,18 +31,21 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 /// file only this user can read, and hands the harness its path, so neither
 /// value has to appear on a command line. NOVA_TOOLS_URL/TOKEN stay supported
 /// for a hand-written configuration.
-fn credentials() -> Option<(String, String)> {
+fn credentials() -> Option<(String, String, String)> {
     if let Some(path) = std::env::var_os("NOVA_TOOLS_FILE") {
         let body = std::fs::read_to_string(path).ok()?;
         let url = unquote(&serde_field(&body, "\"url\"")?)?;
         let token = serde_field(&body, "\"token\"")
             .and_then(|value| unquote(&value))
             .unwrap_or_default();
-        return Some((url, token));
+        let harness = serde_field(&body, "\"harness\"")
+            .and_then(|value| unquote(&value))
+            .unwrap_or_default();
+        return Some((url, token, harness));
     }
     let url = std::env::var("NOVA_TOOLS_URL").ok()?;
     let token = std::env::var("NOVA_TOOLS_TOKEN").unwrap_or_default();
-    Some((url, token))
+    Some((url, token, String::new()))
 }
 
 fn unquote(value: &str) -> Option<String> {
@@ -54,7 +57,7 @@ fn unquote(value: &str) -> Option<String> {
 }
 
 fn main() {
-    let (url, token) = match credentials() {
+    let (url, token, harness) = match credentials() {
         Some(credentials) => credentials,
         None => {
             eprintln!("nova-tools: no endpoint; set NOVA_TOOLS_FILE (Nova sets it per turn)");
@@ -80,7 +83,7 @@ fn main() {
         if message.is_empty() {
             continue;
         }
-        let reply = match post(&target, &token, message) {
+        let reply = match post(&target, &token, &harness, message) {
             Ok(body) => body,
             Err(reason) => {
                 // Answering in-band keeps the harness moving: a transport that
@@ -158,7 +161,7 @@ fn parse(url: &str) -> Option<Target> {
     Some(Target { host, port, path })
 }
 
-fn post(target: &Target, token: &str, body: &str) -> Result<String, String> {
+fn post(target: &Target, token: &str, harness: &str, body: &str) -> Result<String, String> {
     let host = target.host.trim_start_matches('[').trim_end_matches(']');
     let mut stream = TcpStream::connect((host, target.port)).map_err(|err| {
         format!(
@@ -172,12 +175,18 @@ fn post(target: &Target, token: &str, body: &str) -> Result<String, String> {
     stream
         .set_write_timeout(Some(REPLY_TIMEOUT))
         .map_err(|err| err.to_string())?;
+    let harness = if harness.bytes().all(|byte| byte.is_ascii_lowercase()) {
+        harness
+    } else {
+        ""
+    };
     let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {}\r\nX-Nova-Harness: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         target.path,
         target.host,
         target.port,
         token,
+        harness,
         body.len(),
         body
     );

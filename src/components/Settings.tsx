@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { addMcpServer, errorText, agentStatus, importTheme, installTheme, novaMcpList, openProviderSetup } from '../lib/ipc'
+import { errorText, agentStatus, importTheme, installTheme, openProviderSetup } from '../lib/ipc'
 import {
   ACCENTS, AGENTS, PRESETS, findTheme, resetAppearance, type AgentId, type AgentStatus, type ColorTheme, type Preferences,
 } from '../lib/settings'
@@ -15,6 +15,7 @@ import { GeneralSettings } from './GeneralSettings'
 import { SchedulesSettings } from './SchedulesSettings'
 import { Group, Toggle } from './SettingsRows'
 import { ToolsSettings } from './ToolsSettings'
+import { ConnectionsSettings } from './ConnectionsSettings'
 
 const SECTIONS = [
   ['Recommended', '✧'], ['General', '◈'], ['Appearance', '◐'],
@@ -43,8 +44,6 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
   const [themeId, setThemeId] = useState('')
   const [themeBusy, setThemeBusy] = useState(false)
   const [status, setStatus] = useState('')
-  const [servers, setServers] = useState<string | null>(null)
-  const [mcpBusy, setMcpBusy] = useState(false)
   const [checkInput, setCheckInput] = useState(() => JSON.stringify(p.checks[workspace?.root ?? ''] ?? []))
   const root = workspace?.root ?? ''
   // The custom accent is stored per scheme, and App paints the current scheme
@@ -403,44 +402,16 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
             <VoiceSettings preferences={p} update={update} />
           </>}
           {section === 'Tools' && (
-            /* Two tabs, two questions: Add-ons is the catalogue — what exists,
-               which harness can call it, what is deliberately absent — and
-               Skills is the folder listing. The Markdownify form moved to
-               General: it converts a paste, it is not a tool surface. The
-               Project checks form goes in as `extras` so it lands inside
-               Add-ons instead of floating above the tab bar. */
-            <ToolsSettings extras={checks} />
+            /* Two tabs, two questions: Add-ons is the summary — the switch, the
+               endpoint, and a Manage button that opens the counted sheet — and
+               Skills is the folder listing, now with a switch per row. The
+               Markdownify form moved to General: it converts a paste, it is not
+               a tool surface. The Project checks form goes in as `extras` so it
+               lands inside Add-ons instead of floating above the tab bar. */
+            <ToolsSettings extras={checks} preferences={p} update={update}
+              onChangeSection={changeSection} />
           )}
-          {section === 'Connections' && <Group title="Nova MCP servers">
-            <p className="settings-help">Reads configured servers from the current workspace using Nova’s CLI.</p>
-            <div className="settings-action"><button type="button" disabled={!root || mcpBusy} onClick={async () => {
-              setMcpBusy(true)
-              setStatus('')
-              try { setServers(await novaMcpList()) }
-              catch (err) { setStatus(errorText(err)) }
-              finally { setMcpBusy(false) }
-            }}>{mcpBusy ? 'Loading…' : 'List servers'}</button></div>
-            {servers !== null && <pre className="settings-output">{servers || 'No servers reported.'}</pre>}
-            <form className="settings-convert" aria-label="Add MCP server" onSubmit={async (event) => {
-              event.preventDefault()
-              const form = event.currentTarget
-              const fields = new FormData(form)
-              setMcpBusy(true)
-              setStatus('')
-              try {
-                await addMcpServer(String(fields.get('name')).trim(), String(fields.get('endpoint')).trim())
-                form.reset()
-                setStatus('Server saved. New Nova sessions load the updated configuration.')
-                setServers(await novaMcpList())
-              } catch (err) { setStatus(errorText(err)) }
-              finally { setMcpBusy(false) }
-            }}>
-              <label>Server name<input name="name" required maxLength={64} disabled={!root || mcpBusy} /></label>
-              <label>HTTP endpoint<input name="endpoint" type="url" required placeholder="https://server.example/mcp"
-                maxLength={2048} disabled={!root || mcpBusy} /></label>
-              <div className="settings-action"><button type="submit" disabled={!root || mcpBusy}>Add server</button></div>
-            </form>
-          </Group>}
+          {section === 'Connections' && <ConnectionsSettings key={root} workspaceReady={Boolean(root)} />}
           {section === 'Schedules' && <SchedulesSettings preferences={p} update={update} workspace={workspace} />}
           {section === 'Recommended' && <Group title="Set up your workspace">
             <div className="settings-row"><span><strong>Choose your default agent</strong><small>Configure the harness and model used for new tasks.</small></span>

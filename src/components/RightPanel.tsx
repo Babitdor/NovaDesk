@@ -4,7 +4,7 @@ import type { Pane } from '../lib/panes'
 import type { Chat, Column } from '../lib/sessions'
 import type { Preferences } from '../lib/settings'
 import { BoardPane } from './BoardPane'
-import { BrowserPane } from './BrowserPane'
+import { BrowserPane, type BrowserTarget } from './BrowserPane'
 import { FilesPane } from './FilesPane'
 import { GitHubPane } from './GitHubPane'
 import { Splitter } from './Splitter'
@@ -28,7 +28,7 @@ type Props = {
   /// Requests a tool made that this panel carries out: a file to show in the
   /// tree's preview, a page the browser child should navigate to.
   fileToOpen: { path: string; nonce: number } | null
-  browserTarget: { url: string; nonce: number } | null
+  browserTarget: BrowserTarget | null
 }
 
 /// Every pane stays mounted and is hidden with CSS: the browser keeps its page

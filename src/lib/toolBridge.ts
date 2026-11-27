@@ -1,4 +1,5 @@
 import { listen } from '@tauri-apps/api/event'
+import { flushSync } from 'react-dom'
 
 import { errorText } from './ipc'
 import { toolReply } from './tools'
@@ -24,7 +25,9 @@ export async function startToolBridge(handler: () => ToolHandler): Promise<() =>
     if (typeof id !== 'string' || typeof name !== 'string') return
     let answer: unknown
     try {
-      answer = handler()(name, payload.args ?? {})
+      // A harness can call again as soon as it gets a reply. Commit synchronous
+      // tool edits before the next call reads the task list.
+      flushSync(() => { answer = handler()(name, payload.args ?? {}) })
     } catch (err) {
       void toolReply(id, { ok: false, error: errorText(err) }).catch(() => {})
       return

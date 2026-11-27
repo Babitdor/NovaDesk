@@ -436,27 +436,32 @@ async fn latest_version(id: &str) -> Option<String> {
 
 pub struct CliAgent(pub &'static str);
 
-struct CommandCodePromptMod(PathBuf);
+struct TurnFile(PathBuf);
 
-impl CommandCodePromptMod {
-    fn write() -> Result<Self, AppError> {
+impl TurnFile {
+    fn write(prefix: &str, suffix: &str, body: &[u8]) -> Result<Self, AppError> {
         use std::io::Write;
         let path =
-            std::env::temp_dir().join(format!("nova-personality-{}.ts", uuid::Uuid::new_v4()));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+            std::env::temp_dir().join(format!("nova-{prefix}-{}{suffix}", uuid::Uuid::new_v4()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
             .open(&path)
             .map_err(|error| AppError::Io(error.to_string()))?;
-        let prompt_mod = Self(path);
-        let result = file.write_all(include_bytes!("commandcode-personality.ts"));
+        let result = file.write_all(body);
         drop(file);
+        let temporary = Self(path);
         result.map_err(|error| AppError::Io(error.to_string()))?;
-        Ok(prompt_mod)
+        Ok(temporary)
     }
 }
 
-impl Drop for CommandCodePromptMod {
+impl Drop for TurnFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
@@ -471,37 +476,18 @@ pub const TOOLS_FILE_ENV: &str = "NOVA_TOOLS_FILE";
 /// The alternative is argv, and a command line is readable by every process on
 /// the machine and ends up in a crash report. The shim reads the file (see
 /// src/bin/nova-tools.rs), so a harness only ever carries its path.
-struct BridgeFile {
-    path: PathBuf,
+fn bridge_file(bridge: &crate::tools::Bridge, harness: &str) -> Result<TurnFile, AppError> {
+    let body = json!({ "url": bridge.url, "token": bridge.token, "harness": harness }).to_string();
+    TurnFile::write("tools", ".json", body.as_bytes())
 }
 
-impl BridgeFile {
-    fn write(bridge: &crate::tools::Bridge) -> Result<Self, AppError> {
-        use std::io::Write;
-        let path = std::env::temp_dir().join(format!("nova-tools-{}.json", uuid::Uuid::new_v4()));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&path)
-            .map_err(|error| AppError::Io(error.to_string()))?;
-        let body = json!({ "url": bridge.url, "token": bridge.token }).to_string();
-        let result = file.write_all(body.as_bytes());
-        drop(file);
-        result.map_err(|error| AppError::Io(error.to_string()))?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for BridgeFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
+const PI_TOOLS: &[u8] = br#"export default function (pi) {
+  if (typeof pi.registerMcpServer !== 'function') return;
+  pi.registerMcpServer('nova-desktop', {
+    type: 'stdio', command: process.env.NOVA_TOOLS_SHIM,
+    env: { NOVA_TOOLS_FILE: process.env.NOVA_TOOLS_FILE }, exposure: 'direct',
+  });
+}"#;
 
 /// OpenCode takes one inline configuration document, so the personality and the
 /// tool server have to be merged instead of both setting the variable.
@@ -509,6 +495,7 @@ fn opencode_config(
     personality: Option<&super::Personality>,
     credentials: Option<&Path>,
     shim: Option<&Path>,
+    v2: bool,
 ) -> Result<String, AppError> {
     let raw = std::env::var("OPENCODE_CONFIG_CONTENT").unwrap_or_else(|_| "{}".into());
     let mut config: Value = serde_json::from_str(&raw).map_err(|_| {
@@ -533,14 +520,49 @@ fn opencode_config(
             TOOLS_FILE_ENV.to_string(),
             json!(credentials.display().to_string()),
         );
-        config["mcp"]["nova-desktop"] = json!({
+        let mut server = json!({
             "type": "local",
             "command": [shim.map(|shim| shim.display().to_string()).unwrap_or_default()],
-            "enabled": true,
             "environment": environment,
         });
+        if v2 {
+            if config
+                .pointer("/mcp/servers")
+                .is_some_and(|servers| !servers.is_object())
+            {
+                return Err(AppError::Agent(
+                    "OpenCode mcp.servers must be an object".into(),
+                ));
+            }
+            config["mcp"]["servers"]["nova-desktop"] = server;
+        } else {
+            server["enabled"] = json!(true);
+            config["mcp"]["nova-desktop"] = server;
+        }
     }
     Ok(config.to_string())
+}
+
+async fn opencode_v2() -> bool {
+    let Ok(mut probe) = command("opencode") else {
+        return false;
+    };
+    probe.arg("--version");
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        crate::commands::settings::capture(probe, 4096),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .is_some_and(|bytes| {
+        String::from_utf8_lossy(&bytes)
+            .split_whitespace()
+            .any(|part| {
+                semver::Version::parse(part.trim_start_matches('v'))
+                    .is_ok_and(|version| version.major == 2)
+            })
+    })
 }
 
 impl AgentBackend for CliAgent {
@@ -556,19 +578,45 @@ impl AgentBackend for CliAgent {
             // this launch's endpoint and token, and only its path travels on the
             // command line.
             let mut credentials = None;
-            if let Some(bridge) = req
-                .tools
-                .as_ref()
-                .filter(|_| crate::tools::injection(self.0).per_turn())
-            {
-                credentials = Some(BridgeFile::write(bridge)?);
+            if let Some(bridge) = req.tools.as_ref() {
+                let attach = if self.0 == "commandcode" {
+                    let listing = tokio::select! {
+                        _ = cancel.cancelled() => return Ok(FinishReason::Cancelled),
+                        listing = tokio::time::timeout(Duration::from_secs(10), crate::tools::mcp_servers::commandcode_listing(root)) => listing,
+                    };
+                    listing.is_ok_and(|result| {
+                        result.is_ok_and(|listing| {
+                            crate::tools::mcp_servers::commandcode_tools_registered(&listing)
+                        })
+                    })
+                } else {
+                    crate::tools::injection(self.0).per_turn()
+                };
+                if attach {
+                    credentials = Some(bridge_file(bridge, self.0)?);
+                }
             }
             let (args, stdin_prompt) = arguments(
                 self.0,
                 &req,
-                credentials.as_ref().map(|file| file.path.as_path()),
+                credentials.as_ref().map(|file| file.0.as_path()),
             );
             let mut process = command(self.0)?;
+            let _pi_extension =
+                if let ("pi", Some(bridge), Some(file)) = (self.0, &req.tools, &credentials) {
+                    let extension = TurnFile::write("pi-tools", ".mjs", PI_TOOLS)?;
+                    process
+                        .arg("--extension")
+                        .arg(&extension.0)
+                        .env(TOOLS_FILE_ENV, &file.0)
+                        .env("NOVA_TOOLS_SHIM", &bridge.shim);
+                    Some(extension)
+                } else {
+                    None
+                };
+            if let ("commandcode", Some(file)) = (self.0, &credentials) {
+                process.env(TOOLS_FILE_ENV, &file.0);
+            }
             // Same request-file contract as Nova: a harness may write requests and
             // Nova reads them when the turn ends. Ignoring the variable is fine.
             if let Some(path) = &req.requests_file {
@@ -578,7 +626,11 @@ impl AgentBackend for CliAgent {
             if let Some(profile) = &req.personality {
                 match self.0 {
                     "commandcode" => {
-                        let module = CommandCodePromptMod::write()?;
+                        let module = TurnFile::write(
+                            "personality",
+                            ".ts",
+                            include_bytes!("commandcode-personality.ts"),
+                        )?;
                         process
                             .arg("--mod")
                             .arg(&module.0)
@@ -595,12 +647,17 @@ impl AgentBackend for CliAgent {
                 }
             }
             if self.0 == "opencode" && (req.personality.is_some() || credentials.is_some()) {
+                let v2 = opencode_v2().await;
+                if v2 {
+                    process.arg("--standalone");
+                }
                 process.env(
                     "OPENCODE_CONFIG_CONTENT",
                     opencode_config(
                         req.personality.as_ref(),
-                        credentials.as_ref().map(|file| file.path.as_path()),
+                        credentials.as_ref().map(|file| file.0.as_path()),
                         req.tools.as_ref().map(|bridge| bridge.shim.as_path()),
+                        v2,
                     )?,
                 );
             }
@@ -745,9 +802,8 @@ fn arguments(id: &str, req: &TurnRequest, credentials: Option<&Path>) -> (Vec<St
     // Nova Desktop Tools, per harness. Verified flags, not guesses: claude
     // takes the server as JSON through --mcp-config, codex takes dotted TOML
     // overrides, and opencode is configured through OPENCODE_CONFIG_CONTENT in
-    // start() because its config is a document rather than flags. Everything
-    // else only reads its own config file, and a saved entry would carry a token
-    // that dies with this launch, so nothing is injected for them.
+    // start() because its config is a document. Pi's extension and the
+    // CommandCode credentials environment are also attached in start().
     //
     // Only the credentials file's path travels in argv. The endpoint and the
     // token live inside it, readable by this user alone and deleted when the
@@ -1149,6 +1205,7 @@ mod tests {
     #[test]
     fn model_and_effort_reach_the_harness() {
         let request = TurnRequest {
+            turn_id: "turn".into(),
             prompt: "Hello".into(),
             workspace: None,
             chat_id: "task".into(),
@@ -1177,6 +1234,7 @@ mod tests {
     #[test]
     fn tools_change_the_argv_only_when_a_bridge_is_present() {
         let mut request = TurnRequest {
+            turn_id: "turn".into(),
             prompt: "Hello".into(),
             workspace: None,
             chat_id: "task".into(),
@@ -1245,6 +1303,7 @@ mod tests {
     #[test]
     fn personality_instructions_are_separate_from_the_user_prompt() {
         let mut request = TurnRequest {
+            turn_id: "turn".into(),
             prompt: "Find the caller".into(),
             workspace: None,
             chat_id: "task".into(),
@@ -1278,7 +1337,12 @@ mod tests {
 
     #[test]
     fn commandcode_personality_mod_is_removed_after_use() {
-        let module = CommandCodePromptMod::write().unwrap();
+        let module = TurnFile::write(
+            "personality",
+            ".ts",
+            include_bytes!("commandcode-personality.ts"),
+        )
+        .unwrap();
         let path = module.0.clone();
         assert!(std::fs::read_to_string(&path)
             .unwrap()

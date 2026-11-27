@@ -38,7 +38,6 @@ export const agentStatus = (versions = false) => invoke<AgentStatus[]>('agent_st
 export const prewarmNova = () => invoke<void>('prewarm_nova')
 export const importTheme = () => invoke<ColorTheme[]>('import_theme')
 export const installTheme = (id: string) => invoke<ColorTheme[]>('install_theme', { id })
-export const novaMcpList = () => invoke<string>('nova_mcp_list')
 export const addMcpServer = (name: string, endpoint: string) => invoke<void>('add_mcp_server', { name, endpoint })
 export const openProviderSetup = (id: string) => invoke<void>('open_provider_setup', { id })
 export const openNovaTerminal = () => invoke<void>('open_nova_terminal')

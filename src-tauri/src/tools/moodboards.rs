@@ -13,11 +13,12 @@
 //! Everything in board.json is authored by the user, so it is data, not
 //! instructions: the tool returns it verbatim and says so in its description.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::error::AppError;
+use crate::workspace::WorkspaceGuard;
 
 /// A board larger than this is not a reference image, and base64 makes it
 /// bigger still.
@@ -25,8 +26,10 @@ const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "avif"];
 
-fn boards(workspace: &Path) -> PathBuf {
-    workspace.join(".nova").join("moodboards")
+const BOARD_ROOT: &str = ".nova/moodboards";
+
+fn boards_guard(workspace: &Path) -> Result<WorkspaceGuard, AppError> {
+    WorkspaceGuard::new(WorkspaceGuard::new(workspace)?.resolve(BOARD_ROOT)?)
 }
 
 /// One path component, and nothing that could climb out of the board folder.
@@ -69,29 +72,37 @@ fn mime(path: &Path) -> &'static str {
     }
 }
 
-fn image_names(board: &Path) -> Vec<(String, u64)> {
+fn image_names(board: &WorkspaceGuard) -> Vec<(String, u64)> {
     let mut images = Vec::new();
-    let Ok(entries) = std::fs::read_dir(board) else {
+    let Ok(entries) = std::fs::read_dir(board.root()) else {
         return images;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() || !is_image(&path) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_image(Path::new(&name)) {
             continue;
         }
-        let size = entry.metadata().map(|meta| meta.len()).unwrap_or_default();
-        images.push((entry.file_name().to_string_lossy().into_owned(), size));
+        let Ok(path) = board.resolve(&name) else {
+            continue;
+        };
+        if let Ok(meta) = path.metadata() {
+            if meta.is_file() {
+                images.push((name, meta.len()));
+            }
+        }
     }
     images.sort_by(|left, right| left.0.cmp(&right.0));
     images
 }
 
-fn board_json(board: &Path) -> Value {
-    std::fs::read(board.join("board.json"))
+fn board_json(board: &WorkspaceGuard) -> Option<Value> {
+    board
+        .resolve("board.json")
         .ok()
+        .filter(|path| path.is_file())
+        .and_then(|path| std::fs::read(path).ok())
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
         .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}))
 }
 
 pub fn list(workspace: Option<&Path>) -> Value {
@@ -102,37 +113,36 @@ pub fn list(workspace: Option<&Path>) -> Value {
         });
     };
     let mut found: Vec<Value> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(boards(workspace)) {
+    if let Ok(boards) = boards_guard(workspace) {
+        let Ok(entries) = std::fs::read_dir(boards.root()) else {
+            return json!({ "moodboards": found, "root": BOARD_ROOT });
+        };
         for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
             let id = entry.file_name().to_string_lossy().into_owned();
-            let board = entry.path();
+            let Ok(board) = boards.resolve(&id).and_then(WorkspaceGuard::new) else {
+                continue;
+            };
             let meta = board_json(&board);
             let images = image_names(&board);
             found.push(json!({
                 "id": id,
-                "name": meta.get("name").and_then(Value::as_str).unwrap_or(&id),
+                "name": meta.as_ref().and_then(|value| value["name"].as_str()).unwrap_or(&id),
                 "images": images.len(),
-                "hasBoardJson": board.join("board.json").is_file(),
+                "hasBoardJson": board.resolve("board.json").is_ok_and(|path| path.is_file()),
             }));
         }
     }
     found.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
-    json!({ "moodboards": found, "root": ".nova/moodboards" })
+    json!({ "moodboards": found, "root": BOARD_ROOT })
 }
 
 pub fn read(workspace: Option<&Path>, id: &str) -> Result<Value, AppError> {
     let workspace = workspace.ok_or(AppError::NoWorkspace)?;
     let id = component(id, "the board id")?;
-    let board = boards(workspace).join(&id);
-    if !board.is_dir() {
-        return Err(AppError::NotFound(format!("moodboard {id}")));
-    }
+    let board = WorkspaceGuard::new(boards_guard(workspace)?.resolve(&id)?)?;
     Ok(json!({
         "id": id,
-        "board": board_json(&board),
+        "board": board_json(&board).unwrap_or_else(|| json!({})),
         "images": image_names(&board)
             .into_iter()
             .map(|(name, bytes)| json!({ "file": name, "bytes": bytes }))
@@ -144,7 +154,11 @@ pub fn image(workspace: Option<&Path>, id: &str, image: &str) -> Result<Value, A
     let workspace = workspace.ok_or(AppError::NoWorkspace)?;
     let id = component(id, "the board id")?;
     let name = component(image, "the image name")?;
-    let path = boards(workspace).join(&id).join(&name);
+    if !is_image(Path::new(&name)) {
+        return Err(AppError::Tools("unsupported moodboard image type".into()));
+    }
+    let board = WorkspaceGuard::new(boards_guard(workspace)?.resolve(&id)?)?;
+    let path = board.resolve(&name)?;
     let meta = std::fs::metadata(&path).map_err(|err| AppError::from_io(err, &path))?;
     if !meta.is_file() {
         return Err(AppError::NotAFile(name));
@@ -159,7 +173,7 @@ pub fn image(workspace: Option<&Path>, id: &str, image: &str) -> Result<Value, A
     use base64::Engine as _;
     Ok(json!({
         "file": name,
-        "mime": mime(&path),
+        "mime": mime(Path::new(&name)),
         "bytes": bytes.len(),
         "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
     }))
@@ -170,8 +184,8 @@ mod tests {
     use super::*;
     use crate::testtmp::TempDir;
 
-    fn board(root: &TempDir, id: &str) -> PathBuf {
-        let board = boards(root.path()).join(id);
+    fn board(root: &TempDir, id: &str) -> std::path::PathBuf {
+        let board = root.path().join(BOARD_ROOT).join(id);
         std::fs::create_dir_all(&board).unwrap();
         board
     }
@@ -207,6 +221,8 @@ mod tests {
         let board = board(&root, "alpha");
         std::fs::write(board.join("one.png"), [0_u8]).unwrap();
         assert!(image(Some(root.path()), "alpha", "../board.json").is_err());
+        std::fs::write(board.join("notes.txt"), "not an image").unwrap();
+        assert!(image(Some(root.path()), "alpha", "notes.txt").is_err());
         assert!(image(Some(root.path()), "alpha", "one.png").is_ok());
     }
 

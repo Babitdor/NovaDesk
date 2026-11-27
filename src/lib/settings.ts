@@ -221,6 +221,9 @@ export type Preferences = {
   crashReports: boolean
   keepDrafts: boolean
   projects: Project[]
+  /// Skill directories switched off in Settings -> Tools, by directory name.
+  /// Rust holds the same list so a harness never sees one of these.
+  disabledSkills: string[]
 
   // --- Schedules -----------------------------------------------------
   /// Agent-origin wake-ups are dropped when this is off.
@@ -250,6 +253,7 @@ const defaults: Preferences = {
   quickLauncher: false, quickLauncherShortcut: 'CommandOrControl+Shift+N',
   widgetEnabled: false, widgetPinned: false,
   restartAfterCrash: false, crashReports: true, keepDrafts: false, projects: [],
+  disabledSkills: [],
   agentsMaySchedule: false, askBeforeCrossThread: true, pauseSchedules: false,
   agentLimit: 10, scheduleActivity: [],
 }
@@ -497,6 +501,11 @@ export function migratePreferences(raw: unknown): Preferences {
         && typeof entry === 'object' && typeof (entry as Project).root === 'string'
         && typeof (entry as Project).name === 'string').slice(0, 12)
       : [],
+    // Only directory names: a stored blob with anything else in it cannot name
+    // a skill, and the cap keeps a corrupted list from growing without bound.
+    disabledSkills: Array.isArray(stored.disabledSkills)
+      ? stored.disabledSkills.filter((entry): entry is string => typeof entry === 'string').slice(0, 500)
+      : []
   }
   return merged
 }

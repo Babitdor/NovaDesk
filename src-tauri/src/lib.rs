@@ -65,8 +65,7 @@ pub struct AppState {
     speak: Arc<speak::engine::SpeakEngine>,
     /// Live voice downloads, keyed by voice id.
     speak_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    /// The tool endpoint, its per-launch token, the browser snapshot refs and
-    /// the message queue: everything a harness can reach.
+    /// The tool endpoint, its per-launch token and the message queue.
     pub tools: tools::ToolsState,
 }
 
@@ -112,6 +111,10 @@ impl AppState {
         // drive, so the endpoint stops answering rather than serving half a
         // tool surface from a dead UI.
         self.tools.shutdown();
+        // The launch's credentials file goes with the endpoint: a stale path
+        // makes the shim print its own "no endpoint" line instead of trusting
+        // a token that no longer exists.
+        crate::tools::nova_entry::remove_launch_credentials();
         for token in self.procs.lock().expect("procs mutex poisoned").values() {
             token.cancel();
         }
@@ -239,7 +242,6 @@ pub fn run() {
         commands::browser::browser_close,
         commands::settings::import_theme,
         commands::settings::install_theme,
-        commands::settings::nova_mcp_list,
         commands::settings::add_mcp_server,
         commands::settings::open_provider_setup,
         commands::settings::open_nova_terminal,
@@ -284,6 +286,9 @@ pub fn run() {
         commands::tools::queue_message,
         commands::tools::remove_queued,
         commands::tools::tools_skills,
+        commands::tools::set_disabled_skills,
+        commands::tools::mcp_servers,
+        commands::tools::register_commandcode_tools,
     ];
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

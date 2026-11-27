@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -28,6 +28,8 @@ import {
 } from './lib/ipc'
 import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
 import { startToolBridge, type ToolHandler } from './lib/toolBridge'
+import type { BrowserTarget } from './components/BrowserPane'
+import { setDisabledSkills } from './lib/tools'
 import { taskTools } from './lib/tasks'
 import { advance, dueAfterThread, dueSchedules, promptFor, withinLimit } from './lib/scheduler'
 import { speakReply, stopSpeaking } from './lib/speak'
@@ -99,14 +101,14 @@ export default function App() {
   /// to open, the shell to start. Each carries a nonce so asking for the same
   /// file twice still counts as a new request.
   const [fileToOpen, setFileToOpen] = useState<{ path: string; nonce: number } | null>(null)
-  const [browserTarget, setBrowserTarget] = useState<{ url: string; nonce: number } | null>(null)
+  const [browserTarget, setBrowserTarget] = useState<BrowserTarget | null>(null)
+  const browserOpening = useRef(false)
   const [shellToSpawn, setShellToSpawn] = useState<{ shell: TerminalShell; nonce: number } | null>(null)
   /// The tool handler for the current render, and the deferred send a tool
   /// asked for on a task that was not open yet.
   const toolHandler = useRef<ToolHandler>(() => {
     throw new Error('the tool bridge is not ready yet')
   })
-  const startInRef = useRef<(chatId: string, text: string) => Promise<boolean>>(async () => false)
   const deferredSend = useRef<{ chatId: string; text: string; settle: (ok: boolean) => void } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [railWidth, setRailWidth] = useState(defaultRailWidth)
@@ -192,6 +194,12 @@ export default function App() {
     void setWidget(preferences.widgetEnabled, preferences.widgetPinned).catch(() => {})
   }, [preferences.widgetEnabled, preferences.widgetPinned])
 
+  // The skill switches are honoured by Rust, so it needs the list at startup
+  // and not only once Settings has been opened.
+  useEffect(() => {
+    void setDisabledSkills(preferences.disabledSkills).catch(() => {})
+  }, [preferences.disabledSkills])
+
   /// Page errors are reported once per ten seconds: a render loop would
   /// otherwise fill the crash folder with the same stack.
   useEffect(() => {
@@ -249,7 +257,7 @@ export default function App() {
       const path = String(event.payload?.path ?? '')
       if (!path) return
       setFileToOpen({ path, nonce: Date.now() })
-      withViewTransition(() => setView('Files'))
+      setView('Files')
     })
     const openTerminal = listen<{ shell?: string }>('nova:open-terminal', (event) => {
       const shell = String(event.payload?.shell ?? 'powershell')
@@ -257,30 +265,12 @@ export default function App() {
       setShellToSpawn({ shell, nonce: Date.now() })
       setDock('open')
     })
-    const openBrowser = listen<{ url?: string }>('nova:browser-open', (event) => {
-      const url = String(event.payload?.url ?? '')
-      if (!url) return
-      setBrowserTarget({ url, nonce: Date.now() })
-      withViewTransition(() => setView('Preview'))
-    })
-    // A message queued while a turn was running. Rust popped it, so this is the
-    // only copy: if the turn cannot start, say so instead of losing it.
-    const queueReady = listen<{ chatId?: string; message?: { text?: string } }>('nova:queue-ready', (event) => {
-      const chatId = String(event.payload?.chatId ?? '')
-      const text = String(event.payload?.message?.text ?? '').trim()
-      if (!chatId || !text) return
-      void startInRef.current(chatId, text).then((ok) => {
-        if (!ok) setNotice('A queued message could not start: another turn is still running.')
-      })
-    })
     return () => {
       void quick.then((off) => off()).catch(() => {})
       void focusChat.then((off) => off()).catch(() => {})
       void dismiss.then((off) => off()).catch(() => {})
       void openFile.then((off) => off()).catch(() => {})
       void openTerminal.then((off) => off()).catch(() => {})
-      void openBrowser.then((off) => off()).catch(() => {})
-      void queueReady.then((off) => off()).catch(() => {})
     }
   }, [chats])
 
@@ -892,7 +882,7 @@ export default function App() {
   /// another task switches to it and settles when the composer's own path has
   /// run, so the answer it returns is the real outcome rather than a guess.
   const startIn = (chatId: string, text: string) => new Promise<boolean>((resolve) => {
-    if (live.current) {
+    if (live.current || deferredSend.current || !chats.some(({ id }) => id === chatId)) {
       resolve(false)
       return
     }
@@ -906,23 +896,23 @@ export default function App() {
 
   useEffect(() => {
     const request = deferredSend.current
-    if (!request || request.chatId !== active.id) return
+    if (!request) return
     deferredSend.current = null
-    request.settle(submitRef.current(request.text))
+    request.settle(request.chatId === active.id && submitRef.current(request.text))
   }, [active.id])
 
   /// The handler the tool bridge calls. Kept in a ref updated after every
   /// render so the listener registered once still answers from current state.
-  useEffect(() => {
-    startInRef.current = startIn
-    toolHandler.current = taskTools({
+  useLayoutEffect(() => {
+    const tasks = taskTools({
       chats: () => chats,
       activeId: () => active.id,
       liveChat: () => live.current?.chatId ?? null,
-      // The same two calls openChat makes, written out because that function is
-      // declared below this effect and reading it here would be a use before
-      // declaration for no benefit.
-      open: (id) => withViewTransition(() => { setActiveId(id); setView('Chat') }),
+      open: (id) => {
+        setActiveId(id)
+        setView('Chat')
+        void getCurrentWindow().setFocus().catch(() => {})
+      },
       create: (title, agent) => {
         const chat: Chat = { ...createChat(), title, ...(agent ? { agent } : {}) }
         addTasks([chat])
@@ -943,6 +933,30 @@ export default function App() {
       },
       start: startIn,
     })
+    toolHandler.current = async (name, args) => {
+      if (name === 'deliver_queued_message') {
+        if (typeof args.chatId !== 'string' || typeof args.text !== 'string') throw new Error('Invalid queued message')
+        if (await startIn(args.chatId, args.text)) return true
+        const message = 'A queued message could not start and will stay in the queue.'
+        setNotice(message)
+        throw new Error(message)
+      }
+      if (name !== 'open_browser') return tasks(name, args)
+      if (typeof args.url !== 'string') throw new Error('url is required')
+      if (settings || browserOpening.current) throw new Error('The browser pane is busy. Try again.')
+      browserOpening.current = true
+      try {
+        const url = args.url
+        const opened = await new Promise<string>((settle) => {
+          setBrowserTarget({ url, settle })
+          setView('Preview')
+        })
+        return { opened }
+      } finally {
+        browserOpening.current = false
+        setBrowserTarget(null)
+      }
+    }
   })
 
   /// One listener for the whole session: Rust emits nova:tool-call and waits on

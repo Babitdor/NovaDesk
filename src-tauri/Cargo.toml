@@ -7,7 +7,7 @@ members = ["shim"]
 
 [package]
 name = "novacode-desktop"
-version = "0.5.1"
+version = "0.6.0"
 description = "Nova Desktop — a Tauri shell for a desktop coding agent"
 edition = "2021"
 # 1.90 is tauri-plugin-updater's floor: the crate uses APIs stabilized there.
@@ -44,7 +44,11 @@ tauri-plugin-global-shortcut = "2"
 # public key and endpoint live in tauri.conf.json under plugins.updater.
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order keeps Map insertion order: the managed nova-desktop entry in
+# a workspace's .nova/mcp.json is merged, never rewritten with sorted keys —
+# a reordered file would defeat the byte-identical skip and churn the user's
+# config on every session.
+serde_json = { version = "1", features = ["preserve_order"] }
 semver = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }

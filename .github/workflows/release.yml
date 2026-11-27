@@ -42,6 +42,24 @@ jobs:
       - name: Build the tool shim
         run: npm run tools:shim
 
+      - name: Read release notes
+        id: notes
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $tag = "v$version"
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $tag) {
+            throw "The tag must match the Desktop version $tag"
+          }
+          $path = ".github/release-notes/$tag.md"
+          $body = if (Test-Path -LiteralPath $path) {
+            Get-Content -Raw -LiteralPath $path
+          } else {
+            "Windows installers for Nova Desktop $tag. Requires WebView2 and Python 3 on PATH for the terminal dock."
+          }
+          $delimiter = [guid]::NewGuid().ToString('N')
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value @("body<<$delimiter", $body.TrimEnd(), $delimiter)
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,15 +73,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Nova Desktop v__VERSION__"
-          releaseBody: |
-            Windows installers for Nova Desktop v__VERSION__.
-
-            - `Nova Desktop_*_x64-setup.exe` — NSIS installer
-            - `Nova Desktop_*_x64_en-US.msi` — MSI package
-
-            Requires the WebView2 runtime (bundled with Windows 11) and Python 3 on
-            `PATH` for the terminal dock. The agent CLIs you intend to use have to be
-            installed and authenticated separately.
+          releaseBody: ${{ steps.notes.outputs.body }}
           # Published, not a draft: a tag is the release decision. Flip to true if a
           # release should wait for a human to press publish.
           releaseDraft: false

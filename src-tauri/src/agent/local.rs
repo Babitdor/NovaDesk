@@ -124,6 +124,7 @@ mod tests {
 
     fn request(prompt: &str) -> TurnRequest {
         TurnRequest {
+            turn_id: "turn".into(),
             chat_id: uuid::Uuid::new_v4().to_string(),
             model: None,
             effort: None,

@@ -13,13 +13,22 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::commands::settings::download;
+use crate::commands::settings::{capture, download_response, system_command};
 use crate::error::AppError;
 use crate::AppState;
 
-/// GitHub's "latest release" endpoint. One unauthenticated GET (60/h), issued
-/// only when the About page opens or the user presses Check now — never polled.
+/// GitHub's "latest release" endpoint. One unauthenticated GET, issued only when
+/// the About page opens or the user presses Check now — never polled. The
+/// anonymous quota is 60 an hour per address, which a shared connection or a
+/// reader who keeps reopening this pane will exhaust; when that happens the
+/// check falls back to `LATEST_PAGE` rather than failing.
 const RELEASES: &str = "https://api.github.com/repos/Babitdor/NovaDesk/releases/latest";
+
+/// The same release, as GitHub's own redirect: this address answers with
+/// `Location: …/releases/tag/<tag>`, so the tag can be read off the last hop
+/// without the API and without its quota. It carries no notes and no publish
+/// date, which is the whole price of a rate-limited check.
+const LATEST_PAGE: &str = "https://github.com/Babitdor/NovaDesk/releases/latest";
 
 /// Release notes longer than this are clipped; the sheet links to GitHub instead.
 const NOTES_LIMIT: usize = 1200;
@@ -74,12 +83,34 @@ pub struct UpdateCheck {
 
 #[tauri::command]
 pub async fn check_app_update(app: AppHandle) -> Result<UpdateCheck, AppError> {
-    let body = download(RELEASES, 1024 * 1024)
-        .await
-        .map_err(|err| AppError::Agent(format!("Could not reach GitHub: {err}")))?;
-    let release: Value = serde_json::from_slice(&body)
-        .map_err(|_| AppError::Agent("GitHub returned a response Nova could not read".into()))?;
     let current = app.package_info().version.to_string();
+    match download_response(RELEASES, 1024 * 1024).await {
+        Ok(response) if response.status == 200 => published(&response.body, current),
+        // No published release is an answer, not a failure of the connection.
+        Ok(response) if response.status == 404 => Err(AppError::Agent(
+            "GitHub has no published release for Nova to compare against yet.".into(),
+        )),
+        // 403 is the anonymous quota, 429 the same wall at a different status,
+        // 5xx GitHub's own trouble: in all three the release page still names
+        // the tag, and the check is worth more than the notes it loses doing so.
+        Ok(response) => latest_page(current).await.map_err(|err| {
+            AppError::Agent(format!(
+                "GitHub answered HTTP {} and its release page could not be read: {err}",
+                response.status
+            ))
+        }),
+        // A blocked API host is no more useful than a spent quota, and the page
+        // is a different origin, so it may well answer where the API did not.
+        Err(err) => latest_page(current)
+            .await
+            .map_err(|_| AppError::Agent(format!("Could not reach GitHub: {err}"))),
+    }
+}
+
+/// The `/releases/latest` JSON as the pane's fields.
+fn published(body: &[u8], current: String) -> Result<UpdateCheck, AppError> {
+    let release: Value = serde_json::from_slice(body)
+        .map_err(|_| AppError::Agent("GitHub returned a response Nova could not read".into()))?;
     // Tags are conventionally `v0.3.0`; semver rejects the leading v.
     let latest = release["tag_name"]
         .as_str()
@@ -101,6 +132,71 @@ pub async fn check_app_update(app: AppHandle) -> Result<UpdateCheck, AppError> {
         latest,
         current,
     })
+}
+
+/// The release GitHub redirects `/releases/latest` to, read without the API.
+///
+/// `--head` keeps the response to headers and `--output` throws those at the
+/// null device, so stdout carries nothing but curl's `%{url_effective}` — the
+/// last hop after the redirects. None of it counts against a quota.
+async fn latest_page(current: String) -> Result<UpdateCheck, AppError> {
+    let mut command = system_command("curl");
+    command.args([
+        "-q",
+        "--silent",
+        "--head",
+        "--location",
+        "--max-redirs",
+        "3",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--max-time",
+        "20",
+        "--output",
+        null_device(),
+        "--write-out",
+        "%{url_effective}",
+        "--",
+        LATEST_PAGE,
+    ]);
+    let caught = capture(command, 2048).await?;
+    let effective = String::from_utf8_lossy(&caught).trim().to_string();
+    let latest = tag_from(&effective)
+        .map(|tag| tag.trim_start_matches('v').to_string())
+        .filter(|tag| !tag.is_empty())
+        .ok_or_else(|| {
+            AppError::Agent("GitHub's release page did not name a release tag".into())
+        })?;
+    Ok(UpdateCheck {
+        available: is_newer(&latest, &current),
+        latest,
+        url: Some(effective),
+        published_at: None,
+        notes: None,
+        current,
+    })
+}
+
+/// The tag in a `…/releases/tag/<tag>` address, and nothing for any other hop.
+///
+/// GitHub redirects to `/releases` instead of a tag page when a repository has
+/// no published release, so a missing tag has to answer `None` rather than
+/// yield the word "releases" as a version.
+fn tag_from(effective: &str) -> Option<&str> {
+    let (_, tag) = effective.split_once("/releases/tag/")?;
+    let tag = tag.trim_end_matches('/');
+    (!tag.is_empty()).then_some(tag)
+}
+
+/// Where curl should throw a response body nobody reads.
+fn null_device() -> &'static str {
+    if cfg!(windows) {
+        "NUL"
+    } else {
+        "/dev/null"
+    }
 }
 
 /// One step of an in-app update, streamed to the About page while it runs.
@@ -314,7 +410,73 @@ fn resident_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer;
+    use super::{is_newer, latest_page, published, tag_from, RELEASES};
+    use crate::commands::settings::download_response;
+
+    #[test]
+    fn a_release_tag_is_read_from_the_redirect_and_nowhere_else() {
+        assert_eq!(
+            tag_from("https://github.com/Babitdor/NovaDesk/releases/tag/v0.5.1"),
+            Some("v0.5.1")
+        );
+        assert_eq!(
+            tag_from("https://github.com/Babitdor/NovaDesk/releases/tag/v0.5.1/"),
+            Some("v0.5.1")
+        );
+        // A repository with no release stops at the releases index, whose last
+        // segment is not a version and must not be offered as one.
+        assert_eq!(
+            tag_from("https://github.com/Babitdor/NovaDesk/releases"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_release_body_becomes_the_panes_fields() {
+        let check = published(
+            br#"{"tag_name":"v0.9.0","html_url":"https://github.com/x/y/releases/tag/v0.9.0",
+                 "published_at":"2026-01-02T03:04:05Z","body":"notes"}"#,
+            "0.5.1".to_string(),
+        )
+        .unwrap();
+        assert_eq!(check.latest, "0.9.0");
+        assert!(check.available);
+        assert_eq!(check.notes.as_deref(), Some("notes"));
+        // A tag that is only the `v` leaves nothing to compare: refusing beats
+        // reporting "up to date".
+        assert!(published(br#"{"tag_name":"v"}"#, "0.5.1".to_string()).is_err());
+    }
+
+    /// Reaches GitHub: `cargo test --lib -- --ignored live_release_sources`.
+    ///
+    /// Two facts the pane depends on and no offline test can check: that the API
+    /// answer carries a readable status, and that the redirect still names a tag
+    /// when that API is spent or blocked. Run it with the quota gone and the
+    /// second half is the whole point of the fallback.
+    #[tokio::test]
+    #[ignore = "reaches api.github.com and github.com"]
+    async fn live_release_sources() {
+        let api = download_response(RELEASES, 1024 * 1024)
+            .await
+            .expect("the request itself must complete");
+        assert_ne!(api.status, 0, "curl's status must have been read");
+        let page = latest_page("0.0.0".to_string())
+            .await
+            .expect("the release page names a tag");
+        assert!(
+            page.url
+                .as_deref()
+                .is_some_and(|url| url.contains("/releases/tag/")),
+            "unexpected final address {:?}",
+            page.url
+        );
+        assert!(page.available, "0.0.0 must look older than a release");
+        // Both sources must agree: a rate limit costs the notes, not the tag.
+        if api.status == 200 {
+            let release = published(&api.body, "0.0.0".to_string()).unwrap();
+            assert_eq!(page.latest, release.latest);
+        }
+    }
 
     #[test]
     fn newer_versions_are_recognised() {

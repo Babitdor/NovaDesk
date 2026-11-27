@@ -31,14 +31,18 @@
 //!   is what lets a call through at all: the base argv runs with
 //!   --ask-for-approval never, and every MCP call is otherwise refused with
 //!   "tool call requires approval, but approval policy is never".
-//! - opencode: inline env. OPENCODE_CONFIG_CONTENT already carries the
-//!   personality; it accepts an mcp section.
-//! - pi, commandcode, hermes, nova: config file only (pi mcp add, and friends).
+//! - opencode: inline env. OpenCode 2 gets a private server and the v2 schema.
+//! - pi: an extension registers the server for the session.
+//! - commandcode: opt-in registration in the harness's private project config.
+//!   Each turn exports the current credentials path for that entry.
+//! - hermes: the active Hermes profile owns its configuration.
+//! - nova: a managed entry in the workspace's own `.nova/mcp.json`, written
+//!   when a session starts (see [nova_entry]). The token never enters the
+//!   config — it lives in the per-launch credentials file the entry's
+//!   `NOVA_TOOLS_FILE` points at — so the old "a saved entry would be stale"
+//!   reasoning no longer applies.
 //!
-//! The config-file harnesses are deliberately *not* handed the shim: the
-//! endpoint token is per launch, so an entry written into a harness's own config
-//! would be stale by the next start. The pane says exactly that instead of
-//! listing them as supported.
+//! Settings keeps configuration support separate from authenticated tool discovery.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,7 +56,9 @@ use crate::error::AppError;
 pub mod browser;
 pub mod dispatch;
 pub mod frontend;
+pub mod mcp_servers;
 pub mod moodboards;
+pub mod nova_entry;
 pub mod projects;
 pub mod queue;
 pub mod search;
@@ -60,14 +66,17 @@ pub mod server;
 pub mod skills;
 
 /// How a harness accepts an MCP server.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Injection {
     /// The per-turn argv carries the server definition.
     Flags,
     /// One inline configuration document in an environment variable.
     Env,
-    /// Only a one-time "mcp add" into the harness's own config file.
+    /// A managed entry in the workspace's own config file, written when a
+    /// session starts and removed when its last session ends. Nova only.
+    ProjectFile,
+    /// A server registration in the harness's own config file.
     ConfigFile,
     /// Nothing documented.
     None,
@@ -80,14 +89,31 @@ impl Injection {
         matches!(self, Injection::Flags | Injection::Env)
     }
 
+    /// True when a session on this harness can call the tools at all: the
+    /// per-turn shapes plus nova's managed workspace entry. The pane's badge
+    /// is built from this, so a harness whose entry is written by the app
+    /// counts even though nothing happens per turn.
+    pub fn callable(self) -> bool {
+        matches!(
+            self,
+            Injection::Flags | Injection::Env | Injection::ProjectFile
+        )
+    }
+
     fn note(self, harness: &str) -> Option<String> {
         match self {
-            // The token is per launch, so a saved entry would be stale next start.
-            Injection::ConfigFile => Some(format!(
-                "{} only takes MCP servers from its own config file, and this endpoint token \
-                 changes every launch. The shim is not injected.",
-                harness
-            )),
+            Injection::ConfigFile if harness == "commandcode" => {
+                Some("Register Nova Desktop for this project in Connections.".into())
+            }
+            Injection::ConfigFile => {
+                Some("Configure the server in the harness's own profile.".into())
+            }
+            Injection::ProjectFile => Some(
+                "Nova Desktop writes nova-desktop into <project>/.nova/mcp.json when a session \
+                 starts, and removes it when the last one ends. The credentials file is per \
+                 launch, so the last launch to open this workspace wins."
+                    .to_string(),
+            ),
             Injection::None => Some("No documented way to attach an MCP server.".to_string()),
             _ => None,
         }
@@ -96,9 +122,10 @@ impl Injection {
 
 pub fn injection(harness: &str) -> Injection {
     match harness {
-        "claude" | "codex" => Injection::Flags,
+        "claude" | "codex" | "pi" => Injection::Flags,
         "opencode" => Injection::Env,
-        "pi" | "commandcode" | "hermes" | "nova" => Injection::ConfigFile,
+        "nova" => Injection::ProjectFile,
+        "commandcode" | "hermes" => Injection::ConfigFile,
         _ => Injection::None,
     }
 }
@@ -224,7 +251,7 @@ pub const TOOLS: &[Tool] = &[
         description: "Brings a task to the front of the window.",
         group: Group::Tasks,
         schema: r#"{"type":"object","properties":{"taskId":{"type":"string"}},"required":["taskId"],"additionalProperties":false}"#,
-        handler: Handler::Native,
+        handler: Handler::Frontend,
         requires_window: true,
     },
     Tool {
@@ -276,7 +303,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         id: "steer_task",
         title: "Steer a running task",
-        description: "Sends a message into a running turn. Refused when the task is idle, or when the harness cannot take input mid-turn, and the message says which.",
+        description: "Asks the running Nova turn to incorporate guidance at its next model step. Reports acceptance by the Nova CLI. Use queue_message for other harnesses or for a separate follow-up turn.",
         group: Group::Queue,
         schema: r#"{"type":"object","properties":{"taskId":{"type":"string"},"text":{"type":"string"}},"required":["taskId","text"],"additionalProperties":false}"#,
         handler: Handler::Native,
@@ -451,7 +478,7 @@ pub fn view(enabled: bool, endpoint: Option<&str>) -> Value {
                 "id": id,
                 "name": name,
                 "injection": injection,
-                "callable": injection.per_turn(),
+                "callable": injection.callable(),
                 "note": injection.note(id),
             })
         })
@@ -501,11 +528,14 @@ struct ToolsInner {
     /// The master switch, and also false after the window closes: a closed
     /// window has nobody to answer the task tools and no pane to drive.
     enabled: AtomicBool,
+    listed_tools: Mutex<std::collections::HashSet<String>>,
     /// Replies the webview still owes, by request id.
     pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
-    /// Element refs from the last read_browser, ref -> selector.
-    browser: Mutex<HashMap<String, String>>,
     queues: Mutex<HashMap<String, VecDeque<Queued>>>,
+    /// Skill directories the user switched off, by directory name. Pushed from
+    /// the page's preferences at startup: the choice is the user's, not the
+    /// workspace's, and it has to survive a restart.
+    disabled_skills: Mutex<Vec<String>>,
 }
 
 impl Default for ToolsState {
@@ -525,9 +555,10 @@ impl ToolsState {
                 ),
                 endpoint: OnceLock::new(),
                 enabled: AtomicBool::new(enabled),
+                listed_tools: Mutex::new(std::collections::HashSet::new()),
                 pending: Mutex::new(HashMap::new()),
-                browser: Mutex::new(HashMap::new()),
                 queues: Mutex::new(HashMap::new()),
+                disabled_skills: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -548,8 +579,49 @@ impl ToolsState {
         self.inner.enabled.load(Ordering::Relaxed)
     }
 
+    pub fn observe_list(&self, harness: &str) {
+        if crate::agent::cli::AGENTS
+            .iter()
+            .any(|(id, _)| *id == harness)
+        {
+            self.inner
+                .listed_tools
+                .lock()
+                .expect("tools status mutex poisoned")
+                .insert(harness.to_owned());
+        }
+    }
+
+    pub fn listed_tools(&self) -> Vec<String> {
+        self.inner
+            .listed_tools
+            .lock()
+            .expect("tools status mutex poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
         self.inner.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// The skill directories the user switched off. Replaced wholesale: the
+    /// page owns the list, so a skill removed from preferences comes back.
+    pub fn set_disabled_skills(&self, ids: Vec<String>) {
+        *self
+            .inner
+            .disabled_skills
+            .lock()
+            .expect("disabled_skills mutex poisoned") = ids;
+    }
+
+    pub fn disabled_skills(&self) -> Vec<String> {
+        self.inner
+            .disabled_skills
+            .lock()
+            .expect("disabled_skills mutex poisoned")
+            .clone()
     }
 
     /// Called on the window's teardown path: the endpoint stops answering even
@@ -586,19 +658,6 @@ impl ToolsState {
             .lock()
             .expect("pending mutex poisoned")
             .remove(id)
-    }
-
-    pub fn replace_browser_refs(&self, refs: HashMap<String, String>) {
-        *self.inner.browser.lock().expect("browser mutex poisoned") = refs;
-    }
-
-    pub fn browser_selector(&self, reference: &str) -> Option<String> {
-        self.inner
-            .browser
-            .lock()
-            .expect("browser mutex poisoned")
-            .get(reference)
-            .cloned()
     }
 
     /// Adds one message to the back of a task's queue and returns it, so the
@@ -666,6 +725,16 @@ impl ToolsState {
             queues.remove(chat_id);
         }
         popped
+    }
+
+    pub fn queue_restore(&self, chat_id: &str, message: Queued) {
+        self.inner
+            .queues
+            .lock()
+            .expect("queue mutex poisoned")
+            .entry(chat_id.to_string())
+            .or_default()
+            .push_front(message);
     }
 }
 
@@ -755,7 +824,8 @@ mod tests {
 
     /// The pane's promise and the server's behaviour come from one table, so
     /// this asserts the parts a harness would notice: callable harnesses are
-    /// exactly the ones with a per-turn injection.
+    /// exactly the ones the app can hand the server — per-turn shapes plus
+    /// nova's managed workspace entry.
     #[test]
     fn the_harness_table_matches_the_injection_rules() {
         let view = view(true, Some("http://127.0.0.1:1/mcp"));
@@ -764,11 +834,34 @@ mod tests {
         for entry in harnesses {
             let id = entry["id"].as_str().unwrap();
             let callable = entry["callable"].as_bool().unwrap();
-            assert_eq!(callable, injection(id).per_turn(), "{id}");
+            assert_eq!(callable, injection(id).callable(), "{id}");
+            assert_eq!(
+                callable,
+                injection(id).per_turn() || injection(id) == Injection::ProjectFile,
+                "{id}"
+            );
             if !callable {
                 assert!(entry["note"].is_string(), "{id} must explain itself");
             }
         }
         assert_eq!(view["tools"].as_array().unwrap().len(), TOOLS.len());
+    }
+
+    /// Nova's entry is managed in the workspace's own config file, never the
+    /// global one: the global config is shared with the CLI the user runs in a
+    /// terminal, and a crash would leave a stale entry there forever.
+    #[test]
+    fn nova_writes_a_managed_workspace_entry_and_the_other_config_file_harnesses_do_not() {
+        assert_eq!(injection("nova"), Injection::ProjectFile);
+        assert!(injection("nova").callable());
+        assert!(
+            !injection("nova").per_turn(),
+            "the entry is per session, not per turn"
+        );
+        assert_eq!(injection("pi"), Injection::Flags);
+        for id in ["commandcode", "hermes"] {
+            assert_eq!(injection(id), Injection::ConfigFile, "{id}");
+            assert!(!injection(id).callable(), "{id} stays config-file only");
+        }
     }
 }

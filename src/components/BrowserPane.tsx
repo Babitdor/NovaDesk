@@ -27,10 +27,11 @@ function normalize(input: string): string {
 /// `browser_open` and placed over `.browser-stage`. It paints above the page and
 /// ignores the DOM, so this component's whole job is to keep its rectangle and
 /// its visibility honest.
+export type BrowserTarget = { url: string; settle: (opened: Promise<string>) => void }
+
 export function BrowserPane({ active, target }: {
   active: boolean
-  /// A tool asked for this URL. The nonce makes the same address a new request.
-  target?: { url: string; nonce: number } | null
+  target?: BrowserTarget | null
 }) {
   const host = useRef<HTMLDivElement>(null)
   const [url, setUrl] = useState('')
@@ -59,23 +60,17 @@ export function BrowserPane({ active, target }: {
   const open = useCallback(
     async (raw: string) => {
       const target = normalize(raw)
-      if (!target) return
+      if (!target) throw new Error('Enter a browser URL.')
       const at = box()
       if (!at) {
-        setNotice('The browser has no room to sit in yet.')
-        return
+        throw new Error('The browser has no room to sit in yet.')
       }
 
-      try {
-        // Reuse is the backend's call: one child, navigated, so opening a second
-        // address never stacks webviews on top of each other.
-        await browserOpen(target, at.x, at.y, at.w, at.h)
-        setUrl(target)
-        setLoaded(target)
-        setNotice(null)
-      } catch (err) {
-        setNotice(errorText(err))
-      }
+      await browserOpen(target, at.x, at.y, at.w, at.h)
+      setUrl(target)
+      setLoaded(target)
+      setNotice(null)
+      return target
     },
     [box],
   )
@@ -83,12 +78,12 @@ export function BrowserPane({ active, target }: {
   // A tool's open_browser lands here: the pane owns the rectangle the native
   // child is placed in, so it is the only component that can honour the request.
   useEffect(() => {
-    if (!target?.url) return
-    // One tick later: this effect synchronises with the native child, and the
-    // pane's own setUrl would otherwise re-render inside the same commit.
-    const pending = setTimeout(() => void open(target.url), 0)
+    if (!target) return
+    const pending = setTimeout(() => target.settle(open(target.url)), 0)
     return () => clearTimeout(pending)
-  }, [target?.url, target?.nonce, open])
+  }, [target, open])
+
+  const navigate = (address: string) => void open(address).catch((err) => setNotice(errorText(err)))
 
   const close = useCallback(async () => {
     try {
@@ -215,14 +210,14 @@ export function BrowserPane({ active, target }: {
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return
               event.preventDefault()
-              void open(url)
+              navigate(url)
             }}
           />
           <button
             type="button"
             className="ghost url-go"
             aria-label="Open this address"
-            onClick={() => void open(url)}
+            onClick={() => navigate(url)}
           >
             <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
               <path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" />
@@ -276,7 +271,7 @@ export function BrowserPane({ active, target }: {
                     type="button"
                     className="server-row"
                     aria-label={'Open ' + address}
-                    onClick={() => void open('http://' + address)}
+                    onClick={() => navigate('http://' + address)}
                   >
                     <span className="server-dot" aria-hidden="true" />
                     <span className="server-name">{address}</span>

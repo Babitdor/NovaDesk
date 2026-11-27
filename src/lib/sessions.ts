@@ -1,4 +1,4 @@
-import { applyEvent, type ChatItem } from './chat'
+import { applyEvent, type ChatItem } from './chat.ts'
 import type { AgentEvent } from './events'
 import type { AgentId } from './settings'
 import type { CrewMode, CrewSpeaker, TeamRun } from './crew'

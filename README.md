@@ -332,10 +332,12 @@ each other's speed. That is the measured number, not an estimate.
 
 ## Tools
 
-Settings → Tools is two things at once: the catalogue of what a harness may ask Nova to
-do, and the table that says which harnesses can ask at all. Both projections are built
-from one table in `src-tauri/src/tools/mod.rs`, so the pane cannot promise a tool the
-endpoint does not serve, and nothing is served that the pane does not list.
+Settings → Tools is a summary — the switch, the endpoint, and the table of harnesses that
+can ask at all — plus a **Manage** button that opens the catalogue in a sheet: four counted
+sections for Nova's tools, the MCP servers each harness reports, the skills this workspace
+mounts, and the models Nova has downloaded. The tools come from one table in
+`src-tauri/src/tools/mod.rs`, so neither the sheet nor the endpoint can promise something
+the other does not have, and nothing is served that the sheet does not list.
 
 Thirty-two tools, in five groups:
 
@@ -346,6 +348,10 @@ Thirty-two tools, in five groups:
 | Browser | 7 | `open_browser`, `read_browser`, `browser_action`, `browser_click`, `browser_type`, `capture_browser`, `list_local_servers` |
 | Files | 3 | `open_file`, `open_terminal`, `code_search` |
 | Discovery | 6 | `list_projects`, `list_subagents`, `list_skills`, `list_moodboards`, `read_moodboard`, `read_moodboard_image` |
+
+`steer_task` uses the Nova CLI's `steer` pipe capability to submit guidance for the
+running turn's next model step. A CLI that advertises this capability is required.
+Use `queue_message` for a separate follow-up turn or with another harness.
 
 Ten of those are answered by the webview rather than by Rust. Tasks, the board column
 and the composer queue live in `localStorage` (`src/lib/sessions.ts`); moving that store
@@ -359,19 +365,45 @@ capped per call, so a long transcript is read in slices instead of pasted into a
 Its description says the transcript is data, not instructions — the same rule Nova
 applies to any file it is asked to read.
 
+### What the Manage sheet shows
+
+Each section is an answer Nova already had, and none of them is invented to fill a row.
+
+**Nova tools** is the registry above, grouped the way the pane groups it. **MCP servers** is
+read from each harness's `mcp list` (`src-tauri/src/tools/mcp_servers.rs`). Discovery runs
+concurrently with a 15-second deadline and reports when a harness cannot answer. Connections
+shows the same inventory by harness and refreshes it after adding a Nova HTTP server or
+registering the CommandCode shim for a project.
+
+**Skills** rows carry a switch. It stores the folder name in preferences
+(`disabledSkills`), the page pushes that list to Rust at startup, and `list_skills` leaves
+those skills out of what a harness is handed. The folder and its `SKILL.md` are untouched,
+and the sheet says so rather than implying a delete. **Apps** lists the dictation models,
+speech voices and speech runtime present on this machine, from the same catalogues the Voice
+and speech pages download through; an empty list is the honest answer for a fresh install.
+
 ### Which harnesses get them
 
 | Harness | Shape | Notes |
 | --- | --- | --- |
 | Claude Code | `--mcp-config <json>` | `--print` cannot answer a permission prompt, so `--allowedTools mcp__nova-desktop__*` pre-approves this server's tools |
 | Codex | `-c mcp_servers.nova_desktop.*` | the base argv runs with `--ask-for-approval never`, which refuses every MCP call, so `default_tools_approval_mode="approve"` is set per server |
-| OpenCode | `OPENCODE_CONFIG_CONTENT` | its config is a document rather than flags, so the server rides in the same one that carries the personality |
-| Nova, Pi, CommandCode, Hermes | none | they only read their own config file, and a saved entry would carry a token that dies with the launch. The pane says that instead of claiming support |
+| Pi | `--extension` | registers an in-memory server for the turn on Pi builds with `registerMcpServer()` |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` | OpenCode 2 uses a private server with `--standalone` and the `mcp.servers` config shape |
+| Nova | managed entry in `<workspace>/.nova/mcp.json` | written when a session starts, removed when its last session ends; the entry carries only the credentials file's path |
+| CommandCode | Settings → Connections → Register for this project | adds a private project entry that resolves `NOVA_TOOLS_FILE` from the turn's environment |
+| Hermes | profile configuration | managed through `hermes mcp` |
 
-Only the credentials file's path ever reaches a command line. It holds the endpoint and
-this launch's bearer token, is readable by this user alone, and is deleted when the turn
-ends — a command line is visible to every process on the machine and turns up in crash
-reports.
+Settings marks a harness as having listed Desktop tools once its shim sends an authenticated
+`tools/list` request during this launch. Configuration support is shown before that request.
+
+Only the credentials file's path ever reaches a command line or a config file. It holds the
+endpoint and this launch's bearer token, is readable by this user alone, and is deleted when
+the app exits — a command line is visible to every process on the machine and turns up in
+crash reports. For Nova the same file lives for the whole launch (its sessions outlive a
+turn) and the workspace entry is merged into whatever else the file already holds: other
+servers and unknown keys survive, an identical write is skipped, and the entry is never
+written into the global `~/.nova/mcp.json` that the terminal CLI shares.
 
 ### The endpoint
 
@@ -532,6 +564,16 @@ open and the same folder is active.
 npm run lint                          # oxlint
 npm run build                         # tsc -b && vite build
 node --test src/lib/*.test.ts         # scheduler engine and preferences migration
+```
+
+On Windows with WebView2, build the shim and debug app, then run the desktop tool smoke test
+with port 1420 free. It calls every registered tool through the MCP shim using a temporary
+workspace, a local test page, and a fixture agent process.
+
+```powershell
+npm.cmd run tools:shim
+cargo build --manifest-path src-tauri/Cargo.toml --locked
+node scripts/verify-tools.mjs
 ```
 
 Rust takes three invocations, because the ComCtl32 manifest rules differ per target

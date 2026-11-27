@@ -2,11 +2,8 @@
 //!
 //! The child webview is external content, so nothing here trusts the page:
 //!
-//! - read_browser returns refs ("e0", "e1"), never a selector, so a model
-//!   cannot hand back CSS that reaches something the snapshot never offered;
-//! - browser_click and browser_type resolve a ref through the snapshot this
-//!   process stored, which also means a stale ref after a navigation fails
-//!   instead of clicking whatever now sits in that spot;
+//! - refs name DOM nodes in the current document's latest snapshot. A new
+//!   snapshot, navigation or replacement node invalidates old refs;
 //! - every script is a fixed template with one JSON-quoted argument, so no
 //!   model text is ever concatenated into JavaScript.
 //!
@@ -15,7 +12,6 @@
 //! even when another window covers it, and it needs no new dependency beyond
 //! the COM bindings wry already links.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -62,116 +58,95 @@ async fn evaluate(app: &AppHandle, script: String) -> Result<Value, AppError> {
 /// text itself stays a constant.
 const SNAPSHOT: &str = r#"(() => {
   const limit = __LIMIT__;
+  const prefix = __PREFIX__;
   const body = document.body ? document.body.innerText : '';
   const text = body.replace(/\s+/g, ' ').trim();
-  const path = (node) => {
-    const parts = [];
-    let current = node;
-    while (current && current.nodeType === 1 && current !== document.documentElement) {
-      let index = 1;
-      let sibling = current;
-      while ((sibling = sibling.previousElementSibling)) {
-        if (sibling.tagName === current.tagName) index += 1;
-      }
-      parts.unshift(current.tagName.toLowerCase() + ':nth-of-type(' + index + ')');
-      if (parts.length >= 6) break;
-      current = current.parentElement;
-    }
-    return parts.join(' > ');
-  };
-  const nodes = document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]');
+  const nodes = document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable]');
   const elements = [];
-  let ref = 0;
-  for (const node of Array.from(nodes)) {
+  const refs = new Map();
+  for (const node of nodes) {
     if (elements.length >= limit) break;
-    const style = window.getComputedStyle(node);
-    if (!style || style.display === 'none' || style.visibility === 'hidden') continue;
+    if (!node.getClientRects().length || getComputedStyle(node).visibility !== 'visible') continue;
+    const field = node.matches('input,textarea,select') || node.isContentEditable;
     const raw = node.getAttribute('aria-label') || node.getAttribute('placeholder') ||
-      node.innerText || node.value || node.getAttribute('name') || '';
+      (field ? node.getAttribute('name') : node.innerText) || '';
+    const ref = prefix + elements.length;
+    refs.set(ref, node);
     elements.push({
-      ref: 'e' + ref,
+      ref,
       role: node.getAttribute('role') || node.tagName.toLowerCase(),
       name: String(raw).replace(/\s+/g, ' ').trim().slice(0, 80),
-      selector: path(node)
     });
-    ref += 1;
   }
+  document.__novaDesktopRefs = refs;
   return { url: location.href, title: document.title, text: text.slice(0, 4000), elements: elements };
 })()"#;
 
-pub async fn read(
-    app: &AppHandle,
-    tools: &crate::tools::ToolsState,
-    max_elements: u64,
-) -> Result<Value, AppError> {
+pub async fn read(app: &AppHandle, max_elements: u64) -> Result<Value, AppError> {
     let limit = max_elements.clamp(1, 120);
-    let script = SNAPSHOT.replace("__LIMIT__", &limit.to_string());
-    let snapshot = evaluate(app, script).await?;
-
-    // The selectors stay here: the model gets refs, and a ref is only ever
-    // resolved against the snapshot that produced it.
-    let mut selectors = HashMap::new();
-    let mut visible = Vec::new();
-    if let Some(elements) = snapshot.get("elements").and_then(Value::as_array) {
-        for element in elements {
-            let Some(reference) = element.get("ref").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(selector) = element.get("selector").and_then(Value::as_str) else {
-                continue;
-            };
-            selectors.insert(reference.to_string(), selector.to_string());
-            visible.push(json!({
-                "ref": reference,
-                "role": element.get("role").cloned().unwrap_or(Value::Null),
-                "name": element.get("name").cloned().unwrap_or(Value::Null),
-            }));
-        }
-    }
-    tools.replace_browser_refs(selectors);
-    Ok(json!({
-        "url": snapshot.get("url").cloned().unwrap_or(Value::Null),
-        "title": snapshot.get("title").cloned().unwrap_or(Value::Null),
-        "text": snapshot.get("text").cloned().unwrap_or(Value::Null),
-        "elements": visible,
-        "refsNote": "refs are valid until the next read_browser",
-    }))
+    let prefix = json!(format!("e{}-", uuid::Uuid::new_v4().simple()));
+    let script = SNAPSHOT
+        .replace("__LIMIT__", &limit.to_string())
+        .replace("__PREFIX__", &prefix.to_string());
+    let mut snapshot = evaluate(app, script).await?;
+    snapshot
+        .as_object_mut()
+        .ok_or_else(|| AppError::Tools("the page did not return a snapshot".into()))?
+        .insert(
+            "refsNote".into(),
+            json!("read the page again after navigation or if a ref is stale"),
+        );
+    Ok(snapshot)
 }
 
-/// A selector from the snapshot, or the error that says why there is none.
-fn selector(tools: &crate::tools::ToolsState, reference: &str) -> Result<String, AppError> {
-    tools.browser_selector(reference).ok_or_else(|| {
-        AppError::Tools(format!(
-            "no element {reference} in the last read_browser snapshot; read the page again"
-        ))
-    })
+const CLICK: &str = r#"(() => {
+  const el = document.__novaDesktopRefs?.get(__ARGS__);
+  if (!el?.isConnected) return 'That ref is stale. Read the page again.';
+  if (typeof el.click !== 'function' || el.matches(':disabled')) return 'The element cannot be clicked.';
+  el.scrollIntoView({ block: 'center' });
+  el.click();
+  return true;
+})()"#;
+
+const TYPE: &str = r#"(() => {
+  const [ref, text] = __ARGS__;
+  const el = ref === null ? document.activeElement : document.__novaDesktopRefs?.get(ref);
+  if (!el?.isConnected) return 'That ref is stale. Read the page again.';
+  const plainInput = el instanceof HTMLInputElement && /^(text|search|tel|url|email|password|number)$/.test(el.type);
+  const input = plainInput ? HTMLInputElement : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement : null;
+  if ((!input && !el.isContentEditable) || el.readOnly || el.matches(':disabled')) {
+    return 'The element cannot accept text.';
+    }
+  el.focus();
+  if (input) {
+    const setValue = Object.getOwnPropertyDescriptor(input.prototype, 'value').set;
+    setValue.call(el, text);
+  } else {
+    el.textContent = text;
+  }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+})()"#;
+
+async fn interact(app: &AppHandle, script: &str, arguments: Value) -> Result<(), AppError> {
+    let outcome = evaluate(app, script.replace("__ARGS__", &arguments.to_string())).await?;
+    match outcome {
+        Value::Bool(true) => Ok(()),
+        Value::String(message) => Err(AppError::Tools(message)),
+        _ => Err(AppError::Tools(
+            "the page returned an invalid action result".into(),
+        )),
+    }
 }
 
-pub async fn click(
-    app: &AppHandle,
-    tools: &crate::tools::ToolsState,
-    reference: &str,
-) -> Result<Value, AppError> {
-    let selector = serde_json::to_string(&selector(tools, reference)?)
-        .map_err(|err| AppError::Tools(err.to_string()))?;
-    let script = [
-        "(() => { const el = document.querySelector(",
-        &selector,
-        "); if (!el) { return { ok: false }; } el.scrollIntoView({ block: 'center' }); el.click(); return { ok: true }; })()",
-    ]
-    .concat();
-    let outcome = evaluate(app, script).await?;
-    if outcome.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(AppError::Tools(format!(
-            "the element behind {reference} is gone from the page; read it again"
-        )));
-    }
+pub async fn click(app: &AppHandle, reference: &str) -> Result<Value, AppError> {
+    interact(app, CLICK, json!(reference)).await?;
     Ok(json!({ "clicked": reference }))
 }
 
 pub async fn type_text(
     app: &AppHandle,
-    tools: &crate::tools::ToolsState,
     reference: Option<&str>,
     text: &str,
 ) -> Result<Value, AppError> {
@@ -181,30 +156,7 @@ pub async fn type_text(
             "the text is longer than 20000 characters".into(),
         ));
     }
-    let text = serde_json::to_string(text).map_err(|err| AppError::Tools(err.to_string()))?;
-    let target = match reference {
-        Some(reference) => format!(
-            "document.querySelector({})",
-            serde_json::to_string(&selector(tools, reference)?).unwrap_or_else(|_| "null".into())
-        ),
-        None => "document.activeElement".to_string(),
-    };
-    let script = [
-        "(() => { const el = ",
-        &target,
-        "; if (!el) { return { ok: false }; } el.focus(); const proto = Object.getPrototypeOf(el); const setter = Object.getOwnPropertyDescriptor(proto, 'value'); if (setter && setter.set) { setter.set.call(el, ",
-        &text,
-        "); } else { el.value = ",
-        &text,
-        "; } el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return { ok: true }; })()",
-    ]
-    .concat();
-    let outcome = evaluate(app, script).await?;
-    if outcome.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(AppError::Tools(
-            "there is no field to type into; read the page and pass a ref".into(),
-        ));
-    }
+    interact(app, TYPE, json!([reference, text])).await?;
     Ok(json!({ "typed": length }))
 }
 
@@ -313,20 +265,15 @@ async fn screenshot(_app: &AppHandle) -> Result<Vec<u8>, AppError> {
 mod tests {
     use super::*;
 
-    /// The snapshot must stay a single expression, or an evaluated script that
-    /// returns nothing produces "null" and a tool that looks broken.
     #[test]
-    fn the_snapshot_is_one_expression_with_one_placeholder() {
-        assert!(SNAPSHOT.trim_start().starts_with("(() =>"));
-        assert!(SNAPSHOT.trim_end().ends_with(")()"));
+    fn browser_scripts_are_single_expressions_with_one_of_each_placeholder() {
+        for script in [SNAPSHOT, CLICK, TYPE] {
+            assert!(script.starts_with("(() =>"));
+            assert!(script.ends_with(")()"));
+        }
         assert_eq!(SNAPSHOT.matches("__LIMIT__").count(), 1);
-        assert!(!SNAPSHOT.contains("__LIMIT__\""));
-    }
-
-    #[test]
-    fn selectors_are_quoted_as_json_before_they_reach_the_page() {
-        let selector = "a:nth-of-type(1) > b:nth-of-type(2)";
-        let quoted = serde_json::to_string(selector).unwrap();
-        assert_eq!(quoted, "\"a:nth-of-type(1) > b:nth-of-type(2)\"");
+        assert_eq!(SNAPSHOT.matches("__PREFIX__").count(), 1);
+        assert_eq!(CLICK.matches("__ARGS__").count(), 1);
+        assert_eq!(TYPE.matches("__ARGS__").count(), 1);
     }
 }

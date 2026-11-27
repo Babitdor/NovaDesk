@@ -61,12 +61,22 @@ pub async fn capture(mut command: Command, max: u64) -> Result<Vec<u8>, AppError
     .map_err(|_| failure("The operation timed out"))?
 }
 
-pub async fn download(url: &str, limit: u64) -> Result<Vec<u8>, AppError> {
+/// One finished GET: the status the server answered with and the body.
+///
+/// `download` floods every non-2xx answer into one sentence, which is right for
+/// a caller that only wants the bytes and wrong for the updater: a 403 rate
+/// limit, a 404 with no release and a dropped connection are three different
+/// things to tell a reader, and only the status separates them.
+pub struct Response {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+pub async fn download_response(url: &str, limit: u64) -> Result<Response, AppError> {
     let mut command = system_command("curl");
     command.args([
         "-q",
         "--silent",
-        "--fail",
         "--user-agent",
         "NovaDesktop",
         "--location",
@@ -80,10 +90,46 @@ pub async fn download(url: &str, limit: u64) -> Result<Vec<u8>, AppError> {
         "25",
         "--max-filesize",
         &limit.to_string(),
+        // The status is printed after the body instead of being folded into the
+        // exit code: `--fail` turns any 4xx into exit 22, so the one number that
+        // explains the failure never reaches the caller. Transport failures still
+        // exit non-zero and are reported by `capture`.
+        "--write-out",
+        "\n%{http_code}",
         "--",
         url,
     ]);
-    capture(command, limit).await
+    // Four bytes for the separator and the status, on top of the body's own cap.
+    let raw = capture(command, limit + 8).await?;
+    Ok(split_status(raw))
+}
+
+/// Splits curl's `body + "\n" + status` stream.
+///
+/// A stream with no readable trailing status gets status 0: nothing can be said
+/// about the answer, and a caller checking for 200 must not read that as one.
+fn split_status(mut raw: Vec<u8>) -> Response {
+    let tail = raw.iter().rposition(|byte| *byte == b'\n').map(|at| at + 1);
+    let status = tail
+        .and_then(|at| std::str::from_utf8(&raw[at..]).ok())
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0);
+    if let Some(at) = tail {
+        raw.truncate(at - 1);
+    }
+    Response { status, body: raw }
+}
+
+/// The body of a GET, for callers that only want the bytes.
+pub async fn download(url: &str, limit: u64) -> Result<Vec<u8>, AppError> {
+    let response = download_response(url, limit).await?;
+    if !(200..300).contains(&response.status) {
+        return Err(failure(format!(
+            "The server answered HTTP {}",
+            response.status
+        )));
+    }
+    Ok(response.body)
 }
 
 #[derive(Serialize)]
@@ -319,20 +365,6 @@ fn jsonc(text: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn nova_mcp_list(state: State<'_, AppState>) -> Result<String, AppError> {
-    let guard = state.require_guard().await?;
-    let mut command = cli::command("nova")?;
-    command
-        .current_dir(guard.root())
-        .env("NO_COLOR", "1")
-        .args(["mcp", "list"]);
-    let output = capture(command, 128 * 1024)
-        .await
-        .map_err(|_| failure("Could not list Nova MCP servers in this workspace"))?;
-    Ok(String::from_utf8_lossy(&output).trim().to_owned())
-}
-
-#[tauri::command]
 pub async fn add_mcp_server(
     name: String,
     endpoint: String,
@@ -350,6 +382,9 @@ pub async fn add_mcp_server(
         return Err(failure(
             "Use letters, numbers, hyphens, or underscores for the server name",
         ));
+    }
+    if endpoint.len() > 2048 {
+        return Err(failure("The endpoint exceeds 2048 bytes"));
     }
     let url: Url = endpoint
         .parse()
@@ -498,6 +533,22 @@ pub fn open_link(url: String) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_curl_stream_keeps_its_status_and_loses_the_separator() {
+        let response = split_status(br#"{"a":1}"#.iter().copied().chain(*b"\n200").collect());
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, br#"{"a":1}"#);
+        // The split is on the last newline, which is curl's own, so a body that
+        // ends with one keeps it.
+        let response = split_status(b"line\n\n404".to_vec());
+        assert_eq!(response.status, 404);
+        assert_eq!(response.body, b"line\n");
+        // Nothing readable means no status, which no caller reads as 2xx.
+        let response = split_status(b"bare".to_vec());
+        assert_eq!(response.status, 0);
+        assert_eq!(response.body, b"bare");
+    }
 
     #[test]
     fn reads_jsonc_and_keeps_url_literals() {
