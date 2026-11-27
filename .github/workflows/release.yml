@@ -71,6 +71,9 @@ jobs:
           # latest.json is the manifest the app polls
           # (plugins.updater.endpoints). Uploading it is the default, and naming
           # it here keeps a future default from quietly turning it off. The
-          # bundle type is detected at runtime, so the platforms object has to
-          # carry both windows-x86_64-nsis and windows-x86_64-msi.
-          uploadUpdaterJson: true
+          # input is `includeUpdaterJson`; `uploadUpdaterJson` is silently
+          # ignored, and the v0.5.0 run proved it — the warning sat in the job
+          # annotations while the manifest uploaded on the default alone.
+          # The bundle type is detected at runtime, so the platforms object has
+          # to carry both windows-x86_64-nsis and windows-x86_64-msi.
+          includeUpdaterJson: true
