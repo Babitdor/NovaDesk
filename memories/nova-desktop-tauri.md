@@ -34,3 +34,27 @@
   plus `backend: 'local'`; UUID chat/turn ids are required. Rust outlives a page reload but its
   terminal map does not reset — a reloaded page leaves orphan shells counted in "Open terminals", so
   restart the process for a clean 0 → 1.
+
+
+---
+
+
+## `cargo test --lib` hangs on a loader dialog (verified 2026-11)
+Cargo puts the lib unit-test binary under
+`src-tauri/target/debug/build/novacode-desktop/<hash>/out/novacode_lib-<hash>.exe`, and it
+carries no manifest, so the loader binds ComCtl32 v5 and the process dies on the missing
+`TaskDialogIndirect` import behind a modal "Entry Point Not Found" box that hangs the run.
+`build.rs`'s `cargo:rustc-link-arg-tests` does not reach this target; the README's RUSTFLAGS
+`/MANIFEST:EMBED` recipe is the supported route. Cheaper re-verification without rebuilding
+every dependency: copy that exe, then
+`mt.exe -manifest comctl6.manifest "-outputresource:copy.exe;#1"` (SDK x64 mt lives in
+`C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\`), and run the copy — it
+lists and runs the same tests.
+
+## Update check and GitHub's anonymous quota (fixed 2026-11)
+`check_app_update` reads `api.github.com/repos/Babitdor/NovaDesk/releases/latest` through the
+system curl; anonymous calls are 60/h per address, a spent quota answers 403, and curl
+`--fail` turned that into exit 22. That is why the pane printed "Could not reach GitHub: The
+command did not complete successfully". `settings::download_response` now keeps the status
+(`--write-out "\n%{http_code}"`, no `--fail`), and 403/429/5xx fall back to
+`github.com/Babitdor/NovaDesk/releases/latest`, whose redirect names the tag with no quota.
