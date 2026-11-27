@@ -318,8 +318,14 @@ fn describe_update(err: tauri_plugin_updater::Error) -> AppError {
             "The release has no build for this platform ({}), so Nova cannot install it from here.",
             targets.join(", ")
         ),
-        Error::Minisign(_) | Error::SignatureUtf8(_) | Error::Base64(_) => {
-            "The update's signature did not match the key in this build, so Nova refused to install it."
+        // Minisign's own text names the reason ("Invalid signature", "Key id
+        // mismatch") and is what makes a failed release diagnosable from the
+        // pane; the undecodable cases are a different fault and say so.
+        Error::Minisign(err) => format!(
+            "The update's signature did not match the key in this build, so Nova refused to install it ({err})."
+        ),
+        Error::SignatureUtf8(_) | Error::Base64(_) => {
+            "The updater signature Nova downloaded is not readable, so Nova refused to install it."
                 .to_string()
         }
         Error::Network(text) => format!("The download failed: {text}"),
