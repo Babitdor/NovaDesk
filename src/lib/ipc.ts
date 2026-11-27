@@ -1,8 +1,9 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 
+import { batchAgentEvents } from './eventBatch.ts'
 import type { AgentEvent, DirEntry, InterruptReply, WorkspaceInfo } from './events'
 import type { CrewRole } from './crew'
-import type { AgentStatus, ColorTheme } from './settings'
+import type { HarnessCapabilities, AgentStatus, ColorTheme } from './settings'
 
 export const pickWorkspace = () => invoke<WorkspaceInfo | null>('pick_workspace')
 export const setWorkspace = (path: string) => invoke<WorkspaceInfo>('set_workspace', { path })
@@ -15,12 +16,12 @@ export const readFile = (path: string) => invoke<string>('read_file', { path })
 /// the command starts are dropped.
 function channelFor(onEvent: (event: AgentEvent) => void) {
   const channel = new Channel<AgentEvent>()
-  channel.onmessage = onEvent
+  channel.onmessage = batchAgentEvents(onEvent, (flush) => { requestAnimationFrame(flush) })
   return channel
 }
 
 export const startTurn = (
-  request: { turnId: string; chatId: string; prompt: string; backend: string; model?: string; effort?: string; session?: string; check?: string[]; trustWorkspace: boolean; personality?: { role: CrewRole; systemPrompt: string } },
+  request: { turnId: string; chatId: string; prompt: string; backend: string; model?: string; effort?: string; session?: string; check?: string[]; trustWorkspace: boolean; readOnly?: boolean; teamId?: string; personality?: { role: CrewRole; systemPrompt: string } },
   onEvent: (event: AgentEvent) => void,
 ) => invoke<void>('start_turn', { ...request, onEvent: channelFor(onEvent) })
 
@@ -31,11 +32,14 @@ export const cancelTurn = (turnId: string) => invoke<boolean>('cancel_turn', { t
 export const respondApproval = (turnId: string, interruptId: string, reply: InterruptReply) =>
   invoke<void>('respond_approval', { turnId, interruptId, reply })
 
-export const agentStatus = (versions = false) => invoke<AgentStatus[]>('agent_status', { versions })
+export const agentStatus = async (versions = false) => {
+  const [statuses, capabilities] = await Promise.all([invoke<AgentStatus[]>('agent_status', { versions }), invoke<Record<string, HarnessCapabilities>>('agent_capabilities')])
+  return statuses.map((status) => ({ ...status, capabilities:capabilities[status.id] }))
+}
 
 /// Spawns Nova's pipe session for the open workspace in the background; the
 /// first turn of a task then streams immediately instead of paying the boot.
-export const prewarmNova = () => invoke<void>('prewarm_nova')
+export const prewarmNova = (chatId?: string, backend?: string, model?: string, effort?: string, session?: string) => invoke<void>('prewarm_nova', { chatId, backend, model, effort, session })
 export const importTheme = () => invoke<ColorTheme[]>('import_theme')
 export const installTheme = (id: string) => invoke<ColorTheme[]>('install_theme', { id })
 export const addMcpServer = (name: string, endpoint: string) => invoke<void>('add_mcp_server', { name, endpoint })
@@ -181,3 +185,8 @@ export function errorText(err: unknown): string {
   }
   return String(err)
 }
+
+export const setAutoApprove = (enabled: boolean) => invoke<void>('set_auto_approve', { enabled })
+
+export const beginTeam = (id: string, limit: number) => invoke<void>('begin_team', { id, limit })
+export const finishTeam = (id: string) => invoke<void>('finish_team', { id })

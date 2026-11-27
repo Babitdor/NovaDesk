@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 /// Mirrors the registry in src-tauri/src/tools/mod.rs. The pane renders what
 /// this returns and nothing else, so a tool that is not in the table cannot be
 /// shown and one in the table cannot be hidden.
-export type Injection = 'flags' | 'env' | 'projectFile' | 'configFile' | 'none'
+export type Injection = 'session' | 'flags' | 'env' | 'projectFile' | 'configFile' | 'none'
 export type ToolGroup = 'tasks' | 'queue' | 'browser' | 'files' | 'discovery'
 
 export type ToolRow = {
@@ -35,6 +35,7 @@ export type Catalog = {
   /// harness is given the server whatever the switch says.
   shim?: string | null
   listedTools?: string[]
+  activity?: { name:string; harness:string; turnId:string; ok:boolean; durationMs:number }[]
 }
 
 export const toolsCatalog = () => invoke<Catalog>('tools_catalog')
@@ -73,6 +74,7 @@ export const toolReply = (id: string, reply: ToolReply) =>
 
 export const INJECTION_LABELS: Record<Injection, string> = {
   flags: 'Injected per turn (argv)',
+  session: 'Attached through the ACP session configuration',
   env: 'Injected per turn (env)',
   projectFile: 'Managed entry in the workspace config',
   configFile: 'Config file only',

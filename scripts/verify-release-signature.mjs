@@ -3,9 +3,9 @@ import { createHash, createPublicKey, verify as verifySignature } from "node:cry
 import { join } from "node:path"
 
 // Checks published installers against the key this build trusts, which is the
-// check the updater performs and the one nobody runs before shipping. It caught
-// 0.7.0 refusing to install: every release since 0.5.0 carries a signature that
-// does not match plugins.updater.pubkey, so no in-app update has ever verified.
+// check the updater performs. Before 0.8.0, one corrupted byte in the shipped
+// public key made correctly signed installers fail verification. The release
+// workflow now runs this check before publishing.
 //
 //   gh release download v0.7.0 --pattern "*.msi*" --pattern "*.exe*" --dir out
 //   node scripts/verify-release-signature.mjs out

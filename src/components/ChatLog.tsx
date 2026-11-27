@@ -4,6 +4,7 @@ import type { ChatItem } from '../lib/chat'
 import { CREW, crewRoles, ralphRetry } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
 import { Markdown } from './Markdown'
+import { Playback } from './Playback'
 import { NovaCoin } from './NovaCoin'
 
 const FOLLOW_DISTANCE = 32
@@ -30,7 +31,7 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
               {role && <CrewPortrait role={role} />}
               <div>
                 <strong>{name}</strong>
-                {role && <small>{item.speaker?.to ? 'To ' + CREW[item.speaker.to].name : CREW[role].title}</small>}
+                {role && <small>{item.speaker?.to ? 'To ' + CREW[item.speaker.to].name : CREW[role].title}{item.speaker?.harness && ' · ' + item.speaker.harness}</small>}
               </div>
             </div>
             {!item.provisional && text && <button className="ghost reply-copy" type="button" onClick={() => {
@@ -40,6 +41,7 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
               }
               void navigator.clipboard.writeText(text).then(() => setCopy('Copied'), () => setCopy('Copy failed'))
             }}>{copy || 'Copy reply'}</button>}
+            {!item.provisional && !item.plain && text && <Playback id={item.id} text={text} />}
           </header>
           {markdown && !item.plain ? <Markdown text={text} /> : <div className="reply-plain">{text}</div>}
         </article>

@@ -22,7 +22,7 @@ async function eventually(fn, label) {
   throw new Error(label, { cause })
 }
 
-async function evaluate(webSocketUrl, expression) {
+async function evaluate(webSocketUrl, expression, method = 'Runtime.evaluate', params = { expression, awaitPromise:true, returnByValue:true }) {
   const socket = new WebSocket(webSocketUrl)
   try {
     const { result, exceptionDetails } = await new Promise((resolve, reject) => {
@@ -30,7 +30,7 @@ async function evaluate(webSocketUrl, expression) {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true })
       socket.addEventListener('error', () => reject(new Error('WebView debugger disconnected')), { once: true })
       socket.addEventListener('open', () => socket.send(JSON.stringify({
-        id: 1, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true },
+        id: 1, method, params,
       })), { once: true })
       socket.addEventListener('message', ({ data }) => {
         const reply = JSON.parse(data)
@@ -40,7 +40,7 @@ async function evaluate(webSocketUrl, expression) {
       })
     })
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text)
-    return result.value
+    return result?.value
   } finally {
     socket.close()
   }
@@ -65,6 +65,7 @@ const fake = join(root, 'nova.cjs')
 await writeFile(fake, `
 const { createInterface } = require('node:readline')
 const emit = (frame) => console.log(JSON.stringify(frame))
+let pending = null
 emit({ type: 'ready', model: 'fixture', capabilities: ['steer'] })
 createInterface({ input: process.stdin }).on('line', (line) => {
   const frame = JSON.parse(line)
@@ -73,7 +74,20 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     emit({ type: 'steer_result', id: frame.id, request_id: frame.request_id, ok: true })
     emit({ type: 'text', request_id: frame.request_id, content: 'fixture steered ' + frame.content })
   }
+  if (pending && frame.type === 'cancel') {
+    emit({ type:'done', request_id:pending.id, status:'cancelled', ok:false }); pending = null; return
+  }
+  if (pending && (frame.type === 'approval' || frame.type === 'interrupt_reply')) {
+    emit({ type:'text', request_id:pending.id, content:'permission delivered' });
+    emit({ type:'done', request_id:pending.id, status:'completed', ok:true }); pending = null; return
+  }
   if (frame.type !== 'prompt') return
+  frame.content = frame.content.split('\\n\\nDesktop session:')[0]
+  if (frame.content === 'fixture-permission' || frame.content === 'fixture-question') {
+    pending = frame
+    emit({ type:'approval_required', request_id:frame.id, interrupt_id:'same-id',
+      kind:frame.content === 'fixture-question' ? 'question' : 'tool', payload:{ question:'Fixture question?', tool:'fixture' } }); return
+  }
   const finish = () => {
     emit({ type: 'text', id: frame.id, content: 'fixture response ' + frame.content })
     emit({ type: 'done', id: frame.id, status: 'completed', ok: true })
@@ -107,7 +121,7 @@ await once(portProbe, 'listening')
 const debugPort = portProbe.address().port
 await new Promise((resolve) => portProbe.close(resolve))
 const vite = await createServer({ server: { host: 'localhost', port: 1420, strictPort: true, hmr: false } })
-let app, shim
+let app, shim, motionSession
 try {
   await vite.listen()
   app = spawn(resolve('src-tauri/target/debug/novacode-desktop.exe'), [], {
@@ -139,7 +153,16 @@ try {
       trustedWorkspaces: [info.root], widgetEnabled: false, quickLauncher: false,
     }))});
     setTimeout(() => location.reload(), 50);`)
-  const config = await eventually(async () => JSON.parse(await readFile(join(workspace, '.nova', 'mcp.json'), 'utf8')), 'No managed MCP configuration')
+  await wait(200)
+  await waitFor('Boolean(document.querySelector(".rail-settings"))', 'Page did not reload')
+  await wait(500)
+  const previousConfig = await readFile(join(workspace, '.nova', 'mcp.json'), 'utf8').catch(() => '')
+  await pageEval('window.__TAURI_INTERNALS__.invoke("prewarm_nova")')
+  const config = await eventually(async () => {
+    const text = await readFile(join(workspace, '.nova', 'mcp.json'), 'utf8')
+    assert.notEqual(text, previousConfig, 'Legacy prewarm has not replaced the scoped entry yet')
+    return JSON.parse(text)
+  }, 'No managed MCP configuration')
   const entry = config.mcpServers['nova-desktop']
   shim = spawn(entry.command, entry.args, { windowsHide: true, env: { ...process.env, ...entry.env }, stdio: ['pipe', 'pipe', 'inherit'] })
   const output = createInterface({ input: shim.stdout })[Symbol.asyncIterator]()
@@ -166,6 +189,8 @@ try {
   }
   assert.equal((await rpc('initialize', {})).serverInfo.name, 'nova-desktop')
   const { tools } = await rpc('tools/list', {})
+  for (const name of ['team_delegate', 'team_follow_up', 'team_message', 'team_status']) await call(name, {}, /authenticated active teammate/)
+
   const catalog = await pageEval('window.__TAURI_INTERNALS__.invoke("tools_catalog")')
   assert.ok(catalog.listedTools.includes('nova'), 'The catalog did not record the shim connection')
   assert.ok((await call('list_projects')).projects.some((project) => project.path === info.root))
@@ -259,8 +284,79 @@ try {
   await eventually(async () => assert.equal((await call('read_browser')).title, 'Fixture /second'), 'history forward')
   await call('browser_action', { action: 'reload' })
   assert.deepEqual([...tested].sort(), tools.map(({ name }) => name).sort())
+  // The backend owns permissions, cancellation and team writer exclusion.
+  const teamId = crypto.randomUUID()
+  const approvalTurn = crypto.randomUUID()
+  const approvalChat = crypto.randomUUID()
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('begin_team', { id:${JSON.stringify(teamId)}, limit:3 })`)
+  await pageEval(`(async () => {
+    const { startTurn } = await import('/src/lib/ipc.ts'); window.__approvalEvents = [];
+    await startTurn(${JSON.stringify({ turnId:approvalTurn, chatId:approvalChat, backend:'nova', prompt:'fixture-permission', trustWorkspace:true, teamId })}, (event) => window.__approvalEvents.push(event))
+  })()`)
+  await waitFor(`window.__approvalEvents.some((event) => event.type === 'approvalRequired')`, 'Backend permission did not arrive')
+  assert.equal(await pageEval(`window.__approvalEvents.some((event) => event.type === 'turnFinished')`), false)
+  const competing = { turnId:crypto.randomUUID(), chatId:crypto.randomUUID(), backend:'local', prompt:'competing writer', trustWorkspace:true, teamId }
+  assert.match(await pageEval(`(async () => { const { startTurn } = await import('/src/lib/ipc.ts'); try { await startTurn(${JSON.stringify(competing)}, () => {}); return 'unexpected success' } catch (error) { return error.message } })()`), /single-writer/)
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('set_auto_approve', { enabled:true })`)
+  await waitFor(`window.__approvalEvents.some((event) => event.type === 'turnFinished')`, 'Toggle did not release the pending permission')
+  assert.ok(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`))
+  const questionTurn = crypto.randomUUID()
+  await pageEval(`(async () => { const { startTurn } = await import('/src/lib/ipc.ts'); window.__approvalEvents = [];
+    await startTurn(${JSON.stringify({ turnId:questionTurn, chatId:approvalChat, backend:'nova', prompt:'fixture-question', trustWorkspace:true, teamId })}, (event) => window.__approvalEvents.push(event)) })()`)
+  await waitFor(`window.__approvalEvents.some((event) => event.type === 'approvalRequired')`, 'Question did not arrive')
+  assert.equal(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`), false, 'Auto-approve answered a question')
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('cancel_turn', { turnId:${JSON.stringify(questionTurn)} })`)
+  await waitFor(`window.__approvalEvents.some((event) => event.type === 'turnFinished' && event.reason === 'cancelled')`, 'Cancellation while waiting did not finish')
+  assert.ok(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`))
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('finish_team', { id:${JSON.stringify(teamId)} })`)
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('set_auto_approve', { enabled:false })`)
+  const scrollTask = (await call('create_task', { title:'Scroll preservation fixture' })).taskId
+  await call('open_task', { taskId:scrollTask })
+  await call('start_task', { taskId:scrollTask, prompt:'scroll fixture\n'.repeat(120) })
+  await eventually(async () => {
+    const task = await call('read_task', { taskId:scrollTask })
+    assert.ok(task.messages.some((message) => message.text.startsWith('fixture response scroll fixture')))
+  }, 'Scroll fixture did not finish')
+  assert.ok(await pageEval(`(() => { const log = document.querySelector('.chat-log'); return log.scrollHeight > log.clientHeight })()`))
+  await pageEval(`(() => { const log = document.querySelector('.chat-log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll', { bubbles:true })) })()`)
+  await call('send_message', { taskId:scrollTask, text:'scroll follow-up' })
+  await eventually(async () => {
+    const task = await call('read_task', { taskId:scrollTask })
+    assert.ok(task.messages.some((message) => message.text === 'fixture response scroll follow-up'))
+  }, 'Scroll follow-up did not finish')
+  assert.equal(await pageEval(`document.querySelector('.chat-log').scrollTop`), 0, 'Incoming output moved a reader away from older messages')
+  await call('archive_task', { taskId:scrollTask })
+  await pageEval(`document.querySelector('.rail-settings').click()` )
+  await waitFor(`Boolean(document.querySelector('.settings-nav'))`, 'Settings did not open')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-nav button')).find((button) => button.textContent.includes('Tools'))?.click()` )
+  await waitFor(`Boolean(document.querySelector('.settings-stage[aria-label=Tools]'))`, 'Tools settings did not open')
+  assert.equal(await pageEval(`Boolean(document.querySelector('#nova-integrations[open]'))`), false, 'Tools automatically opened the integrations sheet')
+  await pageEval(`(() => { const button = Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'Manage'); button?.focus(); button?.click() })()` )
+  await waitFor(`Boolean(document.querySelector('#nova-integrations:modal'))`, 'Manage did not open a modal sheet')
+  await pageEval(`document.querySelector('#nova-integrations button').click()` )
+  await waitFor(`!document.querySelector('#nova-integrations')`, 'Sheet did not dismiss')
+  await waitFor(`document.activeElement?.textContent === 'Manage'`, 'Dismissal did not return focus')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'Manage')?.click()`)
+  await waitFor(`Boolean(document.querySelector('#nova-integrations:modal'))`, 'Sheet did not reopen')
+  await evaluate(webview, null, 'Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 })
+  await evaluate(webview, null, 'Input.dispatchKeyEvent', { type:'keyUp', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 })
+  await waitFor(`!document.querySelector('#nova-integrations')`, 'Escape did not dismiss the sheet')
+  await waitFor(`document.activeElement?.textContent === 'Manage'`, 'Escape did not return focus')
+  // Emulation overrides belong to the debugger connection that sets them.
+  motionSession = new WebSocket(webview)
+  await once(motionSession, 'open', { signal:AbortSignal.timeout(5000) })
+  const motionReply = once(motionSession, 'message', { signal:AbortSignal.timeout(5000) })
+  motionSession.send(JSON.stringify({ id:1, method:'Emulation.setEmulatedMedia', params:{ features:[{ name:'prefers-reduced-motion', value:'reduce' }] } }))
+  assert.ok(!JSON.parse((await motionReply)[0].data).error)
+  await waitFor(`matchMedia('(prefers-reduced-motion: reduce)').matches`, 'Reduced-motion emulation did not take effect')
+  await pageEval(`Array.from(document.querySelectorAll('.sidebar button, .new-task')).find((button) => button.textContent.includes('Teams'))?.click()`)
+  await waitFor(`Boolean(document.querySelector('[aria-label="Teams workspace"]'))`, 'Teams workspace did not open')
+  await pageEval(`document.querySelector('.teams-workspace summary').click()`)
+  await waitFor(`Boolean(document.querySelector('.teams-workspace .crew-profile'))`, 'Team configuration did not expand')
+  assert.ok(await pageEval(`Boolean(document.querySelector('textarea'))`), 'Teams composer is missing')
   console.log(`Called and checked all ${tested.size} advertised tools through the Windows app and MCP shim.`)
 } finally {
+  motionSession?.close()
   shim?.stdin.end()
   if (app && app.exitCode === null) {
     app.kill()

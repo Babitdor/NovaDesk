@@ -6,8 +6,46 @@ source = sys.argv.pop(1)
 if source:
     sys.path.insert(0, source)
 sys.argv[0] = "nova"
-role = os.environ.pop("NOVA_DESKTOP_PERSONALITY")
-instructions = os.environ.pop("NOVA_DESKTOP_SYSTEM_PROMPT")
+role = os.environ.pop("NOVA_DESKTOP_PERSONALITY", "")
+instructions = os.environ.pop("NOVA_DESKTOP_SYSTEM_PROMPT", "")
+
+# Some installed Nova versions read only the global MCPConfig in pipe mode.
+# Add this session's Desktop server in memory; never modify the global profile.
+credentials = os.environ.get("NOVA_DESKTOP_MCP_FILE")
+shim = os.environ.get("NOVA_TOOLS_SHIM")
+if credentials and shim:
+    from novacode_cli.mcp.config import MCPConfig, MCPServerConfig
+
+    load = MCPConfig.load
+
+    def load_desktop(self):
+        servers = dict(load(self))
+        servers["nova-desktop"] = MCPServerConfig(
+            transport="stdio", command=shim, args=[],
+            env={"NOVA_TOOLS_FILE": credentials}, disabled=False,
+        )
+        return servers
+
+    MCPConfig.load = load_desktop
+
+    # An affected Nova release drops validated arguments on its success path.
+    try:
+        import json
+        from novacode_cli.agents import code_mode
+    except ImportError:
+        pass
+    else:
+        repair_dispatch_args = getattr(getattr(code_mode, "CodeModeMiddleware", None), "_repair_dispatch_args", None)
+
+        def desktop_arguments(self, target, arguments, schema, step):
+            result = repair_dispatch_args(self, target, arguments, schema, step)
+            if result is None and target.name.startswith("nova-desktop_"):
+                code_mode._validator(json.dumps(schema, sort_keys=True), close_named=True).validate(arguments)
+                return arguments
+            return result
+
+        if callable(repair_dispatch_args) and callable(getattr(code_mode, "_validator", None)):
+            code_mode.CodeModeMiddleware._repair_dispatch_args = desktop_arguments
 
 from novacode_cli.agents import core_agent
 from novacode_cli.headless import pipe
@@ -32,8 +70,9 @@ async def run_personality(**kwargs):
     return await pipe.PipeSession(**kwargs).run()
 
 
-core_agent.create_agent_with_config = create_personality
-pipe.run_pipe_session = run_personality
+if instructions:
+    core_agent.create_agent_with_config = create_personality
+    pipe.run_pipe_session = run_personality
 
 from novacode_cli.entrypoint import cli_main
 

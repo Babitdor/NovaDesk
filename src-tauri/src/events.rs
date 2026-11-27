@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
     rename_all_fields = "camelCase"
 )]
 pub enum AgentEvent {
+    Timing {
+        phase: String,
+        ms: u64,
+    },
+    ApprovalResolved {
+        interrupt_id: String,
+    },
     TurnStarted,
     Session {
         id: String,
@@ -18,6 +25,9 @@ pub enum AgentEvent {
     Usage {
         input: u64,
         output: u64,
+    },
+    FinalAnswerDelta {
+        text: String,
     },
     MessageDelta {
         text: String,

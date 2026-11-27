@@ -88,6 +88,30 @@ async fn native(
     arguments: &Value,
 ) -> Result<Value, AppError> {
     match name {
+        "team_delegate" | "team_follow_up" | "team_message" | "team_status" => {
+            let turn = arguments["_desktopTurnId"].as_str().ok_or_else(|| {
+                AppError::Tools(
+                    "Team tools require an authenticated active teammate session".into(),
+                )
+            })?;
+            let scope = tools.scope_for_turn(turn).ok_or_else(|| {
+                AppError::Tools("The teammate session is no longer active".into())
+            })?;
+            let run = scope
+                .team_id
+                .ok_or_else(|| AppError::Tools("No team run is active for this session".into()))?;
+            require_state(context)?.teams.get(&run)?;
+            if matches!(name, "team_delegate" | "team_follow_up")
+                && scope.role.as_deref() != Some("nova")
+            {
+                return Err(AppError::Tools("Only Nova may assign team work".into()));
+            }
+            let mut arguments = arguments.clone();
+            arguments["_runId"] = json!(run);
+            arguments["_sender"] = json!(scope.role);
+            arguments["_harness"] = json!(scope.harness);
+            crate::tools::frontend::ask(context.app()?, tools, name, arguments).await
+        }
         "list_projects" => Ok(projects::list(context.data_dir.as_deref())),
         "list_moodboards" => Ok(moodboards::list(context.workspace.as_deref())),
         "read_moodboard" => moodboards::read(context.workspace.as_deref(), &text(arguments, "id")?),

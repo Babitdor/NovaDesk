@@ -43,9 +43,9 @@ struct Launch {
     body: String,
 }
 
-fn launch() -> &'static Mutex<Option<Launch>> {
-    static LAUNCH: OnceLock<Mutex<Option<Launch>>> = OnceLock::new();
-    LAUNCH.get_or_init(|| Mutex::new(None))
+fn launch() -> &'static Mutex<std::collections::HashMap<String, Launch>> {
+    static LAUNCH: OnceLock<Mutex<std::collections::HashMap<String, Launch>>> = OnceLock::new();
+    LAUNCH.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 /// The credentials file for this app launch, written on first use.
@@ -58,22 +58,29 @@ fn launch() -> &'static Mutex<Option<Launch>> {
 pub fn launch_credentials(bridge: &Bridge) -> Result<PathBuf, AppError> {
     let body = json!({ "url": bridge.url, "token": bridge.token, "harness": "nova" }).to_string();
     let mut launch = launch().lock().expect("launch credentials mutex poisoned");
-    if let Some(existing) = launch.as_ref() {
+    if let Some(existing) = launch.get(&bridge.token) {
         if existing.body == body && existing.path.is_file() {
             return Ok(existing.path.clone());
         }
     }
-    let path = std::env::temp_dir().join(format!("nova-desktop-tools-{}.json", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "nova-desktop-tools-{}-{}.json",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
     std::fs::write(&path, &body).map_err(|error| {
         AppError::Io(format!(
             "could not write the Nova Desktop tools credentials to {}: {error}",
             path.display()
         ))
     })?;
-    *launch = Some(Launch {
-        path: path.clone(),
-        body,
-    });
+    launch.insert(
+        bridge.token.clone(),
+        Launch {
+            path: path.clone(),
+            body,
+        },
+    );
     Ok(path)
 }
 
@@ -82,7 +89,7 @@ pub fn launch_credentials(bridge: &Bridge) -> Result<PathBuf, AppError> {
 /// trusting a token that no longer exists.
 pub fn remove_launch_credentials() {
     let mut launch = launch().lock().expect("launch credentials mutex poisoned");
-    if let Some(existing) = launch.take() {
+    for (_, existing) in launch.drain() {
         let _ = std::fs::remove_file(&existing.path);
     }
 }
@@ -214,6 +221,18 @@ fn write_document(path: &Path, document: &Value) -> Result<bool, AppError> {
         ))
     })?;
     Ok(true)
+}
+
+/// Session compatibility includes the credentials path fixed at process startup.
+pub fn workspace_credentials(root: &Path) -> Option<PathBuf> {
+    let document: Value =
+        serde_json::from_slice(&std::fs::read(workspace_mcp_path(root)).ok()?).ok()?;
+    document["mcpServers"][SERVER_NAME]["env"][crate::agent::cli::TOOLS_FILE_ENV]
+        .as_str()
+        .or_else(|| {
+            document["servers"][SERVER_NAME]["env"][crate::agent::cli::TOOLS_FILE_ENV].as_str()
+        })
+        .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -379,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_credentials_are_one_file_for_the_whole_launch() {
+    fn credentials_are_stable_per_session_and_isolated_between_sessions() {
         let bridge = Bridge {
             shim: PathBuf::from(SHIM),
             url: "http://127.0.0.1:9/mcp".into(),
@@ -393,7 +412,8 @@ mod tests {
             ..bridge
         };
         let changed = launch_credentials(&rotated).expect("the rotated write");
-        assert_eq!(changed, first, "the path is stable per launch");
+        assert_ne!(changed, first, "sessions have separate credentials files");
+        assert!(std::fs::read_to_string(&first).unwrap().contains("token-a"));
         let body = std::fs::read_to_string(&changed).expect("the body is readable");
         assert!(body.contains("token-b"), "the body was rewritten: {body}");
         remove_launch_credentials();

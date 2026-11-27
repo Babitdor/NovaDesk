@@ -38,6 +38,7 @@ export function ToolsSettings({ extras, preferences, update, onChangeSection }: 
   /// is the settings view's own navigation rather than a link to a document.
   onChangeSection: (section: 'Voice' | 'Connections') => void
 }) {
+  const [sheetOpen, setSheetOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('Add-ons')
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [status, setStatus] = useState('')
@@ -99,7 +100,7 @@ export function ToolsSettings({ extras, preferences, update, onChangeSection }: 
             </span>
             {/* toggle, not show: a second click on Manage has to dismiss the sheet,
                 or the one control that opened it cannot close it. */}
-            <button type="button" popoverTarget="nova-integrations" popoverTargetAction="toggle">Manage</button>
+            <button type="button" onClick={() => setSheetOpen(true)}>Manage</button>
           </div>
           <Toggle
             title="Offer the tool server to agents"
@@ -136,14 +137,20 @@ export function ToolsSettings({ extras, preferences, update, onChangeSection }: 
                 <small>{harness.note ?? INJECTION_LABELS[harness.injection]}</small>
               </span>
               <span className={catalog.listedTools?.includes(harness.id) ? 'tools-badge is-on' : 'tools-badge'}>
-                {catalog.listedTools?.includes(harness.id) ? 'Listed tools this launch' : harness.callable ? 'Automatic setup' : 'Manual setup'}
+                {catalog.activity?.some((call) => call.harness === harness.id && call.ok) ? 'Called successfully' : catalog.activity?.some((call) => call.harness === harness.id) ? 'Call failed' : catalog.listedTools?.includes(harness.id) ? 'Discovered tools' : harness.callable ? 'Configured' : 'Manual setup'}
               </span>
             </div>
           ))}
           {!catalog && <p className="settings-help">Loading the catalogue…</p>}
         </Group>
 
-        <IntegrationsSheet preferences={preferences} update={update} onSection={onChangeSection} />
+        <Group title="Recent Desktop tool calls">
+          {catalog?.activity?.slice(-10).reverse().map((call, index) => <div className="settings-row" key={index}><span><strong>{call.name}</strong><small>{call.harness || "Unattributed client"} · {call.turnId.slice(0,8)} · {call.durationMs} ms</small></span><span className="tools-badge">{call.ok ? "Succeeded" : "Failed"}</span></div>)}
+          {!catalog?.activity?.length && <p className="settings-help">No Desktop tool has been invoked this launch. Configuration and discovery alone do not verify a call.</p>}
+          <button type="button" onClick={() => void load()}>Refresh activity</button>
+        </Group>
+        {sheetOpen && <IntegrationsSheet preferences={preferences} update={update} onClose={() => setSheetOpen(false)}
+          onSection={(section) => { setSheetOpen(false); onChangeSection(section) }} />}
 
         {extras}
       </>}

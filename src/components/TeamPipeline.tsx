@@ -18,11 +18,12 @@ const formatTokens = (count: number) =>
 /// The @team pipeline strip: every stage of the run with its live status, the
 /// plan approval gate, and the actions a finished run can still take. Sits
 /// above the composer, so the state of the team is visible while it works.
-export function TeamPipeline({ run, busy, onDecision, onRetry }: {
+export function TeamPipeline({ run, busy, onDecision, onRetry, onCancel }: {
   run: TeamRun
   busy: boolean
   onDecision: (decision: 'approve' | 'skip' | string) => void
   onRetry: () => void
+  onCancel?: (turnId: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -38,7 +39,7 @@ export function TeamPipeline({ run, busy, onDecision, onRetry }: {
 
   const now = busy ? clock : run.finishedAt ?? clock
   const failed = run.stages.filter((stage) => stage.status === 'failed').length
-  const plan = run.awaitingPlan != null ? run.handoffs[run.awaitingPlan - 1]?.text : undefined
+  const plan = run.awaitingPlan != null ? run.handoffs.findLast((note) => note.from === 'nova' && !note.to)?.text : undefined
 
   return <aside className="team-pipeline" aria-label="Team run progress">
     <header className="team-pipeline-head">
@@ -47,6 +48,7 @@ export function TeamPipeline({ run, busy, onDecision, onRetry }: {
         {busy ? formatDuration(now - run.startedAt) : run.finishedAt ? formatDuration(run.finishedAt - run.startedAt) : ''}
       </span>
     </header>
+    {run.interrupted && <p role="status">This run was interrupted by a restart. Retry to resume its unfinished assignments.</p>}
     <div className="team-stages">
       {run.stages.map((stage, index) => (
         <button key={index} type="button"
@@ -55,9 +57,9 @@ export function TeamPipeline({ run, busy, onDecision, onRetry }: {
           title={stage.stageId ? 'Show this stage in the transcript' : CREW[stage.role].title}
           onClick={() => document
             .querySelector(`[data-stage="${stage.stageId}"]`)
-            ?.scrollIntoView({ block: 'start', behavior: 'smooth' })}>
+            ?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })}>
           <CrewPortrait role={stage.role} />
-          <span className="team-stage-name">{CREW[stage.role].name}</span>
+          <span className="team-stage-name">{CREW[stage.role].name}<small>{stage.harness}{stage.readOnly ? " · read only" : ""}</small></span>
           {stage.role === 'ralph' && stage.iteration > 1 && <small>×{stage.iteration}</small>}
           <span className={`badge${stage.status === 'done' ? ' ok' : stage.status === 'failed' ? ' bad' : ''}`}>
             {stage.status === 'running'
@@ -67,6 +69,8 @@ export function TeamPipeline({ run, busy, onDecision, onRetry }: {
         </button>
       ))}
     </div>
+    {busy && run.stages.filter((stage) => stage.status === 'running' && stage.stageId).map((stage) =>
+      <button type="button" key={stage.stageId} onClick={() => onCancel?.(stage.stageId!)}>Cancel {CREW[stage.role].name} assignment</button>)}
     {plan !== undefined && <div className="team-plan approval">
       <div className="approval-detail">
         <strong>{CREW.nova.name}'s plan — approve before the team starts?</strong>

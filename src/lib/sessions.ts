@@ -1,3 +1,4 @@
+import { recoverTeamRun } from './teamSchedule.ts'
 import { applyEvent, type ChatItem } from './chat.ts'
 import type { AgentEvent } from './events'
 import type { AgentId } from './settings'
@@ -122,6 +123,7 @@ export function load(): Chat[] {
       .map((chat) => ({
         ...chat,
         state: 'idle' as const,
+        teamRun: chat.teamRun && Array.isArray(chat.teamRun.stages) ? recoverTeamRun(chat.teamRun) : undefined,
         // An unknown column is dropped rather than invented: `boardColumn`
         // derives it from the task itself, which is truer than a stored guess.
         column: COLUMNS.includes(chat.column as Column) ? chat.column : undefined,

@@ -3,6 +3,8 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 // resolving extensionless specifiers; everything else here is bundled by Vite.
 import { createDownloads } from './downloads.ts'
 import { errorText } from './ipc.ts'
+import { SpeechSentences, type PlaybackState } from './speechQueue.ts'
+import type { AgentEvent } from './events'
 import type { Preferences, SpeechDestination, SpeechProfile, SpeechProvider } from './settings.ts'
 
 // The preference shapes live in settings.ts, which owns migration; these are
@@ -130,6 +132,7 @@ export const cancelSpeakDownload = (id: string) => invoke<boolean>('speak_cancel
 export const deleteSpeakVoice = (id: string) => invoke<void>('speak_delete', { id })
 
 export const speakSynthesize = (request: {
+  id?: string
   destination: 'local' | 'service'
   modelId?: string
   profile?: SpeechProfile
@@ -140,6 +143,7 @@ export const speakSynthesize = (request: {
   // One struct parameter on the Rust side keeps the command's signature short;
   // Tauri maps it from this single named argument.
   request: {
+    id: request.id,
     destination: request.destination,
     modelId: request.modelId,
     profile: request.profile,
@@ -229,6 +233,38 @@ export function voiceMeta(voice: SpeakVoice): string {
 /// A new take cancels the previous one: the token is bumped by stopSpeaking, and
 /// every await checks it before playing the next piece.
 let session = 0
+let paused = false
+let activeSynthesis: string | null = null
+let releasePlayback: (() => void) | null = null
+let playback: PlaybackState = { id: '', status: 'idle' }
+const playbackListeners = new Set<() => void>()
+export const playbackSnapshot = () => playback
+export const subscribePlayback = (listener: () => void) => {
+  playbackListeners.add(listener)
+  return () => { playbackListeners.delete(listener) }
+}
+function publishPlayback(next: PlaybackState) {
+  playback = next
+  for (const listener of playbackListeners) listener()
+}
+export function pauseSpeaking() {
+  paused = true
+  void context?.suspend()
+  element?.pause()
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.pause()
+  publishPlayback({ ...playback, status:'paused' })
+}
+export function resumeSpeaking() {
+  paused = false
+  void context?.resume()
+  void element?.play().catch((error) => publishPlayback({ ...playback, status:'failed', error:errorText(error) }))
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.resume()
+  publishPlayback({ ...playback, status:'playing' })
+}
+async function untilResumed(token: number) {
+  while (paused && token === session) await new Promise((resolve) => setTimeout(resolve, 50))
+}
+
 let context: AudioContext | null = null
 let source: AudioBufferSourceNode | null = null
 let element: HTMLAudioElement | null = null
@@ -241,6 +277,12 @@ function audioContext(): AudioContext {
 /// Stop whatever is being said, on either destination.
 export function stopSpeaking() {
   session += 1
+  paused = false
+  releasePlayback?.()
+  releasePlayback = null
+  if (activeSynthesis) void invoke('speak_stop', { id:activeSynthesis }).catch(() => {})
+  activeSynthesis = null
+  publishPlayback({ id:'', status:'idle' })
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
   if (source) {
     try {
@@ -272,7 +314,9 @@ function toSamples(bytes: Uint8Array): Float32Array<ArrayBuffer> {
   return samples
 }
 
-async function playSamples(samples: Float32Array<ArrayBuffer>, rate: number, token: number): Promise<void> {
+async function playSamples(samples: Float32Array<ArrayBuffer>, rate: number, token: number, started:() => void): Promise<void> {
+  await untilResumed(token)
+  if (token !== session) return
   const player = audioContext()
   // A context created without a gesture can start suspended, and a suspended
   // graph plays nothing at all.
@@ -284,8 +328,10 @@ async function playSamples(samples: Float32Array<ArrayBuffer>, rate: number, tok
   bufferSource.connect(player.destination)
   source = bufferSource
   await new Promise<void>((resolve) => {
+    releasePlayback = resolve
     bufferSource.onended = () => resolve()
     bufferSource.start()
+    started()
   })
   if (token === session) source = null
 }
@@ -299,28 +345,32 @@ const FILE_TYPES: Record<SpeechAudio['kind'], string> = {
   ogg: 'audio/ogg',
 }
 
-async function playFile(bytes: Uint8Array, type: string, token: number): Promise<void> {
+async function playFile(bytes: Uint8Array, type: string, token: number, started:() => void): Promise<void> {
   const copy = new Uint8Array(bytes)
   const url = URL.createObjectURL(new Blob([copy], { type }))
   try {
     const audio = new Audio(url)
     element = audio
+    await untilResumed(token)
+    if (token !== session) return
     await audio.play()
-    await new Promise<void>((resolve) => {
-      // Four ways out, because a wait that never ends would keep the next
-      // piece from ever playing: the file ends, it fails (a truncated mp3
-      // fires "error" and never "ended"), stop() pauses it without "ended",
-      // or the take is superseded while it is still playing.
+    started()
+    await new Promise<void>((resolve, reject) => {
       const finish = () => {
         window.clearInterval(check)
+        audio.removeEventListener('ended', finish)
+        audio.removeEventListener('error', fail)
         resolve()
       }
-      const check = window.setInterval(() => {
-        if (token !== session) finish()
-      }, 120)
-      for (const event of ['ended', 'error', 'pause'] as const) {
-        audio.addEventListener(event, finish, { once: true })
+      const fail = () => {
+        window.clearInterval(check)
+        audio.removeEventListener('ended', finish)
+        reject(new Error('The speech audio could not be played.'))
       }
+      const check = window.setInterval(() => { if (token !== session) finish() }, 120)
+      releasePlayback = finish
+      audio.addEventListener('ended', finish, { once:true })
+      audio.addEventListener('error', fail, { once:true })
     })
     if (token === session) element = null
   } finally {
@@ -328,67 +378,118 @@ async function playFile(bytes: Uint8Array, type: string, token: number): Promise
   }
 }
 
-function speakWithSystem(text: string, speed: number): boolean {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false
-  window.speechSynthesis.cancel()
-  for (const chunk of splitForSpeech(text)) {
-    const utterance = new SpeechSynthesisUtterance(chunk)
-    if (Number.isFinite(speed) && speed > 0) utterance.rate = Math.min(2, Math.max(0.5, speed))
+async function speakWithSystem(text: string, speed: number, token: number, started:() => void): Promise<void> {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) throw new Error('This build has no system voice.')
+  await untilResumed(token)
+  if (token !== session) return
+  await new Promise<void>((resolve, reject) => {
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = Math.min(2, Math.max(0.5, speed))
+    utterance.onstart = started
+    utterance.onend = () => resolve()
+    utterance.onerror = (event) => event.error === 'canceled' || event.error === 'interrupted' ? resolve() : reject(new Error(event.error))
+    releasePlayback = resolve
     window.speechSynthesis.speak(utterance)
-  }
-  return true
+  })
 }
 
-/// Read one reply aloud.
-///
-/// Resolves with a sentence when something failed and null when it worked: the
-/// caller shows it in the same notice strip every other failure uses, because a
-/// reply that cannot be heard should not fail silently.
-export async function speakReply(text: string, preferences: Preferences): Promise<string | null> {
-  if (!preferences.speak) return null
-  const spoken = text.trim()
-  if (!spoken) return null
+/// One producer per turn, one synthesis ahead of playback, and one global player.
+export function turnSpeech(id: string, preferences: Preferences, onError: (error: string) => void = () => {}) {
+  const synthesisId = crypto.randomUUID()
+  const sentences = new SpeechSentences()
   const speech = preferences.speech
-  stopSpeaking()
-  const token = session
-
-  if (speech.destination === 'off') return null
-  if (speech.destination === 'system') {
-    return speakWithSystem(spoken, speech.speed)
-      ? null
-      : 'This build has no system voice, so nothing was read aloud.'
-  }
-
+  const enabled = preferences.speak && speech.destination !== 'off'
+  let token = session
+  let started = false
+  let draining = false
+  let finished = false
+  let failed = false
+  const queue: string[] = []
+  const begun = performance.now()
+  let firstAudioMs: number | undefined
+  let resolveDone: (error: string | null) => void = () => {}
+  const done = new Promise<string | null>((resolve) => { resolveDone = resolve })
+  if (!enabled) resolveDone(null)
   const profile = speech.profiles.find((entry) => entry.id === speech.profileId)
-  if (speech.destination === 'service' && !profile) {
-    return 'Choose a speech service in Settings, Voice before Nova can read a reply.'
-  }
-  if (speech.destination === 'local' && !speech.model) {
-    return 'Choose a voice in Settings, Voice before Nova can read a reply.'
-  }
 
-  for (const chunk of splitForSpeech(spoken)) {
+  const prepare = async (text: string): Promise<SpeechAudio | null> => {
     if (token !== session) return null
+    if (speech.destination === 'system') return null
+    if (speech.destination === 'service' && !profile) throw new Error('Choose a speech service in Settings, Voice.')
+    if (speech.destination === 'local' && !speech.model) throw new Error('Choose a voice in Settings, Voice.')
+    activeSynthesis = synthesisId
     try {
-      const reply = await speakSynthesize({
-        destination: speech.destination === 'local' ? 'local' : 'service',
-        modelId: speech.destination === 'local' ? speech.model : undefined,
-        profile: speech.destination === 'service' ? profile : undefined,
-        text: chunk,
-        speed: speech.speed,
-        speaker: speech.speaker || undefined,
-      })
-      if (token !== session) return null
-      if (reply.kind === 'samples') {
-        await playSamples(toSamples(decodeBase64(reply.audio)), reply.sampleRate || 22_050, token)
-      } else {
-        await playFile(decodeBase64(reply.audio), FILE_TYPES[reply.kind], token)
+      return await speakSynthesize({ id:synthesisId, destination:speech.destination === 'local' ? 'local' : 'service',
+        modelId:speech.model, profile, text, speed:speech.speed, speaker:speech.speaker || undefined })
+    } finally { if (activeSynthesis === synthesisId) activeSynthesis = null }
+  }
+  const drain = async () => {
+    if (draining || !enabled || failed) return
+    draining = true
+    if (!started) { stopSpeaking(); token = session; started = true }
+    publishPlayback({ id, status:paused ? 'paused' : 'loading', firstAudioMs })
+    try {
+      let text = queue.shift()
+      const preparing = (text:string) => prepare(text).then((audio) => ({ audio, error:null }), (error:unknown) => ({ audio:null, error }))
+      let prepared = text ? preparing(text) : null
+      while (text && token === session) {
+        const result = await prepared
+        if (result?.error) throw result.error
+        const audio = result?.audio
+        await untilResumed(token)
+        if (token !== session) break
+        const next = queue.shift()
+        // Attach a rejection handler immediately: prefetch may fail while audio plays.
+        const ahead = next ? preparing(next) : null
+        const startedAudio = () => {
+          if (token !== session) return
+          if (firstAudioMs === undefined) {
+            firstAudioMs = Math.round(performance.now() - begun)
+            performance.measure('nova:first-audio', { start:begun, end:performance.now() })
+          }
+          publishPlayback({ id, status:paused ? 'paused' : 'playing', firstAudioMs })
+        }
+        if (audio?.kind === 'samples') await playSamples(toSamples(decodeBase64(audio.audio)), audio.sampleRate || 22_050, token, startedAudio)
+        else if (audio) await playFile(decodeBase64(audio.audio), FILE_TYPES[audio.kind], token, startedAudio)
+        else await speakWithSystem(text, speech.speed, token, startedAudio)
+        text = next
+        prepared = ahead
       }
-    } catch (err) {
-      // Autoplay refusal and synthesis refusal are the same to the user: the
-      // reply exists but was not heard.
-      return errorText(err)
+    } catch (error) {
+      if (token === session) {
+        failed = true
+        const message = errorText(error)
+        publishPlayback({ id, status:'failed', error:message, firstAudioMs })
+        onError(message)
+        resolveDone(message)
+      }
+    } finally {
+      draining = false
+      if (token !== session) { queue.length = 0; resolveDone(null) }
+      else if (!failed && queue.length) void drain()
+      else if (!failed && finished) { publishPlayback({ id, status:'idle', firstAudioMs }); resolveDone(null) }
     }
   }
-  return null
+  return {
+    accept(event: AgentEvent) {
+      if (!enabled || failed) return
+      if (token !== session) { resolveDone(null); return }
+      queue.push(...sentences.accept(event).flatMap((sentence) => splitForSpeech(sentence)))
+      if (event.type === 'turnFinished') {
+        finished = true
+        if (event.reason !== 'completed') { queue.length = 0; if (started) stopSpeaking() }
+      }
+      if (queue.length) void drain()
+      else if (finished && !draining) resolveDone(null)
+    },
+    done,
+  }
+}
+
+export async function speakReply(text: string, preferences: Preferences, id: string = crypto.randomUUID()): Promise<string | null> {
+  if (!preferences.speak || !text.trim()) return null
+  const player = turnSpeech(id, preferences)
+  player.accept({ type:'messageFinal', text, replacePreview:true, plain:false })
+  player.accept({ type:'turnFinished', reason:'completed' })
+  return player.done
 }

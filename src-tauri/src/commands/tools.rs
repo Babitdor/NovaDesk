@@ -16,6 +16,7 @@ use crate::AppState;
 #[tauri::command]
 pub fn tools_catalog(state: State<'_, AppState>) -> Value {
     let mut catalog = tools::view(state.tools.enabled(), state.tools.endpoint());
+    catalog["activity"] = serde_json::json!(state.tools.activity());
     catalog["listedTools"] = serde_json::json!(state.tools.listed_tools());
     catalog
 }
@@ -115,7 +116,7 @@ pub async fn register_commandcode_tools(state: State<'_, AppState>) -> Result<()
         return Err(AppError::Tools("A server named nova-desktop already exists in CommandCode. Manage it in CommandCode before registering again.".into()));
     }
     let entry = serde_json::json!({
-        "transport": "stdio", "enabled": true, "command": shim,
+        "transport": "stdio", "enabled": true, "command": cli::commandcode_mcp_command(&shim),
         "args": [], "env": {"NOVA_TOOLS_FILE": "${NOVA_TOOLS_FILE}"},
     });
     let mut add = cli::command("commandcode")?;

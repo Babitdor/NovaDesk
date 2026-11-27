@@ -460,7 +460,16 @@ pub fn speak(
             "there was nothing to read aloud".to_string(),
         ));
     }
-    let mut engine = Supertonic::load(dir, speaker)?;
+    type Loaded = ((std::path::PathBuf, Option<u32>), Supertonic);
+    static LOADED: std::sync::Mutex<Option<Loaded>> = std::sync::Mutex::new(None);
+    let mut loaded = LOADED
+        .lock()
+        .map_err(|_| AppError::Speak("Speech engine lock poisoned".into()))?;
+    let key = (dir.to_path_buf(), speaker);
+    if loaded.as_ref().is_none_or(|(previous, _)| previous != &key) {
+        *loaded = Some((key, Supertonic::load(dir, speaker)?));
+    }
+    let engine = &mut loaded.as_mut().expect("engine loaded").1;
     let rate = engine.sample_rate;
     let speed = speed.clamp(0.7, 2.0);
     let mut samples: Vec<f32> = Vec::new();

@@ -207,7 +207,8 @@ async fn answer(request: &Request, config: &Config) -> (u16, Value) {
         .header("authorization")
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
-    if !constant_time_eq(presented.as_bytes(), config.state.token().as_bytes()) {
+    let scope = config.state.scope(presented);
+    if scope.is_none() && !constant_time_eq(presented.as_bytes(), config.state.token().as_bytes()) {
         return (
             401,
             error_body(Value::Null, -32001, "the bearer token is missing or wrong"),
@@ -219,14 +220,52 @@ async fn answer(request: &Request, config: &Config) -> (u16, Value) {
             error_body(Value::Null, -32002, "Nova Desktop Tools are switched off"),
         );
     }
-    let call: Value = match serde_json::from_slice(&request.body) {
+    let mut call: Value = match serde_json::from_slice(&request.body) {
         Ok(value) => value,
         Err(_) => return (400, error_body(Value::Null, -32700, "the body is not JSON")),
     };
     if call["jsonrpc"] == "2.0" && call["method"] == "tools/list" && call.get("id").is_some() {
-        if let Some(harness) = request.header("x-nova-harness") {
+        if let Some(harness) = scope
+            .as_ref()
+            .map(|scope| scope.harness.as_str())
+            .or_else(|| request.header("x-nova-harness"))
+        {
             config.state.observe_list(harness);
         }
+    }
+    if call["method"] == "tools/call" {
+        if !call["params"].is_object() || call.get("id").is_none() {
+            return (
+                400,
+                error_body(
+                    call["id"].clone(),
+                    -32602,
+                    "Tool calls require an ID and object parameters",
+                ),
+            );
+        }
+        if !call["params"]["arguments"].is_null() && !call["params"]["arguments"].is_object() {
+            return (
+                400,
+                error_body(
+                    call["id"].clone(),
+                    -32602,
+                    "Tool arguments must be an object",
+                ),
+            );
+        }
+
+        if scope.as_ref().is_some_and(|scope| !scope.active) {
+            return (
+                403,
+                error_body(call["id"].clone(), -32003, "This task session is inactive"),
+            );
+        }
+        if !call["params"]["arguments"].is_object() {
+            call["params"]["arguments"] = json!({});
+        }
+        call["params"]["arguments"]["_desktopTurnId"] =
+            json!(scope.as_ref().map(|scope| &scope.turn_id));
     }
     match dispatch(&call, config).await {
         // A notification carries no id, so it gets no body at all.
@@ -373,9 +412,76 @@ pub async fn start(app: tauri::AppHandle, state: crate::AppState) -> Result<Stri
         let app = app.clone();
         let state = state.clone();
         Box::pin(async move {
-            let context = crate::tools::dispatch::CallContext::in_app(app, state.clone()).await;
+            let scope = arguments["_desktopTurnId"]
+                .as_str()
+                .and_then(|turn| state.tools.scope_for_turn(turn));
+            if arguments["_desktopTurnId"].is_string() && scope.is_none() {
+                return Err(AppError::Tools("This task session has ended".into()));
+            }
+            let mut context = crate::tools::dispatch::CallContext::in_app(app, state.clone()).await;
+            if let Some(scope) = &scope {
+                if context.workspace.as_deref() != Some(scope.root.as_path()) {
+                    return Err(AppError::Tools(
+                        "The tool session belongs to a different workspace".into(),
+                    ));
+                }
+                context.workspace = Some(scope.root.clone());
+            }
             let tools = state.tools.clone();
-            crate::tools::dispatch::call(&context, &tools, &name, arguments).await
+            let call_id = format!("desktop-{}", uuid::Uuid::new_v4());
+            if let Some(scope) = &scope {
+                let _ = scope.sink.send(crate::events::AgentEvent::ToolCall {
+                    call_id: call_id.clone(),
+                    name: format!("Desktop · {name}"),
+                    input: arguments.to_string().chars().take(8000).collect(),
+                });
+            }
+            let started = std::time::Instant::now();
+            let cancel = scope.as_ref().and_then(|scope| {
+                state
+                    .turns
+                    .lock()
+                    .expect("turns mutex")
+                    .get(&scope.turn_id)
+                    .map(|turn| turn.cancel.clone())
+            });
+            let result = if let Some(cancel) = cancel {
+                tokio::select! { biased;
+                    _ = cancel.cancelled() => Err(AppError::Cancelled),
+                    result = crate::tools::dispatch::call(&context, &tools, &name, arguments) => result,
+                }
+            } else {
+                crate::tools::dispatch::call(&context, &tools, &name, arguments).await
+            };
+            let duration_ms = started.elapsed().as_millis() as u64;
+            if let Some(scope) = &scope {
+                let _ = scope.sink.send(crate::events::AgentEvent::ToolResult {
+                    call_id,
+                    ok: result.is_ok(),
+                    output: match &result {
+                        Ok(value) => format!(
+                            "{} ms · {}",
+                            duration_ms,
+                            value.to_string().chars().take(32000).collect::<String>()
+                        ),
+                        Err(error) => error.to_string(),
+                    },
+                });
+            }
+            tools.record_activity(crate::tools::ToolActivity {
+                name,
+                harness: scope
+                    .as_ref()
+                    .map(|s| s.harness.clone())
+                    .unwrap_or_default(),
+                turn_id: scope
+                    .as_ref()
+                    .map(|s| s.turn_id.clone())
+                    .unwrap_or_default(),
+                ok: result.is_ok(),
+                duration_ms,
+            });
+            result
         })
     });
     let config = Arc::new(Config {

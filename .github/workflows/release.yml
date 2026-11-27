@@ -74,9 +74,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: "Nova Desktop v__VERSION__"
           releaseBody: ${{ steps.notes.outputs.body }}
-          # Published, not a draft: a tag is the release decision. Flip to true if a
-          # release should wait for a human to press publish.
-          releaseDraft: false
+          # Publish only after both installers pass the updater signature check.
+          releaseDraft: true
           prerelease: false
           # latest.json is the manifest the app polls
           # (plugins.updater.endpoints). Uploading it is the default, and naming
@@ -87,3 +86,25 @@ jobs:
           # The bundle type is detected at runtime, so the platforms object has
           # to carry both windows-x86_64-nsis and windows-x86_64-msi.
           includeUpdaterJson: true
+
+      - name: Verify installer signatures
+        shell: pwsh
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP 'release-signatures'
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          Get-ChildItem -LiteralPath src-tauri/target/release/bundle -Recurse -File |
+            Where-Object { $_.Name -match '\.(msi|exe)(\.sig)?$' } |
+            Copy-Item -Destination $folder
+          if ((Get-ChildItem -LiteralPath $folder -Filter '*.sig').Count -ne 2) {
+            throw 'Expected updater signatures for both the MSI and NSIS installers'
+          }
+          node scripts/verify-release-signature.mjs $folder
+          if ($LASTEXITCODE -ne 0) { throw 'Installer signature verification failed; release remains a draft' }
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          gh release edit "v$version" --draft=false --latest --repo $env:GITHUB_REPOSITORY

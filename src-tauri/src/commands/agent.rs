@@ -8,37 +8,97 @@ use crate::events::{AgentEvent, FinishReason, InterruptReply};
 use crate::proc::ProcessRunner;
 use crate::AppState;
 
+fn model_options(
+    backend: &str,
+    model: Option<String>,
+    effort: &Option<String>,
+) -> Result<Option<String>, AppError> {
+    let model = model
+        .map(|model| model.trim().to_owned())
+        .filter(|model| !model.is_empty());
+    if model.as_ref().is_some_and(|model| {
+        model.len() > 200 || model.starts_with('-') || model.chars().any(char::is_control)
+    }) {
+        return Err(AppError::Agent("Invalid model ID".into()));
+    }
+    if effort
+        .as_deref()
+        .is_some_and(|level| !crate::agent::models::accepts_effort(backend, level))
+    {
+        return Err(AppError::Agent(
+            "Unsupported reasoning effort for this agent".into(),
+        ));
+    }
+    Ok(model)
+}
+
 /// Spawns Nova's pipe session for the current workspace before the first turn,
 /// so the user's first message streams instead of waiting on the boot. The
 /// frontend calls this only for folders it already trusts; failures are silent
 /// because a cold start is a slow first turn, never an error.
 #[tauri::command]
-pub async fn prewarm_nova(state: State<'_, AppState>) -> Result<(), AppError> {
-    let guard = state.require_guard().await?;
-    let agent = state.agents.get(DEFAULT_BACKEND)?;
-    let root = guard.root().to_path_buf();
-    // The entry must exist before the prewarmed child boots: it reads its MCP
-    // servers from the workspace config at startup and never again.
-    if let Some(bridge) = state
-        .tools
-        .enabled()
-        .then(|| crate::tools::bridge(&state.tools))
-        .flatten()
-    {
-        if let Ok(credentials) = crate::tools::nova_entry::launch_credentials(&bridge) {
-            if let Err(error) =
-                crate::tools::nova_entry::ensure_workspace_entry(&root, &credentials, &bridge.shim)
-            {
-                eprintln!("nova-desktop entry for {}: {error}", root.display());
-            }
-        }
-    } else if state.tools.enabled() {
-        // Prewarm has no channel: this is the only place it can say the session
-        // it is about to boot will have no tools.
-        eprintln!("tools are on but the nova-tools shim was not found: prewarming without them");
+pub async fn prewarm_nova(
+    chat_id: Option<String>,
+    backend: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    session: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), AppError> {
+    let workspace = state.require_guard().await?;
+    if !state.turns.lock().expect("turns mutex").is_empty() {
+        return Ok(());
     }
+    let legacy_prewarm = chat_id.is_none();
+    let chat_id = chat_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if uuid::Uuid::parse_str(&chat_id).is_err() {
+        return Err(AppError::Agent("Invalid chat ID".into()));
+    }
+    let backend = backend.as_deref().unwrap_or(DEFAULT_BACKEND);
+    let model = model_options(backend, model, &effort)?;
+    let agent = state.agents.get(backend)?;
+    let tools = crate::tools::bridge(&state.tools)
+        .filter(|_| state.tools.enabled())
+        .map(|bridge| {
+            if legacy_prewarm {
+                return bridge;
+            }
+            state.tools.scope_bridge(
+                bridge,
+                crate::tools::ToolScope {
+                    chat_id: chat_id.clone(),
+                    turn_id: String::new(),
+                    harness: backend.into(),
+                    team_id: None,
+                    role: None,
+                    root: workspace.root().to_path_buf(),
+                    active: false,
+                    sink: Channel::new(|_| Ok(())),
+                },
+            )
+        });
+    let requests_file = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| crate::agent::requests::path_for(&dir, &chat_id));
+    let req = TurnRequest {
+        turn_id: uuid::Uuid::new_v4().to_string(),
+        chat_id,
+        prompt: String::new(),
+        workspace: Some(workspace),
+        model,
+        effort,
+        session,
+        trust_workspace: true,
+        personality: None,
+        requests_file,
+        tools,
+        read_only: false,
+    };
     tauri::async_runtime::spawn(async move {
-        let _ = agent.prewarm(&root).await;
+        let _ = agent.prewarm(req).await;
     });
     Ok(())
 }
@@ -54,7 +114,7 @@ pub async fn prewarm_nova(state: State<'_, AppState>) -> Result<(), AppError> {
 pub async fn start_turn(
     turn_id: String,
     chat_id: String,
-    prompt: String,
+    mut prompt: String,
     backend: String,
     model: Option<String>,
     effort: Option<String>,
@@ -62,6 +122,8 @@ pub async fn start_turn(
     session: Option<String>,
     check: Option<Vec<String>>,
     trust_workspace: bool,
+    read_only: Option<bool>,
+    team_id: Option<String>,
     on_event: Channel<AgentEvent>,
     app: AppHandle,
     state: State<'_, AppState>,
@@ -74,22 +136,7 @@ pub async fn start_turn(
             "Enter a non-empty prompt of at most 1 MiB".into(),
         ));
     }
-    let model = model
-        .map(|model| model.trim().to_owned())
-        .filter(|model| !model.is_empty());
-    if model.as_ref().is_some_and(|model| {
-        model.len() > 200 || model.starts_with('-') || model.chars().any(char::is_control)
-    }) {
-        return Err(AppError::Agent("Invalid model ID".into()));
-    }
-    if effort
-        .as_deref()
-        .is_some_and(|level| !crate::agent::models::accepts_effort(&backend, level))
-    {
-        return Err(AppError::Agent(
-            "Unsupported reasoning effort for this agent".into(),
-        ));
-    }
+    let model = model_options(&backend, model, &effort)?;
     let workspace = state.require_guard().await?;
     if let Some(profile) = &personality {
         profile.validate(&backend)?;
@@ -110,12 +157,48 @@ pub async fn start_turn(
     {
         return Err(AppError::Agent("Invalid project check command".into()));
     }
+    let read_only = read_only.unwrap_or(false);
+    if read_only && !check.is_empty() {
+        return Err(AppError::Agent(
+            "Read-only investigation cannot run a project check command".into(),
+        ));
+    }
+    if read_only && backend != "codex" {
+        return Err(AppError::Agent(
+            "This harness does not enforce read-only investigation".into(),
+        ));
+    }
     let agent = state.agents.get(&backend)?;
     let cancel = CancellationToken::new();
     {
         let mut turns = state.turns.lock().expect("turns mutex poisoned");
-        if !turns.is_empty() {
-            return Err(AppError::Agent("Wait for the active turn to finish".into()));
+        let team = team_id
+            .as_deref()
+            .map(|id| state.teams.get(id))
+            .transpose()?;
+        if team
+            .as_ref()
+            .is_some_and(|team| team.root != workspace.root())
+        {
+            return Err(AppError::Agent(
+                "Team workspace changed; start a new run".into(),
+            ));
+        }
+        let active: Vec<_> = turns
+            .values()
+            .map(|turn| (turn.read_only, turn.team_id.as_deref()))
+            .collect();
+        if turns.contains_key(&turn_id)
+            || !crate::agent::teams::can_schedule(
+                &active,
+                team_id.as_deref(),
+                read_only,
+                team.as_ref().map_or(1, |team| team.limit),
+            )
+        {
+            return Err(AppError::Agent(
+                "Agent limit or single-writer scheduling prevents this turn from starting".into(),
+            ));
         }
         turns.insert(
             turn_id.clone(),
@@ -124,6 +207,10 @@ pub async fn start_turn(
                 agent: agent.clone(),
                 chat_id: chat_id.clone(),
                 harness: backend.clone(),
+                team_id: team_id.clone(),
+                read_only,
+                role: personality.as_ref().map(|p| p.role.clone()),
+                sink: on_event.clone(),
             },
         );
     }
@@ -134,10 +221,7 @@ pub async fn start_turn(
     // One request file per task, or per personality stage: the path is fixed for
     // the life of a reused harness process, so it must not change per turn.
     let requests_file = app.path().app_data_dir().ok().map(|dir| {
-        let key = personality
-            .as_ref()
-            .map(|profile| format!("personality-{}", profile.role))
-            .unwrap_or_else(|| chat_id.clone());
+        let key = chat_id.clone();
         crate::agent::requests::path_for(&dir, &key)
     });
     // Only when this launch is serving them: with the switch off, a turn's argv
@@ -146,11 +230,27 @@ pub async fn start_turn(
         .tools
         .enabled()
         .then(|| crate::tools::bridge(&state.tools))
-        .flatten();
+        .flatten()
+        .filter(|_| !read_only)
+        .map(|bridge| {
+            state.tools.scope_bridge(
+                bridge,
+                crate::tools::ToolScope {
+                    chat_id: chat_id.clone(),
+                    turn_id: turn_id.clone(),
+                    harness: backend.clone(),
+                    team_id: team_id.clone(),
+                    role: personality.as_ref().map(|p| p.role.clone()),
+                    root: workspace.root().to_path_buf(),
+                    active: true,
+                    sink: on_event.clone(),
+                },
+            )
+        });
     // The switch can be on while the shim is missing, which is how a dev build
     // silently hands every harness nothing. The turn still runs; it says why it
     // has no tools rather than letting the transcript look like a refusal.
-    if tools.is_none() && state.tools.enabled() {
+    if tools.is_none() && state.tools.enabled() && !read_only {
         let _ = on_event.send(AgentEvent::Notice {
             level: "error".into(),
             message: "Nova Desktop tools are unavailable in this build: the nova-tools shim was not found."
@@ -158,8 +258,61 @@ pub async fn start_turn(
         });
     }
     let state = state.inner().clone();
+    let destination = on_event.clone();
+    let permissions = state.permissions.clone();
+    let owner = turn_id.clone();
+    let responder = agent.clone();
+    let launched = std::time::Instant::now();
+    let first_text = std::sync::atomic::AtomicBool::new(true);
+    let on_event = Channel::new(move |body| {
+        let event: AgentEvent = match body {
+            tauri::ipc::InvokeResponseBody::Json(text) => serde_json::from_str(&text),
+            tauri::ipc::InvokeResponseBody::Raw(bytes) => serde_json::from_slice(&bytes),
+        }
+        .map_err(|error| tauri::Error::Anyhow(error.into()))?;
+        if matches!(
+            &event,
+            AgentEvent::MessageDelta { .. }
+                | AgentEvent::MessagePreview { .. }
+                | AgentEvent::FinalAnswerDelta { .. }
+                | AgentEvent::MessageFinal { .. }
+        ) && first_text.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            destination.send(AgentEvent::Timing {
+                phase: "firstVisibleText".into(),
+                ms: launched.elapsed().as_millis() as u64,
+            })?;
+        }
+        if let AgentEvent::ApprovalRequired {
+            interrupt_id, kind, ..
+        } = &event
+        {
+            // Render before auto-answering, so failures retain a retryable card.
+            permissions.register(
+                &owner,
+                interrupt_id,
+                kind,
+                responder.clone(),
+                destination.clone(),
+            );
+            destination.send(event.clone())?;
+            permissions.auto_answer(&owner, interrupt_id, kind);
+            return Ok(());
+        }
+        destination.send(event)
+    });
+    if read_only {
+        prompt.push_str(&format!("\n\nDesktop session: task {chat_id}, turn {turn_id}, harness {backend}. This is an enforced read-only investigation. Desktop tools and other MCP servers are withheld; return findings and evidence without editing the project."));
+    }
+    if tools.is_some() {
+        prompt.push_str(&format!("\n\nDesktop session: task {chat_id}, turn {turn_id}, harness {backend}. Use Desktop tools to manage visible tasks, files, browser panes and team activity when the user request calls for those actions. Tool discovery is not proof of invocation. "));
+        if team_id.is_some() {
+            prompt.push_str("This is an active team run. Nova may use team_delegate, team_follow_up, team_message and team_status to assign bounded work, address teammates and inspect outcomes. Delegated assignments execute after this coordinator turn returns. Return promptly after delegation; do not poll for work that cannot start yet. Workers send findings via handoffs or team_message. Only adapters enforcing read-only may investigate in parallel; other work runs with one editing turn at a time.");
+        }
+    }
     let req = TurnRequest {
         turn_id: turn_id.clone(),
+        read_only,
         prompt,
         workspace: Some(workspace.clone()),
         chat_id,
@@ -213,6 +366,8 @@ pub async fn start_turn(
                 }
             }
         }
+        state.permissions.finish(&turn_id);
+        state.tools.finish_scope(&turn_id);
         state
             .turns
             .lock()
@@ -249,14 +404,16 @@ pub async fn respond_approval(
     reply: InterruptReply,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    let agent = state
-        .turns
-        .lock()
-        .expect("turns mutex poisoned")
-        .get(&turn_id)
-        .map(|turn| turn.agent.clone())
-        .ok_or_else(|| AppError::Agent("This turn has already finished".into()))?;
-    agent.respond(interrupt_id, reply).await
+    state
+        .permissions
+        .respond(&turn_id, &interrupt_id, reply)
+        .await
+}
+
+#[tauri::command]
+pub async fn set_auto_approve(enabled: bool, state: State<'_, AppState>) -> Result<(), AppError> {
+    state.permissions.set_automatic(enabled).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -276,4 +433,45 @@ pub async fn agent_status(versions: bool, app: AppHandle) -> Vec<cli::AgentStatu
 #[tauri::command]
 pub async fn cancel_turn(turn_id: String, state: State<'_, AppState>) -> Result<bool, AppError> {
     Ok(state.cancel_turn(&turn_id))
+}
+
+#[tauri::command]
+pub async fn begin_team(
+    id: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let root = state.require_guard().await?.root().to_path_buf();
+    state.teams.begin(id, root, limit)
+}
+
+#[tauri::command]
+pub fn finish_team(id: String, state: State<'_, AppState>) {
+    state.teams.finish(&id);
+    let turns: Vec<_> = state
+        .turns
+        .lock()
+        .expect("turns mutex")
+        .iter()
+        .filter(|(_, turn)| turn.team_id.as_deref() == Some(&id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in turns {
+        state.cancel_turn(&id);
+    }
+}
+
+#[tauri::command]
+pub fn agent_capabilities(state: State<'_, AppState>) -> serde_json::Value {
+    let values: serde_json::Map<String, serde_json::Value> = cli::AGENTS
+        .iter()
+        .filter_map(|(id, _)| {
+            state
+                .agents
+                .get(id)
+                .ok()
+                .map(|agent| ((*id).into(), serde_json::json!(agent.capabilities())))
+        })
+        .collect();
+    serde_json::json!(values)
 }

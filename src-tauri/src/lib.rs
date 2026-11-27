@@ -20,7 +20,7 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::cli::{CliAgent, AGENTS};
+use crate::agent::cli::AGENTS;
 use crate::agent::local::LocalAgent;
 use crate::agent::nova::NovaAgent;
 use crate::agent::{AgentBackend, AgentRegistry, DEFAULT_BACKEND};
@@ -40,12 +40,18 @@ pub struct LiveTurn {
     pub agent: Arc<dyn AgentBackend>,
     pub chat_id: String,
     pub harness: String,
+    pub team_id: Option<String>,
+    pub read_only: bool,
+    pub role: Option<String>,
+    pub sink: agent::EventSink,
 }
 
 type LiveTurns = Arc<Mutex<HashMap<String, LiveTurn>>>;
 
 #[derive(Clone)]
 pub struct AppState {
+    permissions: agent::permissions::Permissions,
+    teams: agent::teams::Teams,
     guard: Arc<RwLock<Option<WorkspaceGuard>>>,
     /// Live turns by id. Cancelling the token makes the backend stop and its child
     /// processes die.
@@ -63,6 +69,7 @@ pub struct AppState {
     /// — so this holds the lock that keeps two replies from overlapping, and
     /// nothing else.
     speak: Arc<speak::engine::SpeakEngine>,
+    speech_jobs: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Live voice downloads, keyed by voice id.
     speak_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// The tool endpoint, its per-launch token and the message queue.
@@ -80,10 +87,12 @@ impl AppState {
         );
         agents.register("local", Arc::new(LocalAgent) as Arc<dyn AgentBackend>);
         for &(id, _) in AGENTS.iter().filter(|(id, _)| *id != DEFAULT_BACKEND) {
-            agents.register(id, Arc::new(CliAgent(id)));
+            agents.register(id, Arc::new(agent::protocol::InteractiveAgent::new(id)));
         }
 
         Self {
+            permissions: agent::permissions::Permissions::default(),
+            teams: agent::teams::Teams::default(),
             guard: Arc::new(RwLock::new(None)),
             turns: Arc::new(Mutex::new(HashMap::new())),
             procs: Arc::new(Mutex::new(HashMap::new())),
@@ -92,6 +101,7 @@ impl AppState {
             voice: Arc::new(voice::engine::VoiceEngine::default()),
             voice_downloads: Arc::new(Mutex::new(HashMap::new())),
             speak: Arc::new(speak::engine::SpeakEngine::default()),
+            speech_jobs: Arc::new(Mutex::new(HashMap::new())),
             speak_downloads: Arc::new(Mutex::new(HashMap::new())),
             tools: tools::ToolsState::default(),
         }
@@ -104,8 +114,12 @@ impl AppState {
     /// Stops every turn and child process. Called when the window closes and when
     /// the app exits, so closing Nova never orphans a running build.
     pub fn cancel_all(&self) {
-        for turn in self.turns.lock().expect("turns mutex poisoned").values() {
+        for (id, turn) in self.turns.lock().expect("turns mutex poisoned").iter() {
             turn.cancel.cancel();
+            self.permissions.finish(id);
+        }
+        for cancel in self.speech_jobs.lock().expect("speech jobs mutex").values() {
+            cancel.cancel();
         }
         // A closed window has nobody to answer the task tools and no pane to
         // drive, so the endpoint stops answering rather than serving half a
@@ -190,6 +204,8 @@ impl AppState {
         {
             Some(turn) => {
                 turn.cancel.cancel();
+                self.permissions.finish(turn_id);
+                self.tools.finish_scope(turn_id);
                 true
             }
             None => false,
@@ -224,7 +240,11 @@ pub fn run() {
         commands::agent::start_turn,
         commands::agent::cancel_turn,
         commands::agent::respond_approval,
+        commands::agent::set_auto_approve,
+        commands::agent::begin_team,
+        commands::agent::finish_team,
         commands::agent::agent_status,
+        commands::agent::agent_capabilities,
         commands::agent::prewarm_nova,
         agent::models::agent_models,
         commands::process::run_command,
@@ -272,6 +292,7 @@ pub fn run() {
         commands::speak::speak_cancel,
         commands::speak::speak_delete,
         commands::speak::speak_synthesize,
+        commands::speak::speak_stop,
         commands::launcher::set_quick_launcher,
         commands::launcher::open_launcher,
         commands::launcher::set_widget,

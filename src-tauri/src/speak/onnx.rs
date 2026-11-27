@@ -2,10 +2,8 @@
 //!
 //! Piper stays a child process (espeak-ng is GPLv3 and shipping it inside this
 //! executable would make the executable GPLv3). A voice whose weights are plain
-//! ONNX has no such constraint, so it runs here instead: one session per
-//! synthesis, built on the blocking pool, under the same lock Piper takes. That
-//! keeps one reply at a time, which matters more for an in-process engine than
-//! for a child process: two sessions would each get half the cores.
+//! ONNX has no such constraint, so it runs here instead: cached sessions built on the blocking pool, under the same lock Piper takes.
+//! That keeps synthesis serialized while reusing loaded weights between chunks.
 //!
 //! Everything here is synchronous CPU work on purpose. The command layer hands
 //! it to tokio::task::spawn_blocking, so a 15 MB graph and a few hundred ms of
@@ -298,7 +296,16 @@ pub fn kale(
             "there was nothing to read aloud".to_string(),
         ));
     }
-    let mut engine = Kale::load(dir, speaker)?;
+    type Loaded = ((std::path::PathBuf, Option<u32>), Kale);
+    static LOADED: std::sync::Mutex<Option<Loaded>> = std::sync::Mutex::new(None);
+    let mut loaded = LOADED
+        .lock()
+        .map_err(|_| AppError::Speak("Speech engine lock poisoned".into()))?;
+    let key = (dir.to_path_buf(), speaker);
+    if loaded.as_ref().is_none_or(|(previous, _)| previous != &key) {
+        *loaded = Some((key, Kale::load(dir, speaker)?));
+    }
+    let engine = &mut loaded.as_mut().expect("engine loaded").1;
     let sentences = engine.frontend.ids(text);
     if sentences.is_empty() {
         return Err(AppError::Speak(

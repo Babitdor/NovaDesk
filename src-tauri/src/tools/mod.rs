@@ -20,27 +20,12 @@
 //!
 //! # Which harnesses can actually call these
 //!
-//! Verified flag by flag against each CLI's own --help on the machine this was
-//! written on, not assumed from documentation:
-//!
-//! - claude: argv. --mcp-config takes JSON files or a JSON string, and
-//!   --allowedTools mcp__nova-desktop__* pre-approves this server's tools,
-//!   because --print has nobody to answer a permission prompt.
-//! - codex: argv. -c mcp_servers.<name>.command="..." shows up in codex mcp
-//!   list, and -c mcp_servers.<name>.default_tools_approval_mode="approve"
-//!   is what lets a call through at all: the base argv runs with
-//!   --ask-for-approval never, and every MCP call is otherwise refused with
-//!   "tool call requires approval, but approval policy is never".
-//! - opencode: inline env. OpenCode 2 gets a private server and the v2 schema.
-//! - pi: an extension registers the server for the session.
-//! - commandcode: opt-in registration in the harness's private project config.
-//!   Each turn exports the current credentials path for that entry.
-//! - hermes: the active Hermes profile owns its configuration.
-//! - nova: a managed entry in the workspace's own `.nova/mcp.json`, written
-//!   when a session starts (see [nova_entry]). The token never enters the
-//!   config — it lives in the per-launch credentials file the entry's
-//!   `NOVA_TOOLS_FILE` points at — so the old "a saved entry would be stale"
-//!   reasoning no longer applies.
+//! Interactive adapters negotiate permissions before exposing tools: Claude and
+//! Codex receive launch configuration, Pi registers through its RPC extension,
+//! and OpenCode, Hermes, and current CommandCode receive ACP session servers.
+//! Legacy CommandCode uses opt-in project registration and its permission mod.
+//! Nova uses a managed workspace entry plus an in-memory pipe configuration.
+//! Credentials stay in private per-launch files rather than command arguments.
 //!
 //! Settings keeps configuration support separate from authenticated tool discovery.
 
@@ -71,6 +56,8 @@ pub mod skills;
 pub enum Injection {
     /// The per-turn argv carries the server definition.
     Flags,
+    /// An ACP session receives the MCP server configuration.
+    Session,
     /// One inline configuration document in an environment variable.
     Env,
     /// A managed entry in the workspace's own config file, written when a
@@ -86,7 +73,7 @@ impl Injection {
     /// True when this turn can hand the harness the server without writing the
     /// user's configuration.
     pub fn per_turn(self) -> bool {
-        matches!(self, Injection::Flags | Injection::Env)
+        matches!(self, Injection::Flags | Injection::Env | Injection::Session)
     }
 
     /// True when a session on this harness can call the tools at all: the
@@ -96,7 +83,7 @@ impl Injection {
     pub fn callable(self) -> bool {
         matches!(
             self,
-            Injection::Flags | Injection::Env | Injection::ProjectFile
+            Injection::Flags | Injection::Env | Injection::Session | Injection::ProjectFile
         )
     }
 
@@ -123,9 +110,10 @@ impl Injection {
 pub fn injection(harness: &str) -> Injection {
     match harness {
         "claude" | "codex" | "pi" => Injection::Flags,
-        "opencode" => Injection::Env,
+        "opencode" => Injection::Session,
         "nova" => Injection::ProjectFile,
-        "commandcode" | "hermes" => Injection::ConfigFile,
+        "commandcode" => Injection::Session,
+        "hermes" => Injection::Session,
         _ => Injection::None,
     }
 }
@@ -172,6 +160,10 @@ const PATH_ONLY: &str = r#"{"type":"object","properties":{"path":{"type":"string
 /// The catalogue. Everything is served from here; nothing else may invent a
 /// tool name.
 pub const TOOLS: &[Tool] = &[
+    Tool { id:"team_delegate", title:"Delegate team work", description:"Nova coordinator: queue a bounded assignment in this active team run. Investigation overlaps only when the selected adapter enforces read-only. Assignments run after the current coordinator turn returns.", group:Group::Tasks, schema:r#"{"type":"object","properties":{"role":{"type":"string","enum":["nora","serena","ralph"]},"task":{"type":"string","maxLength":12000},"investigate":{"type":"boolean"}},"required":["role","task"],"additionalProperties":false}"#, handler:Handler::Native, requires_window:true },
+    Tool { id:"team_follow_up", title:"Request follow-up work", description:"Nova coordinator: queue follow-up work for a team member, using the previous handoffs. Returns an assignment identity.", group:Group::Tasks, schema:r#"{"type":"object","properties":{"role":{"type":"string","enum":["nora","serena","ralph"]},"task":{"type":"string","maxLength":12000},"investigate":{"type":"boolean"}},"required":["role","task"],"additionalProperties":false}"#, handler:Handler::Native, requires_window:true },
+    Tool { id:"team_message", title:"Message a team member", description:"Send an addressed message within the active team run. Messages become context on the recipient next turn; they do not interrupt an editing turn.", group:Group::Tasks, schema:r#"{"type":"object","properties":{"to":{"type":"string","enum":["nova","nora","serena","ralph"]},"text":{"type":"string","maxLength":8000}},"required":["to","text"],"additionalProperties":false}"#, handler:Handler::Native, requires_window:true },
+    Tool { id:"team_status", title:"Inspect team assignments", description:"Inspect active-run assignments, roles, harnesses, handoffs and outcomes.", group:Group::Tasks, schema:r#"{"type":"object","properties":{},"additionalProperties":false}"#, handler:Handler::Native, requires_window:true },
     // --- Tasks: answered by the webview, from the same chats the board shows.
     Tool {
         id: "list_tasks",
@@ -523,6 +515,8 @@ pub struct ToolsState {
 }
 
 struct ToolsInner {
+    scopes: Mutex<HashMap<String, ToolScope>>,
+    activity: Mutex<VecDeque<ToolActivity>>,
     /// Bearer token for this launch. Never written to a command line, only to a
     /// child's environment.
     token: String,
@@ -541,6 +535,98 @@ struct ToolsInner {
     disabled_skills: Mutex<Vec<String>>,
 }
 
+#[derive(Clone)]
+pub struct ToolScope {
+    pub chat_id: String,
+    pub turn_id: String,
+    pub harness: String,
+    pub team_id: Option<String>,
+    pub role: Option<String>,
+    pub root: std::path::PathBuf,
+    pub active: bool,
+    pub sink: crate::agent::EventSink,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolActivity {
+    pub name: String,
+    pub harness: String,
+    pub turn_id: String,
+    pub ok: bool,
+    pub duration_ms: u64,
+}
+
+impl ToolsState {
+    pub fn scope_bridge(&self, mut bridge: Bridge, scope: ToolScope) -> Bridge {
+        let mut scopes = self.inner.scopes.lock().expect("tool scopes mutex");
+        let token = scopes
+            .iter()
+            .find(|(_, old)| {
+                old.chat_id == scope.chat_id
+                    && old.root == scope.root
+                    && old.harness == scope.harness
+                    && old.team_id == scope.team_id
+                    && old.role == scope.role
+            })
+            .map(|(token, _)| token.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if !scopes
+            .get(&token)
+            .is_some_and(|old| old.active && !scope.active)
+        {
+            scopes.insert(token.clone(), scope);
+        }
+        bridge.token = token;
+        bridge
+    }
+    pub fn scope(&self, token: &str) -> Option<ToolScope> {
+        self.inner
+            .scopes
+            .lock()
+            .expect("tool scopes mutex")
+            .get(token)
+            .cloned()
+    }
+    pub fn scope_for_turn(&self, turn: &str) -> Option<ToolScope> {
+        self.inner
+            .scopes
+            .lock()
+            .expect("tool scopes mutex")
+            .values()
+            .find(|scope| scope.active && scope.turn_id == turn)
+            .cloned()
+    }
+    pub fn finish_scope(&self, turn: &str) {
+        for scope in self
+            .inner
+            .scopes
+            .lock()
+            .expect("tool scopes mutex")
+            .values_mut()
+            .filter(|scope| scope.turn_id == turn)
+        {
+            scope.active = false;
+        }
+    }
+    pub fn activity(&self) -> Vec<ToolActivity> {
+        self.inner
+            .activity
+            .lock()
+            .expect("tool activity mutex")
+            .iter()
+            .cloned()
+            .collect()
+    }
+    pub fn record_activity(&self, activity: ToolActivity) {
+        let mut rows = self.inner.activity.lock().expect("tool activity mutex");
+        if rows.len() == 100 {
+            rows.pop_front();
+        }
+        rows.push_back(activity);
+    }
+}
+
 impl Default for ToolsState {
     fn default() -> Self {
         Self::new(true)
@@ -556,6 +642,8 @@ impl ToolsState {
                     uuid::Uuid::new_v4().simple(),
                     uuid::Uuid::new_v4().simple()
                 ),
+                scopes: Mutex::new(HashMap::new()),
+                activity: Mutex::new(VecDeque::new()),
                 endpoint: OnceLock::new(),
                 enabled: AtomicBool::new(enabled),
                 listed_tools: Mutex::new(std::collections::HashSet::new()),
@@ -862,9 +950,7 @@ mod tests {
             "the entry is per session, not per turn"
         );
         assert_eq!(injection("pi"), Injection::Flags);
-        for id in ["commandcode", "hermes"] {
-            assert_eq!(injection(id), Injection::ConfigFile, "{id}");
-            assert!(!injection(id).callable(), "{id} stays config-file only");
-        }
+        assert_eq!(injection("commandcode"), Injection::Session);
+        assert!(injection("commandcode").callable());
     }
 }

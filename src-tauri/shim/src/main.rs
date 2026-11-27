@@ -89,6 +89,7 @@ fn main() {
                 // Answering in-band keeps the harness moving: a transport that
                 // silently drops a request looks like a hung agent.
                 let id = id_of(message);
+                let reason = json_escape(&reason);
                 format!(
                     r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":-32000,"message":"{reason}"}}}}"#
                 )
@@ -104,6 +105,19 @@ fn main() {
             break;
         }
     }
+}
+
+fn json_escape(text: &str) -> String {
+    let mut result = String::new();
+    for c in text.chars() {
+        match c {
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            c if c.is_control() => result.push_str(&format!("\\u{:04x}", c as u32)),
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 /// The id of a request, or null: a notification has none, and an error for a
@@ -226,6 +240,14 @@ fn body_of(response: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_errors_escape_json_quotes_backslashes_and_newlines() {
+        assert_eq!(
+            json_escape("denied: \"inactive\"\nC:\\temp"),
+            r#"denied: \"inactive\"\u000aC:\\temp"#
+        );
+    }
 
     #[test]
     fn only_loopback_targets_are_accepted() {

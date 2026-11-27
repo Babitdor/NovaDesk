@@ -21,6 +21,7 @@ type Props = {
   onNew: () => void
   onOpenFolder: () => void
   onSettings: () => void
+  onTeams: () => void
   folderBusy: boolean
   onWidth: (width: number) => void
   onRename: (id: string, title: string) => void
@@ -41,6 +42,7 @@ export function Sidebar({
   onNew,
   onOpenFolder,
   onSettings,
+  onTeams,
   folderBusy,
   onWidth,
   onRename,
@@ -119,6 +121,7 @@ export function Sidebar({
         </button>
       </div>
 
+      <button type="button" className="new-task" onClick={onTeams}>◇ Teams</button>
       <button type="button" className="new-task" onClick={onNew}>
         + New task
       </button>

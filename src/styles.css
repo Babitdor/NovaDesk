@@ -2896,7 +2896,7 @@ code {
   width: min(780px, 94vw);
   height: min(86vh, 820px);
 }
-.integrations-sheet:popover-open {
+.integrations-sheet[open] {
   display: flex;
   flex-direction: column;
 }
@@ -3540,15 +3540,8 @@ html[data-zoom='fallback'] #root { zoom: var(--ui-scale, 1); }
 .settings-presets button small { margin-top: 1px; }
 
 /* Crash report dialog: above every plate, keyboard-reachable, dismissible. */
-.crash-dialog {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: color-mix(in srgb, #000 62%, transparent);
-}
+.crash-dialog { padding: 0; border: 0; background: transparent; color: var(--ink); max-width: min(680px, 92vw); }
+.crash-dialog::backdrop { background: color-mix(in srgb, #000 62%, transparent); }
 .crash-card {
   width: min(680px, 100%);
   max-height: min(78vh, 620px);
@@ -3862,3 +3855,23 @@ html[data-window] #root { margin: 0; background: transparent; }
 .crew-role-toggle .crew-portrait { width: 16px; height: 16px; }
 .crew-role-toggle input { accent-color: var(--accent); }
 
+
+/* Dialog display is conditional so mounting Tools settings cannot reveal the sheet. */
+dialog:modal { overscroll-behavior: contain; }
+dialog::backdrop { overflow: hidden; overscroll-behavior: contain; }
+.integrations-sheet:not([open]) { display: none; }
+.notices-head h1 { margin: 0; font-size: 15px; }
+.teams-workspace { padding: 12px 20px; border-bottom: 1px solid var(--accent-line); }
+.teams-workspace header { display: flex; align-items: baseline; gap: 14px; }
+.teams-workspace h1 { margin: 0 0 8px; font-size: 20px; }
+.teams-workspace header span { color: var(--muted); font-size: 12px; }
+.teams-workspace details { max-height: 40vh; overflow: auto; }
+.teams-workspace summary { cursor: pointer; padding: 4px 0; }
+.teams-workspace .crew-profile { padding: 12px; }
+.team-stage-name small { display: block; color: var(--muted); font-size: 10px; }
+.playback { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.approval-owner { padding: 8px 16px 0; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .teams-workspace, .team-plan { animation: team-enter 140ms ease-out; }
+  @keyframes team-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+}

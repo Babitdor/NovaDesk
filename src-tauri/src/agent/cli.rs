@@ -268,15 +268,22 @@ fn uv_script_python(path: &Path) -> Option<PathBuf> {
 }
 
 pub fn nova_personality(profile: &super::Personality) -> Result<Command, AppError> {
+    nova_desktop(Some(profile))
+}
+
+pub fn nova_desktop(profile: Option<&super::Personality>) -> Result<Command, AppError> {
     let checkout = nova_checkout();
     let source = (checkout.is_absolute() && checkout.join("novacode_cli/entrypoint.py").is_file())
         .then_some(checkout);
     let mut command = nova_python()?;
     command
         .args(["-I", "-B", "-c", include_str!("personality.py")])
-        .arg(source.as_deref().unwrap_or_else(|| Path::new("")))
-        .env("NOVA_DESKTOP_PERSONALITY", &profile.role)
-        .env("NOVA_DESKTOP_SYSTEM_PROMPT", &profile.system_prompt);
+        .arg(source.as_deref().unwrap_or_else(|| Path::new("")));
+    if let Some(profile) = profile {
+        command
+            .env("NOVA_DESKTOP_PERSONALITY", &profile.role)
+            .env("NOVA_DESKTOP_SYSTEM_PROMPT", &profile.system_prompt);
+    }
     Ok(command)
 }
 
@@ -356,8 +363,10 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
                         // line that carries one beats merely being last.
                         let numbered = lines
                             .iter()
-                            .rev()
-                            .find(|line| version_number(line).is_some());
+                            .find(|line| {
+                                line.to_lowercase().contains(id) && version_number(line).is_some()
+                            })
+                            .or_else(|| lines.iter().find(|line| version_number(line).is_some()));
                         numbered.or(lines.last()).map(|line| clip(line.trim(), 150))
                     })
                 } else {
@@ -436,10 +445,10 @@ async fn latest_version(id: &str) -> Option<String> {
 
 pub struct CliAgent(pub &'static str);
 
-struct TurnFile(PathBuf);
+pub(super) struct TurnFile(pub(super) PathBuf);
 
 impl TurnFile {
-    fn write(prefix: &str, suffix: &str, body: &[u8]) -> Result<Self, AppError> {
+    pub(super) fn write(prefix: &str, suffix: &str, body: &[u8]) -> Result<Self, AppError> {
         use std::io::Write;
         let path =
             std::env::temp_dir().join(format!("nova-{prefix}-{}{suffix}", uuid::Uuid::new_v4()));
@@ -467,6 +476,15 @@ impl Drop for TurnFile {
     }
 }
 
+/// CommandCode spawns MCP commands through cmd.exe on Windows.
+pub(crate) fn commandcode_mcp_command(path: &Path) -> String {
+    if cfg!(windows) {
+        format!("\"{}\"", path.display())
+    } else {
+        path.display().to_string()
+    }
+}
+
 /// The variable a harness passes to the shim: a path, never a secret.
 pub const TOOLS_FILE_ENV: &str = "NOVA_TOOLS_FILE";
 
@@ -476,18 +494,13 @@ pub const TOOLS_FILE_ENV: &str = "NOVA_TOOLS_FILE";
 /// The alternative is argv, and a command line is readable by every process on
 /// the machine and ends up in a crash report. The shim reads the file (see
 /// src/bin/nova-tools.rs), so a harness only ever carries its path.
-fn bridge_file(bridge: &crate::tools::Bridge, harness: &str) -> Result<TurnFile, AppError> {
+pub(super) fn bridge_file(
+    bridge: &crate::tools::Bridge,
+    harness: &str,
+) -> Result<TurnFile, AppError> {
     let body = json!({ "url": bridge.url, "token": bridge.token, "harness": harness }).to_string();
     TurnFile::write("tools", ".json", body.as_bytes())
 }
-
-const PI_TOOLS: &[u8] = br#"export default function (pi) {
-  if (typeof pi.registerMcpServer !== 'function') return;
-  pi.registerMcpServer('nova-desktop', {
-    type: 'stdio', command: process.env.NOVA_TOOLS_SHIM,
-    env: { NOVA_TOOLS_FILE: process.env.NOVA_TOOLS_FILE }, exposure: 'direct',
-  });
-}"#;
 
 /// OpenCode takes one inline configuration document, so the personality and the
 /// tool server have to be merged instead of both setting the variable.
@@ -540,6 +553,7 @@ fn opencode_config(
             config["mcp"]["nova-desktop"] = server;
         }
     }
+    config["permission"] = json!({"*":"deny"});
     Ok(config.to_string())
 }
 
@@ -600,18 +614,19 @@ impl AgentBackend for CliAgent {
                 credentials.as_ref().map(|file| file.0.as_path()),
             );
             let mut process = command(self.0)?;
-            let _pi_extension =
-                if let ("pi", Some(bridge), Some(file)) = (self.0, &req.tools, &credentials) {
-                    let extension = TurnFile::write("pi-tools", ".mjs", PI_TOOLS)?;
+            let _pi_extension = if self.0 == "pi" {
+                let extension =
+                    TurnFile::write("pi-tools", ".mjs", include_bytes!("pi-desktop.mjs"))?;
+                process.arg("--extension").arg(&extension.0);
+                if let (Some(bridge), Some(file)) = (&req.tools, &credentials) {
                     process
-                        .arg("--extension")
-                        .arg(&extension.0)
                         .env(TOOLS_FILE_ENV, &file.0)
                         .env("NOVA_TOOLS_SHIM", &bridge.shim);
-                    Some(extension)
-                } else {
-                    None
-                };
+                }
+                Some(extension)
+            } else {
+                None
+            };
             if let ("commandcode", Some(file)) = (self.0, &credentials) {
                 process.env(TOOLS_FILE_ENV, &file.0);
             }
@@ -644,7 +659,7 @@ impl AgentBackend for CliAgent {
                     _ => {}
                 }
             }
-            if self.0 == "opencode" && (req.personality.is_some() || credentials.is_some()) {
+            if self.0 == "opencode" {
                 let v2 = opencode_v2().await;
                 if v2 {
                     process.arg("--standalone");
@@ -674,6 +689,7 @@ impl AgentBackend for CliAgent {
                 .spawn()
                 .map_err(|err| AppError::Agent(format!("Could not start {}: {err}", self.0)))?;
 
+            let _job = super::process::ChildJob::attach(&child)?;
             let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
             let stderr = child.stderr.take().expect("piped stderr");
             let diagnostics = tokio::spawn(async move {
@@ -768,7 +784,11 @@ impl AgentBackend for CliAgent {
     }
 }
 
-fn arguments(id: &str, req: &TurnRequest, credentials: Option<&Path>) -> (Vec<String>, bool) {
+pub(super) fn arguments(
+    id: &str,
+    req: &TurnRequest,
+    credentials: Option<&Path>,
+) -> (Vec<String>, bool) {
     let session = req.session.as_deref().filter(|id| valid_session(id));
     let mut args: Vec<String> = match id {
         "pi" => vec!["--mode", "json", "--print", "--session-id", &req.chat_id],
@@ -787,7 +807,7 @@ fn arguments(id: &str, req: &TurnRequest, credentials: Option<&Path>) -> (Vec<St
             "--json",
             "--skip-git-repo-check",
             "-c",
-            "sandbox_mode=\"workspace-write\"",
+            "sandbox_mode=\"read-only\"",
         ],
         "opencode" => vec!["run", "--format", "json"],
         "commandcode" => vec![
@@ -839,14 +859,6 @@ fn arguments(id: &str, req: &TurnRequest, credentials: Option<&Path>) -> (Vec<St
                     }
                 })
                 .to_string(),
-                // --print cannot answer a permission prompt, so an MCP tool
-                // call that is not pre-approved is refused outright. The
-                // allowlist entry names the server segment literally and
-                // wildcards only the tool: mcp__<server>__* is the one shape
-                // Claude Code accepts for "every tool on this server", and a
-                // bare mcp__<server> is not a rule it recognises.
-                "--allowedTools".to_owned(),
-                "mcp__nova-desktop__*".to_owned(),
             ]),
             "codex" => args.extend([
                 "-c".to_owned(),
@@ -866,7 +878,7 @@ fn arguments(id: &str, req: &TurnRequest, credentials: Option<&Path>) -> (Vec<St
                 // its values are auto, prompt, writes and approve, and only
                 // approve answers the call outright.
                 "-c".to_owned(),
-                format!("{server}.default_tools_approval_mode=\"approve\""),
+                format!("{server}.default_tools_approval_mode=\"prompt\""),
             ]),
             _ => {}
         }
@@ -939,15 +951,15 @@ fn clip(s: &str, limit: usize) -> String {
 }
 
 #[derive(Default)]
-struct Frames {
+pub(super) struct Frames {
     sent: bool,
     cancelled: bool,
-    failure: Option<String>,
+    pub(super) failure: Option<String>,
     session: Option<String>,
     tools: HashMap<String, VecDeque<String>>,
 }
 
-fn handle_frame(id: &str, frame: &Value, sink: &EventSink, state: &mut Frames) {
+pub(super) fn handle_frame(id: &str, frame: &Value, sink: &EventSink, state: &mut Frames) {
     let kind = frame["type"].as_str().unwrap_or_default();
     let sent = &mut state.sent;
     let failure = &mut state.failure;
@@ -1197,6 +1209,17 @@ mod tests {
     use crate::events::testutil::collect_events;
 
     #[test]
+    fn commandcode_mcp_paths_survive_its_windows_shell() {
+        let path = Path::new("B:/Project with spaces/nova-tools.exe");
+        let command = commandcode_mcp_command(path);
+        if cfg!(windows) {
+            assert_eq!(command, "\"B:/Project with spaces/nova-tools.exe\"");
+        } else {
+            assert_eq!(command, path.display().to_string());
+        }
+    }
+
+    #[test]
     fn resolves_the_python_used_by_a_uv_script_launcher() {
         let root = crate::testtmp::TempDir::new("uv-launcher");
         let launcher = root.path().join("nova.exe");
@@ -1217,6 +1240,7 @@ mod tests {
     #[test]
     fn model_and_effort_reach_the_harness() {
         let request = TurnRequest {
+            read_only: false,
             turn_id: "turn".into(),
             prompt: "Hello".into(),
             workspace: None,
@@ -1246,6 +1270,7 @@ mod tests {
     #[test]
     fn tools_change_the_argv_only_when_a_bridge_is_present() {
         let mut request = TurnRequest {
+            read_only: false,
             turn_id: "turn".into(),
             prompt: "Hello".into(),
             workspace: None,
@@ -1279,11 +1304,8 @@ mod tests {
         let (claude, _) = arguments("claude", &request, Some(credentials));
         assert!(claude.iter().any(|arg| arg == "--mcp-config"));
         assert!(claude.iter().any(|arg| arg.contains("NOVA_TOOLS_FILE")));
-        // --print cannot answer a permission prompt, so the server's tools are
-        // pre-approved; without this every MCP call comes back denied.
-        assert!(claude
-            .windows(2)
-            .any(|pair| pair == ["--allowedTools", "mcp__nova-desktop__*"]));
+        // Compatibility mode must not silently preapprove Desktop tools.
+        assert!(!claude.iter().any(|arg| arg == "--allowedTools"));
         assert!(
             !claude.iter().any(|arg| arg.contains("secret-token")),
             "the token must not reach a command line"
@@ -1298,7 +1320,7 @@ mod tests {
         // Without this, --ask-for-approval never makes codex refuse each call.
         assert!(codex
             .iter()
-            .any(|arg| arg == "mcp_servers.nova_desktop.default_tools_approval_mode=\"approve\""));
+            .any(|arg| arg == "mcp_servers.nova_desktop.default_tools_approval_mode=\"prompt\""));
         assert!(!codex.iter().any(|arg| arg.contains("secret-token")));
 
         // A harness that only reads its own config file is offered nothing, even
@@ -1315,6 +1337,7 @@ mod tests {
     #[test]
     fn personality_instructions_are_separate_from_the_user_prompt() {
         let mut request = TurnRequest {
+            read_only: false,
             turn_id: "turn".into(),
             prompt: "Find the caller".into(),
             workspace: None,

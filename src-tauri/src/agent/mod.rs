@@ -2,7 +2,11 @@ pub mod cli;
 pub mod local;
 pub mod models;
 pub mod nova;
+pub mod permissions;
+pub mod process;
+pub mod protocol;
 pub mod requests;
+pub mod teams;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -28,6 +32,7 @@ pub const DEFAULT_BACKEND: &str = "nova";
 /// backend never resolves paths, tokens or capabilities itself.
 pub struct TurnRequest {
     pub turn_id: String,
+    pub read_only: bool,
     pub prompt: String,
     pub workspace: Option<WorkspaceGuard>,
     pub chat_id: String,
@@ -76,6 +81,9 @@ impl Personality {
 /// trait plus one `register` call in `AppState::new`; no command and no React
 /// component changes.
 pub trait AgentBackend: Send + Sync {
+    fn capabilities(&self) -> protocol::Capabilities {
+        protocol::Capabilities::default()
+    }
     /// Drives one turn. Must return promptly once `cancel` fires and must not
     /// outlive it. Must not emit `TurnFinished`: `drive_turn` does that once.
     fn start<'a>(
@@ -110,7 +118,7 @@ pub trait AgentBackend: Send + Sync {
     /// Spawns a warm session for the workspace so the first turn skips the
     /// boot. Only called for trusted workspaces; backends without a persistent
     /// process keep this no-op.
-    fn prewarm<'a>(&'a self, _root: &'a std::path::Path) -> BoxFut<'a, Result<(), AppError>> {
+    fn prewarm<'a>(&'a self, _req: TurnRequest) -> BoxFut<'a, Result<(), AppError>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -141,7 +149,11 @@ pub async fn drive_turn(
         }
     };
     if let Some(path) = &requests_file {
-        for request in requests::read(path) {
+        for request in if reason == FinishReason::Completed {
+            requests::read(path)
+        } else {
+            Vec::new()
+        } {
             let event = match request {
                 requests::Request::Wakeup {
                     prompt,

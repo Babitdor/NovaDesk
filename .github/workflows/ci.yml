@@ -33,6 +33,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Frontend tests
+        run: node --experimental-strip-types --test src/lib/*.test.ts
+
       # tsc -b && vite build: the same gate the Tauri beforeBuildCommand runs, so a
       # type error fails here instead of halfway through a Rust build.
       - name: Typecheck and bundle
@@ -75,6 +78,9 @@ jobs:
       # source, and proves it compiles on the target platform.
       - name: Build the tool shim
         run: npm run tools:shim -- --debug
+
+      - name: Nova bootstrap tests
+        run: python scripts/test-nova-bootstrap.py
 
       - name: Format
         working-directory: src-tauri

@@ -40,6 +40,8 @@ const CLEAR_TIMEOUT: Duration = Duration::from_secs(10);
 /// across turns. Frame catalogue: `novacode_cli/headless/pipe.py`.
 #[derive(Default)]
 pub struct NovaAgent {
+    ready: std::sync::atomic::AtomicBool,
+    steering: std::sync::atomic::AtomicBool,
     /// One session, one turn at a time: the lock is held for the whole turn, so
     /// a second prompt queues behind the first instead of interleaving frames.
     session: Mutex<VecDeque<(String, Session)>>,
@@ -66,6 +68,7 @@ struct SteerRequest {
 struct Session {
     /// `kill_on_drop` is armed: dropping the session ends the agent process.
     child: Child,
+    _job: super::process::ChildJob,
     stdin: Arc<Mutex<ChildStdin>>,
     lines: mpsc::Receiver<String>,
     cwd: String,
@@ -74,6 +77,9 @@ struct Session {
     root: std::path::PathBuf,
     model_override: Option<String>,
     supports_steer: bool,
+    tools_file: Option<PathBuf>,
+    startup_ms: u64,
+    requests_file: Option<PathBuf>,
 }
 
 enum Frame {
@@ -97,15 +103,25 @@ impl Session {
         trust_workspace: bool,
         personality: Option<&Personality>,
         requests_file: Option<&Path>,
+        tools: Option<&crate::tools::Bridge>,
     ) -> Result<Self, AppError> {
         // Debug builds time the boot: "slow to reply" is a number, and this is
         // the half of it the app can act on.
         let booted_at = std::time::Instant::now();
         let mut command = match personality {
             Some(profile) => super::cli::nova_personality(profile)?,
+            None if tools.is_some() && std::env::var_os("NOVA_BIN").is_none() => {
+                super::cli::nova_desktop(None)?
+            }
             None => super::cli::command("nova")?,
         };
         command.args(["--mode", "pipe"]).env("NO_COLOR", "1");
+        if let Some(bridge) = tools {
+            let credentials = crate::tools::nova_entry::launch_credentials(bridge)?;
+            command
+                .env("NOVA_DESKTOP_MCP_FILE", credentials)
+                .env("NOVA_TOOLS_SHIM", &bridge.shim);
+        }
         // The documented drop point for agent-originated requests. Passing it is
         // the whole contract: a harness that ignores the variable is unaffected.
         if let Some(path) = requests_file {
@@ -128,6 +144,8 @@ impl Session {
             .spawn()
             .map_err(|err| AppError::Agent(format!("Could not start Nova: {err}")))?;
 
+        let job = super::process::ChildJob::attach(&child)?;
+        let startup_ms = booted_at.elapsed().as_millis() as u64;
         let stdin = child
             .stdin
             .take()
@@ -188,6 +206,7 @@ impl Session {
         let stdin = Arc::new(Mutex::new(stdin));
         let mut session = Self {
             child,
+            _job: job,
             stdin: Arc::clone(&stdin),
             lines,
             cwd: root.display().to_string(),
@@ -196,6 +215,9 @@ impl Session {
             root: root.to_path_buf(),
             model_override: model,
             supports_steer: false,
+            tools_file: crate::tools::nova_entry::workspace_credentials(root),
+            startup_ms,
+            requests_file: requests_file.map(Path::to_path_buf),
         };
 
         // Nothing else is accepted before `ready`, so wait for it explicitly
@@ -507,6 +529,16 @@ impl NovaAgent {
 }
 
 impl AgentBackend for NovaAgent {
+    fn capabilities(&self) -> super::protocol::Capabilities {
+        let ready = self.ready.load(std::sync::atomic::Ordering::SeqCst);
+        super::protocol::Capabilities {
+            streaming: ready,
+            permissions: ready,
+            session_reuse: ready,
+            steering: ready && self.steering.load(std::sync::atomic::Ordering::SeqCst),
+            ..Default::default()
+        }
+    }
     fn start<'a>(
         &'a self,
         req: TurnRequest,
@@ -514,6 +546,7 @@ impl AgentBackend for NovaAgent {
         cancel: CancellationToken,
     ) -> BoxFut<'a, Result<FinishReason, AppError>> {
         Box::pin(async move {
+            let turn_started = std::time::Instant::now();
             let slash = req.prompt.trim_start().starts_with('/');
             let pid = req.turn_id;
             let prompt = json!({ "type": "prompt", "id": pid, "content": req.prompt });
@@ -528,35 +561,37 @@ impl AgentBackend for NovaAgent {
                 .ok_or(AppError::NoWorkspace)?
                 .root()
                 .to_path_buf();
+            let mut guard = tokio::select! { _ = cancel.cancelled() => return Ok(FinishReason::Cancelled), guard = self.session.lock() => guard };
+
             // The managed entry has to exist before the child boots. When the
             // workspace cannot take it (unwritable, or a config this code
             // cannot parse), the turn continues without the desktop tools and
             // the reason lands in the transcript, rather than the session
             // silently promising tools it cannot reach.
+            if req.tools.is_none() && self.injected.lock().expect("injected mutex").remove(&root) {
+                crate::tools::nova_entry::remove_workspace_entry(&root);
+            }
             if let Some(bridge) = req.tools.as_ref() {
-                let already = self
-                    .injected
-                    .lock()
-                    .expect("injected mutex poisoned")
-                    .contains(&root);
-                if !already {
-                    if let Err(error) = self.write_injection(&root, bridge) {
-                        let _ = sink.send(AgentEvent::Notice {
-                            level: "error".to_string(),
-                            message: format!(
-                                "Nova Desktop tools are not available in this session: {error}"
-                            ),
-                        });
-                    }
+                if let Err(error) = self.write_injection(&root, bridge) {
+                    let _ = sink.send(AgentEvent::Notice {
+                        level: "error".into(),
+                        message: format!("Desktop tools are unavailable: {error}"),
+                    });
                 }
             }
-            let mut guard = self.session.lock().await;
+            let tools_file = req
+                .tools
+                .as_ref()
+                .map(crate::tools::nova_entry::launch_credentials)
+                .transpose()?;
+
             // Chat turns reuse their chat's session. Personality turns reuse the
             // role's warm process — the conversation is reset below, so each
             // stage still starts with a clean context but pays no boot.
             let key = match &req.personality {
                 Some(profile) => format!(
-                    "personality:{}:{}:{}",
+                    "personality:{}:{}:{}:{}",
+                    req.chat_id,
                     profile.role,
                     root.display(),
                     req.model.as_deref().unwrap_or("")
@@ -568,7 +603,12 @@ impl AgentBackend for NovaAgent {
                 .position(|(id, _)| id == &key)
                 .and_then(|index| guard.remove(index))
                 .map(|(_, session)| session)
-                .filter(|session| session.root == root && session.model_override == req.model);
+                .filter(|session| {
+                    session.root == root
+                        && session.model_override == req.model
+                        && session.tools_file == tools_file
+                        && session.requests_file == req.requests_file
+                });
             let previous = if let Some(mut session) = previous {
                 matches!(session.child.try_wait(), Ok(None)).then_some(session)
             } else {
@@ -582,14 +622,17 @@ impl AgentBackend for NovaAgent {
             // session, which is the only turn that owes the next new chat a
             // replacement. Booting one after every turn would put an eight-
             // second Nova start behind the reply the user is already typing.
-            let mut spent_prewarm = false;
+
             if previous.is_none() && req.personality.is_none() && req.model.is_none() {
                 let prewarm_key = format!("prewarm:{}", root.display());
                 if let Some(index) = guard.iter().position(|(id, _)| *id == prewarm_key) {
                     let (_, mut candidate) = guard.remove(index).expect("position was valid");
-                    if candidate.root == root && matches!(candidate.child.try_wait(), Ok(None)) {
+                    if candidate.root == root
+                        && candidate.tools_file == tools_file
+                        && candidate.requests_file == req.requests_file
+                        && matches!(candidate.child.try_wait(), Ok(None))
+                    {
                         previous = Some(candidate);
-                        spent_prewarm = true;
                     }
                 }
             }
@@ -601,13 +644,17 @@ impl AgentBackend for NovaAgent {
                     reused = Some(session);
                 }
             }
+            let warm = reused.is_some();
+            if !warm {
+                self.ready.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
             let mut session = match reused {
                 Some(session) => session,
                 _ => {
                     let session = tokio::select! {
                         _ = cancel.cancelled() => return Ok(FinishReason::Cancelled),
                         session = Session::spawn(&root, req.model.clone(), req.trust_workspace,
-                            req.personality.as_ref(), req.requests_file.as_deref()) => session?,
+                            req.personality.as_ref(), req.requests_file.as_deref(), req.tools.as_ref()) => session?,
                     };
                     let _ = sink.send(AgentEvent::Notice {
                         level: "info".to_string(),
@@ -621,6 +668,17 @@ impl AgentBackend for NovaAgent {
                     session
                 }
             };
+            let _ = sink.send(AgentEvent::Timing {
+                phase: "processStartup".into(),
+                ms: if warm { 0 } else { session.startup_ms },
+            });
+            let _ = sink.send(AgentEvent::Timing {
+                phase: "protocolReady".into(),
+                ms: turn_started.elapsed().as_millis() as u64,
+            });
+            self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.steering
+                .store(session.supports_steer, std::sync::atomic::Ordering::SeqCst);
             let (steer, inbox) = mpsc::channel(1);
             let mut input = self.input.lock().await;
             let written = write_frame(&session.stdin, prompt).await;
@@ -652,53 +710,8 @@ impl AgentBackend for NovaAgent {
             } else {
                 self.retire_if_last(&root, &guard);
             }
-            // The turn that spent the prewarmed session is the one that owes the
-            // next new chat a replacement: it boots while the user reads the
-            // reply, so the second new chat streams instead of paying the whole
-            // start again. Only a plain session can stand in for a plain turn,
-            // and only when the cache has room: a full cache evicts a live
-            // conversation.
-            let prewarm_key = format!("prewarm:{}", root.display());
-            let replace = spent_prewarm
-                && !guard.iter().any(|(id, _)| id == &prewarm_key)
-                && guard.len() < SESSION_CACHE;
-            // The pool is released for the boot. The reply is already on screen,
-            // so the user's next message must not queue behind an eight-second
-            // Nova start — the spare session is only worth having if waiting for
-            // it is cheaper than booting one on demand.
+            // Replenishment is requested by the UI after completion, never on the reply path.
             drop(guard);
-            if replace {
-                // Bounded: this runs after the reply, so a boot that never
-                // reports ready must not hold the turn's finish too.
-                let booted = tokio::time::timeout(Duration::from_secs(20), async {
-                    tokio::select! {
-                        _ = cancel.cancelled() => None,
-                        session = Session::spawn(
-                            &root,
-                            None,
-                            req.trust_workspace,
-                            None,
-                            None,
-                        ) => session.ok(),
-                    }
-                })
-                .await
-                .ok()
-                .flatten();
-                if let Some(session) = booted {
-                    let mut guard = self.session.lock().await;
-                    // A turn that arrived while this booted may have installed
-                    // one first; this spare then goes away with its process.
-                    if !guard.iter().any(|(id, _)| id == &prewarm_key) {
-                        if guard.len() >= SESSION_CACHE {
-                            if let Some((_, evicted)) = guard.pop_front() {
-                                self.retire_if_last(&evicted.root, &guard);
-                            }
-                        }
-                        guard.push_back((prewarm_key, session));
-                    }
-                }
-            }
             outcome
         })
     }
@@ -778,23 +791,52 @@ impl AgentBackend for NovaAgent {
         })
     }
 
-    fn prewarm<'a>(&'a self, root: &'a Path) -> BoxFut<'a, Result<(), AppError>> {
+    fn prewarm<'a>(&'a self, req: TurnRequest) -> BoxFut<'a, Result<(), AppError>> {
         Box::pin(async move {
             let mut guard = self.session.lock().await;
+            let root = req.workspace.as_ref().ok_or(AppError::NoWorkspace)?.root();
+            if let Some(bridge) = &req.tools {
+                self.write_injection(root, bridge)?;
+            }
             let key = format!("prewarm:{}", root.display());
-            if guard.iter().any(|(id, _)| *id == key) {
+            let tools_file = req
+                .tools
+                .as_ref()
+                .map(crate::tools::nova_entry::launch_credentials)
+                .transpose()?;
+            if guard.iter().any(|(id, session)| {
+                (id == &req.chat_id || id == &key)
+                    && session.root == root
+                    && session.model_override == req.model
+                    && session.tools_file == tools_file
+                    && session.requests_file == req.requests_file
+            }) {
                 return Ok(());
+            }
+            if let Some(at) = guard.iter().position(|(id, _)| id == &key) {
+                guard.remove(at);
             }
             // Spawned silently: the session sits in the cache until a turn
             // adopts it, and boot cost is paid while the user is not waiting.
             // A prewarmed session is never asked to run a turn, so it gets no
             // request file; the key below cannot match a chat or personality.
-            let session = Session::spawn(root, None, true, None, None).await?;
+            let session = Session::spawn(
+                root,
+                req.model,
+                true,
+                None,
+                req.requests_file.as_deref(),
+                req.tools.as_ref(),
+            )
+            .await?;
             if guard.len() >= SESSION_CACHE {
                 if let Some((_, evicted)) = guard.pop_front() {
                     self.retire_if_last(&evicted.root, &guard);
                 }
             }
+            self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.steering
+                .store(session.supports_steer, std::sync::atomic::Ordering::SeqCst);
             guard.push_back((key, session));
             Ok(())
         })
@@ -1099,6 +1141,7 @@ mod tests {
         use crate::workspace::WorkspaceGuard;
 
         let req = TurnRequest {
+            read_only: false,
             turn_id: uuid::Uuid::new_v4().to_string(),
             chat_id: uuid::Uuid::new_v4().to_string(),
             model: None,

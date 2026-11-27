@@ -168,7 +168,16 @@ pub fn speak(voice_dir: &Path, text: &str, speed: f32) -> Result<Synthesis, AppE
                 "the voice folder has no parent, so the front end is missing".to_string(),
             )
         })?;
-    let mut engine = Kokoro::load(voice_dir, &frontend_dir)?;
+    static LOADED: std::sync::Mutex<Option<(std::path::PathBuf, Kokoro)>> =
+        std::sync::Mutex::new(None);
+    let mut loaded = LOADED
+        .lock()
+        .map_err(|_| AppError::Speak("Speech engine lock poisoned".into()))?;
+    let key = voice_dir.to_path_buf();
+    if loaded.as_ref().is_none_or(|(previous, _)| previous != &key) {
+        *loaded = Some((key, Kokoro::load(voice_dir, &frontend_dir)?));
+    }
+    let engine = &mut loaded.as_mut().expect("engine loaded").1;
     let sentences = engine.frontend.ids(text);
     if sentences.is_empty() {
         return Err(AppError::Speak(

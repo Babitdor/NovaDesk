@@ -28,6 +28,16 @@ pub const EVENT: &str = "nova:tool-call";
 /// answers from memory, so a slow reply means something is wrong.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
+struct PendingReply {
+    id: String,
+    tools: ToolsState,
+}
+impl Drop for PendingReply {
+    fn drop(&mut self) {
+        self.tools.take_reply(&self.id);
+    }
+}
+
 pub async fn ask(
     app: &AppHandle,
     tools: &ToolsState,
@@ -37,6 +47,10 @@ pub async fn ask(
     let id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = tools.wait_reply();
     tools.register_reply(&id, sender);
+    let _pending = PendingReply {
+        id: id.clone(),
+        tools: tools.clone(),
+    };
     app.emit_to(
         EventTarget::webview(crate::tools::dispatch::MAIN),
         EVENT,

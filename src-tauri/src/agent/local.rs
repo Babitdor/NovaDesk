@@ -124,6 +124,7 @@ mod tests {
 
     fn request(prompt: &str) -> TurnRequest {
         TurnRequest {
+            read_only: false,
             turn_id: "turn".into(),
             chat_id: uuid::Uuid::new_v4().to_string(),
             model: None,
@@ -203,5 +204,45 @@ mod tests {
             .filter(|e| matches!(e, AgentEvent::MessageDelta { .. }))
             .count();
         assert!(delta_count > 0, "nothing streamed before cancel");
+    }
+    #[tokio::test]
+    async fn only_completed_turns_deliver_request_file_actions() {
+        struct RequestsAgent(FinishReason);
+        impl AgentBackend for RequestsAgent {
+            fn start<'a>(
+                &'a self,
+                req: TurnRequest,
+                _sink: EventSink,
+                _cancel: CancellationToken,
+            ) -> BoxFut<'a, Result<FinishReason, AppError>> {
+                Box::pin(async move {
+                    std::fs::write(
+                        req.requests_file.unwrap(),
+                        r#"{"type":"wakeup","prompt":"follow up"}"#,
+                    )
+                    .unwrap();
+                    Ok(self.0)
+                })
+            }
+        }
+        let dir = crate::testtmp::TempDir::new("turn-requests");
+        let path = dir.path().join("requests.jsonl");
+        for reason in [
+            FinishReason::Completed,
+            FinishReason::Cancelled,
+            FinishReason::Failed,
+        ] {
+            let mut req = request("fixture");
+            req.requests_file = Some(path.clone());
+            let (sink, seen) = collect_events();
+            drive_turn(&RequestsAgent(reason), req, sink, CancellationToken::new()).await;
+            let delivered = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, AgentEvent::WakeupRequested { .. }));
+            assert_eq!(delivered, reason == FinishReason::Completed);
+            assert!(!path.exists(), "request files must not survive a turn");
+        }
     }
 }

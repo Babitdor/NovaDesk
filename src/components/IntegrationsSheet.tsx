@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -27,10 +27,11 @@ type Key = 'tools' | 'servers' | 'skills' | 'apps'
 /// sheet adds no list of its own, so it cannot claim something the app cannot do.
 ///
 /// Inventory loads after the reader selects Manage.
-export function IntegrationsSheet({ preferences, update, onSection }: {
+export function IntegrationsSheet({ preferences, update, onSection, onClose }: {
   preferences: Preferences
   update: (patch: Partial<Preferences>) => void
   onSection: (section: 'Voice' | 'Connections') => void
+  onClose: () => void
 }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [skills, setSkills] = useState<Skills | null>(null)
@@ -38,7 +39,12 @@ export function IntegrationsSheet({ preferences, update, onSection }: {
   const [apps, setApps] = useState<AppRow[] | null>(null)
   const [open, setOpen] = useState<Record<Key, boolean>>({ tools: false, servers: false, skills: false, apps: false })
   const [status, setStatus] = useState('')
-  const [hasOpened, setHasOpened] = useState(false)
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const sheet = dialog.current
+    sheet?.showModal()
+    return () => { sheet?.close() }
+  }, [])
 
   const loadTools = async () => {
     try {
@@ -74,7 +80,6 @@ export function IntegrationsSheet({ preferences, update, onSection }: {
   // this pane must never give. The CLI run is the slow one (~12 s here), so the
   // count stays a placeholder until it answers instead of pretending to be zero.
   useEffect(() => {
-    if (!hasOpened) return
     let stale = false
     void toolsCatalog().then(
       (value) => { if (!stale) setCatalog(value) },
@@ -97,7 +102,7 @@ export function IntegrationsSheet({ preferences, update, onSection }: {
       (err) => { if (!stale) setStatus(errorText(err)) },
     )
     return () => { stale = true }
-  }, [hasOpened])
+  }, [])
 
   const openSection = (key: Key) => {
     setOpen((current) => ({ ...current, [key]: !current[key] }))
@@ -148,12 +153,14 @@ export function IntegrationsSheet({ preferences, update, onSection }: {
   )
 
   return (
-    <div id="nova-integrations" popover="auto" className="notices-sheet integrations-sheet"
-      onToggle={(event) => { if (event.newState === 'open') setHasOpened(true) }}
-      role="dialog" aria-label="Tools and integrations">
+    <dialog ref={dialog} id="nova-integrations" className="notices-sheet integrations-sheet"
+      {...{ closedby:"any" }} onClose={(event) => {
+        // Effect replay can deliver close after the dialog has reopened.
+        if (!event.currentTarget.open) onClose()
+      }} aria-labelledby="integrations-title">
       <header className="notices-head">
-        <h2>Tools &amp; integrations</h2>
-        <button type="button" popoverTarget="nova-integrations" popoverTargetAction="hide">Close</button>
+        <h1 id="integrations-title">Tools &amp; integrations</h1>
+        <button type="button" autoFocus onClick={() => dialog.current?.close()}>Close</button>
       </header>
 
       <div className="integrations-scroll">
@@ -280,8 +287,8 @@ export function IntegrationsSheet({ preferences, update, onSection }: {
         <button type="button" onClick={() => onSection('Connections')}>MCP setup</button>
         <span className="settings-status" role="status">{status}</span>
         <button type="button" onClick={() => void refresh()}>Refresh</button>
-        <button type="button" popoverTarget="nova-integrations" popoverTargetAction="hide">Done</button>
+        <button type="button" onClick={() => dialog.current?.close()}>Done</button>
       </footer>
-    </div>
+    </dialog>
   )
 }

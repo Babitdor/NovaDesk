@@ -13,6 +13,9 @@ export function Interrupt({ request, onReply, pending }: {
   const payload = request.payload && typeof request.payload === 'object'
     ? request.payload as Record<string, unknown> : {}
   if (request.kind === 'question') {
+    if (Array.isArray(payload.questions) && payload.questions.length) {
+      return <BatchQuestions questions={payload.questions} pending={pending} onReply={onReply} />
+    }
     const options = Array.isArray(payload.options) ? payload.options : []
     const response = selected === null ? answer.trim() : String(options[selected])
     return (
@@ -64,4 +67,34 @@ export function Interrupt({ request, onReply, pending }: {
       </div>
     </section>
   )
+}
+
+function BatchQuestions({ questions, pending, onReply }: { questions: unknown[]; pending:boolean; onReply:(reply:InterruptReply) => void }) {
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const fields = questions.flatMap((value) => {
+    if (!value || typeof value !== 'object') return []
+    const question = value as Record<string, unknown>
+    if (typeof question.question !== 'string') return []
+    const key = typeof question.id === 'string' ? question.id : question.question
+    return [{ key, text:question.question, options:Array.isArray(question.options) ? question.options : [] }]
+  })
+  return <form className="approval approval-input" aria-label="Teammate questions" onSubmit={(event) => {
+    event.preventDefault()
+    if (!pending) onReply({ kind:'question', answer:JSON.stringify(answers), selectedIndex:null })
+  }}>
+    {fields.map((field) => <fieldset key={field.key} disabled={pending}>
+      <legend>{field.text}</legend>
+      {field.options.map((value, index) => {
+        const label = typeof value === 'string' ? value : value && typeof value === 'object' && 'label' in value ? String(value.label) : ''
+        return label && <button type="button" key={index} aria-pressed={answers[field.key] === label}
+          onClick={() => setAnswers((previous) => ({ ...previous, [field.key]:label }))}>{label}</button>
+      })}
+      <label>Answer<input maxLength={8000} value={answers[field.key] ?? ''}
+        onChange={(event) => setAnswers((previous) => ({ ...previous, [field.key]:event.target.value }))} /></label>
+    </fieldset>)}
+    <div className="approval-actions">
+      <button type="submit" disabled={pending || !fields.length || fields.some((field) => !answers[field.key]?.trim())}>Reply</button>
+      <button type="button" disabled={pending} onClick={() => onReply({ kind:'question', answer:'{}', selectedIndex:null })}>Skip</button>
+    </div>
+  </form>
 }

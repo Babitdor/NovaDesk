@@ -10,6 +10,10 @@ import { Settings, type Section } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { Sky } from './components/Sky'
 import { TerminalDock, type Dock } from './components/TerminalDock'
+import { Playback } from './components/Playback'
+import { TeamMembers } from './components/TeamMembers'
+import { teamTools, type CrewControl } from './lib/teamTools'
+import { nextTeamBatch } from './lib/teamSchedule'
 import { TeamPipeline } from './components/TeamPipeline'
 import { ViewSwitcher } from './components/ViewSwitcher'
 import { appendUser } from './lib/chat'
@@ -23,7 +27,7 @@ import { withViewTransition } from './lib/motion'
 import type { AgentEvent, FinishReason, InterruptReply, WorkspaceInfo } from './lib/events'
 import { VIEWS, type Pane, type View } from './lib/panes'
 import {
-  cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval,
+  beginTeam, finishTeam, cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval, setAutoApprove,
   setCrashPolicy, setQuickLauncher, setWidget, setWorkspace, startTurn, type TerminalShell,
 } from './lib/ipc'
 import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
@@ -32,7 +36,7 @@ import type { BrowserTarget } from './components/BrowserPane'
 import { setDisabledSkills } from './lib/tools'
 import { taskTools } from './lib/tasks'
 import { advance, dueAfterThread, dueSchedules, promptFor, withinLimit } from './lib/scheduler'
-import { speakReply, stopSpeaking } from './lib/speak'
+import { turnSpeech, stopSpeaking } from './lib/speak'
 import {
   AGENTS, applyAppearance, clampInterfaceSize, loadPreferences, recommendedAgent, savePreferences,
   type AgentId, type ModelSelection, type Preferences, type ScheduleRun,
@@ -54,7 +58,7 @@ function activeRuns(running: Running | null, chats: Chat[]) {
     work: running.role ? CREW[running.role].name : 'Working',
   }]
 }
-type InterruptRequest = Extract<AgentEvent, { type: 'approvalRequired' }>
+type InterruptRequest = Extract<AgentEvent, { type: 'approvalRequired' }> & { turnId: string; chatId: string; speaker?: CrewSpeaker }
 /// A start requested by an agent rather than by the user. `needsApproval` is the
 /// "Ask before agents message other threads" gate; nothing in the queue runs
 /// while it is true.
@@ -82,10 +86,12 @@ export default function App() {
   /// True while a @team pipeline (not a plain turn) is driving the live turn.
   const [crewActive, setCrewActive] = useState(false)
   const live = useRef<Running | null>(null)
-  const crewRun = useRef<{ cancelled: boolean } | null>(null)
+  const crewRun = useRef<CrewControl | null>(null)
   /// The pipeline's open plan gate, if any: the paused run resolves its loop
   /// through this when the user approves, edits or skips the plan.
   const planGate = useRef<{ runId: string; resolve: (decision: 'approve' | 'skip' | string) => void } | null>(null)
+  const teamTurns = useRef(new Map<string, Running>())
+  const automatic = useRef(preferences.autoApprove)
   const replying = useRef(false)
   /// When the last turn finished: the gate for an "after a thread finishes" run.
   const lastFinish = useRef(0)
@@ -93,7 +99,8 @@ export default function App() {
   /// at mount always call the current render's closures.
   const submitRef = useRef<(text: string) => boolean>(() => false)
   const bridgeRef = useRef<(event: BridgeEvent) => void>(() => {})
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(() => preferences.approvalMigrationNotice
+    ? 'Auto-approve was turned off: the former Tools only setting did not approve plans. The new toggle approves both tools and plans.' : null)
   const [offeredWorkspace, setOfferedWorkspace] = useState<string | null>(null)
   const [view, setView] = useState<View>('Chat')
   const [dock, setDock] = useState<Dock>('closed')
@@ -311,9 +318,10 @@ export default function App() {
   /// so the first turn streams instead of booting a CLI process.
   const workspaceRoot = workspace?.root
   const workspaceTrusted = Boolean(workspaceRoot && preferences.trustedWorkspaces.includes(workspaceRoot))
+  const warmModel = taskModel(active, preferences.models[agent])
   useEffect(() => {
-    if (workspaceRoot && workspaceTrusted) void prewarmNova().catch(() => {})
-  }, [workspaceRoot, workspaceTrusted])
+    if (workspaceRoot && workspaceTrusted && !running && !crewActive) void prewarmNova(active.id, agent, warmModel, active.effort, active.session).catch(() => {})
+  }, [workspaceRoot, workspaceTrusted, active.id, active.effort, active.session, agent, warmModel, running, crewActive])
 
   useEffect(() => {
     const timer = setTimeout(() => save(chats), 400)
@@ -336,6 +344,7 @@ export default function App() {
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || document.querySelector('dialog:modal')) return
       if ((event.ctrlKey || event.metaKey) && event.key === ',') {
         event.preventDefault()
         setSettings((open) => !open)
@@ -366,7 +375,7 @@ export default function App() {
   }, [selectView])
 
   const openFolder = async (path?: string) => {
-    if (live.current || folderBusy) return
+    if (live.current || crewRun.current || folderBusy) return
     setFolderBusy(true)
     try {
       const picked = await (path ? setWorkspace(path) : pickWorkspace())
@@ -405,34 +414,19 @@ export default function App() {
     }
   }
 
-  /// Answers an approval the user has already decided about, in advance.
-  /// Returns whether it answered: when it did not, the caller shows the card as
-  /// before. Only a tool permission ('tools') and a plan ('all') are covered —
-  /// a question needs words, so it is never answered here.
-  const autoAnswer = useCallback((event: InterruptRequest, turnId: string, chatId: string, speaker?: CrewSpeaker) => {
-    const mode = preferences.autoApprove
-    const covered = event.kind === 'tool' ? mode !== 'off' : event.kind === 'plan' && mode === 'all'
-    if (!covered || replying.current || live.current?.turnId !== turnId) return false
-    replying.current = true
-    const reply: InterruptReply = event.kind === 'plan'
-      ? { kind: 'plan', approve: true }
-      : { kind: 'tool', approve: true }
-    void respondApproval(turnId, event.interruptId, reply)
-      // Visible, not silent: a decision made without the user has to be in the
-      // transcript where they will scroll past it.
-      .then(() => setChats((previous) => routeEvent(previous, chatId, {
-        type: 'notice', level: 'info',
-        message: event.kind === 'plan' ? 'Auto-approved the plan.' : 'Auto-approved a tool permission.',
-      }, speaker)))
-      .catch((err) => setNotice(errorText(err)))
-      .finally(() => {
-        if (live.current?.turnId === turnId) replying.current = false
-      })
-    return true
+  useEffect(() => {
+    automatic.current = preferences.autoApprove
+    void setAutoApprove(preferences.autoApprove).catch((error) => setNotice(errorText(error)))
+    if (preferences.autoApprove) planGate.current?.resolve('approve')
   }, [preferences.autoApprove])
 
+  useEffect(() => {
+    if (!preferences.approvalMigrationNotice) return
+    queueMicrotask(() => update({ approvalMigrationNotice: false }))
+  }, [preferences.approvalMigrationNotice, update])
+
   const send = useCallback((prompt: string, chat: Chat, mode?: 'scheduled' | 'approveWorkspace') => {
-    if (live.current || folderBusy || !workspace || (chat.workspace && chat.workspace !== workspace.root)) return false
+    if (live.current || crewRun.current || folderBusy || !workspace || (chat.workspace && chat.workspace !== workspace.root)) return false
     const fresh = mode === 'scheduled'
     const approvingWorkspace = mode === 'approveWorkspace'
     const backend = chat.agent ?? recommendedAgent(preferences, workspace.root)
@@ -465,7 +459,7 @@ export default function App() {
       replying.current = false
       setReplyPending(false)
     }
-    let spoken = ''
+    const speech = turnSpeech(turnId, preferences, setNotice)
     let awaitingWorkspaceApproval = false
     void startTurn({ turnId, chatId: chat.connectionId ?? chatId, prompt, backend, model,
       effort: chat.effort, session: chat.session,
@@ -474,13 +468,6 @@ export default function App() {
     }, (event) => {
       if (event.type === 'turnFinished') {
         finish()
-        // Reading aloud is a preference, not a step in the turn: a failure to
-        // play is a notice, never a failed reply.
-        if (event.reason === 'completed') {
-          void speakReply(spoken, preferences).then((error) => {
-            if (error) setNotice(error)
-          })
-        }
         if (event.reason === 'failed' && !awaitingWorkspaceApproval) {
           setNotice((message) => message ?? 'The turn failed. Check the task for details.')
         }
@@ -489,23 +476,23 @@ export default function App() {
       } else if (event.type === 'approvalRequired') {
         // Before the queue: an auto-approved request must never render a card,
         // not even for one frame.
-        if (!autoAnswer(event, turnId, chatId)) setInterrupts((queue) => [...queue, event])
+        setInterrupts((queue) => [...queue, { ...event, turnId, chatId }])
+      } else if (event.type === 'approvalResolved') {
+        setInterrupts((queue) => queue.filter((request) => request.turnId !== turnId || request.interruptId !== event.interruptId))
       } else if (event.type === 'notice') {
         setNotice(event.message)
-      } else if (event.type === 'messageDelta') {
-        spoken += event.text
-      } else if (event.type === 'messageFinal' && !event.plain) {
-        spoken += `${spoken ? '\n' : ''}${event.text}`
+
       } else if (event.type === 'wakeupRequested' || event.type === 'threadMessage') {
         bridgeRef.current(event)
       }
+      speech.accept(event)
       if (event.type !== 'notice') setChats((previous) => routeEvent(previous, chatId, event))
     }).catch((err) => {
       finish()
       setChats((previous) => routeEvent(previous, chatId, { type: 'turnError', message: errorText(err) }))
     })
     return true
-  }, [autoAnswer, folderBusy, preferences, workspace])
+  }, [folderBusy, preferences, workspace])
 
   /// The schedule engine owns the decisions; this effect only starts turns and
   /// records what happened. The entry is advanced *before* the turn starts, so a
@@ -514,7 +501,7 @@ export default function App() {
     if (!workspace) return
     const root = workspace.root
     const tick = () => {
-      if (live.current || preferences.pauseSchedules) return
+      if (live.current || crewRun.current || preferences.pauseSchedules) return
       const now = Date.now()
       const due = dueSchedules(preferences.schedules, root, now)
       const afterThread = dueAfterThread(preferences.schedules, root, lastFinish.current)
@@ -545,7 +532,7 @@ export default function App() {
   /// Cross-thread starts approved by the user run here, one at a time, always
   /// behind the task the user is already in.
   useEffect(() => {
-    if (running || folderBusy || !workspace) return
+    if (running || crewActive || folderBusy || !workspace) return
     const next = bridgeQueue.find((request) => !request.needsApproval)
     if (!next) return
     const chat = { ...createChat(), agent: next.agent ?? recommendedAgent(preferences, workspace.root),
@@ -558,7 +545,7 @@ export default function App() {
         (started ? '' : 'Could not start: ') + next.prompt)
       setBridgeQueue((queue) => queue.filter(({ id }) => id !== next.id))
     })
-  }, [running, folderBusy, workspace, bridgeQueue, send, record, preferences])
+  }, [running, crewActive, folderBusy, workspace, bridgeQueue, send, record, preferences])
 
   /// The receiving end of the request file: the only non-user way a turn starts.
   /// Assigned from an effect so the ref never changes during render; without a
@@ -589,7 +576,7 @@ export default function App() {
 
   const answer = async (reply: InterruptReply) => {
     const request = interrupts[0]
-    const turn = live.current
+    const turn = request && { turnId: request.turnId }
     if (!request || !turn || replying.current) return
     replying.current = true
     setReplyPending(true)
@@ -599,10 +586,8 @@ export default function App() {
     } catch (err) {
       setNotice(errorText(err))
     } finally {
-      if (live.current?.turnId === turn.turnId) {
-        replying.current = false
-        setReplyPending(false)
-      }
+      replying.current = false
+      setReplyPending(false)
     }
   }
 
@@ -619,13 +604,32 @@ export default function App() {
     if (crewRun.current) crewRun.current.cancelled = true
     planGate.current?.resolve('skip')
     stopSpeaking()
+    for (const turnId of teamTurns.current.keys()) void cancelTurn(turnId).catch((error) => setNotice(errorText(error)))
     if (live.current) void cancelTurn(live.current.turnId).catch((error) => setNotice(errorText(error)))
   }
   /// Patch the active chat's team run in place. The run is the pipeline strip's
   /// only input, so every stage transition lands here.
-  const patchTeamRun = (chatId: string, patch: (run: TeamRun) => TeamRun) =>
+  const patchTeamRun = (chatId: string, patch: (run: TeamRun) => TeamRun) => {
+    const control = crewRun.current
+    const current = control?.chatId === chatId ? patch(control.team) : undefined
+    if (control && current) control.team = current
     setChats((previous) => previous.map((chat) => chat.id === chatId && chat.teamRun
-      ? { ...chat, teamRun: patch(chat.teamRun) } : chat))
+      ? { ...chat, teamRun:current ?? patch(chat.teamRun) } : chat))
+  }
+  const reviewTeamPlan = async (run: CrewControl) => {
+    if (!preferences.team.planApproval || automatic.current || run.team.planApproved) {
+      patchTeamRun(run.chatId, (team) => ({ ...team, planApproved:true }))
+      return
+    }
+    patchTeamRun(run.chatId, (team) => ({ ...team, awaitingPlan:1 }))
+    const decision = await new Promise<string>((resolve) => { planGate.current = { runId:run.id, resolve } })
+    planGate.current = null
+    if (decision !== 'approve' && decision !== 'skip' && decision.trim()) {
+      run.notes.push({ from:'user', text:'User steering after reviewing the plan: ' + decision.trim().slice(0,2000) })
+    }
+    patchTeamRun(run.chatId, (team) => ({ ...team, awaitingPlan:null, planApproved:!run.cancelled,
+      handoffs:run.notes.map((note) => ({ ...note, text:note.text.slice(0,2000) })) }))
+  }
 
   /// Roles for a team run: the configured pipeline workers, then the reporter.
   /// Nova plans and reports, so it is never dropped.
@@ -639,20 +643,23 @@ export default function App() {
   /// first run and the retry-failed-stages path.
   const executeStage = async (options: {
     chatId: string; task: string; mode: CrewMode; roles: readonly CrewRole[]
-    index: number; role: CrewRole; final: boolean; notes: Handoff[]; run: { cancelled: boolean }
+    index: number; role: CrewRole; final: boolean; notes: Handoff[]; run: CrewControl
     history: string
   }) => {
     const { chatId, task, mode, roles, index, role, final, notes, run, history } = options
     const configuration = preferences.crew[role]
-    const backend = configuration?.agent ?? 'nova'
+    const stage = run.team.stages[index]
+    const backend = (stage.harness as AgentId | undefined) ?? configuration?.agent ?? 'nova'
     const maxIterations = Math.max(1, preferences.team.ralphIterations)
     const timeoutMs = Math.max(1, preferences.team.stageTimeoutMin) * 60_000
-    for (let iteration = 1; !run.cancelled; iteration += 1) {
+    for (const iteration of Array.from({ length:role === 'ralph' ? maxIterations : 1 }, (_, at) => at + 1)) {
+      if (run.cancelled) break
       const turnId = crypto.randomUUID()
-      const speaker = { role, to: roles[index + 1], stage: turnId, scope: mode }
-      live.current = { turnId, chatId, role, iteration }
+      const speaker = { role, harness:backend, to: roles[index + 1], stage: turnId, scope: mode }
+      const activeTurn = { turnId, chatId, role, iteration }
+      teamTurns.current.set(turnId, activeTurn)
+      live.current = teamTurns.current.values().next().value ?? null
       setRunning(live.current)
-      setInterrupts([])
       setReplyPending(false)
       replying.current = false
       patchTeamRun(chatId, (teamRun) => ({ ...teamRun, stages: teamRun.stages.map(
@@ -660,11 +667,14 @@ export default function App() {
           ? { ...stage, status: 'running', iteration, stageId: turnId, startedAt: stage.startedAt ?? Date.now() }
           : stage,
       ) }))
+      const speech = final ? turnSpeech(turnId, preferences, setNotice) : null
       let reply = ''
+      const waiting = new Set<string>()
       let timedOut = false
       let watchdog: number | undefined
       const arm = () => {
         clearTimeout(watchdog)
+        if (waiting.size) return
         watchdog = window.setTimeout(() => {
           timedOut = true
           void cancelTurn(turnId).catch(() => {})
@@ -672,15 +682,22 @@ export default function App() {
       }
       const reason: FinishReason = await new Promise<FinishReason>((resolve) => {
         void startTurn({
-          turnId, chatId: turnId, backend, model: configuration?.model?.trim() || undefined,
-          personality: { role, systemPrompt: configuration?.systemPrompt?.trim() || systemPrompt(role) },
-          prompt: crewPrompt(role, task, history, notes, mode === 'team', final),
+          turnId, chatId: run.team.stages[index].assignmentId ?? turnId, teamId: run.id, readOnly:run.team.stages[index].readOnly, backend, model: stage.model?.trim() || configuration?.model?.trim() || undefined,
+          personality: { role, systemPrompt: stage.systemPrompt?.trim() || configuration?.systemPrompt?.trim() || systemPrompt(role) },
+          prompt: crewPrompt(role, run.team.stages[index].task ?? task, history, notes, mode === 'team', final),
           trustWorkspace: true, check: final && role !== 'ralph' && role !== 'serena' && role !== 'nora'
             ? preferences.checks[workspace?.root ?? ''] : undefined,
         }, (event) => {
+          if (index === run.team.stages.length - 1) speech?.accept(event.type === 'messageFinal' && event.author?.toLowerCase() === role ? { ...event, author:null } : event)
           if (event.type === 'turnStarted' && run.cancelled) void cancelTurn(turnId).catch(() => {})
-          if (event.type === 'approvalRequired' && !autoAnswer(event, turnId, chatId, speaker)) {
-            setInterrupts((queue) => [...queue, event])
+          if (event.type === 'approvalRequired') {
+            waiting.add(event.interruptId)
+            clearTimeout(watchdog)
+            setInterrupts((queue) => [...queue, { ...event, turnId, chatId, speaker }])
+          }
+          if (event.type === 'approvalResolved') {
+            waiting.delete(event.interruptId)
+            setInterrupts((queue) => queue.filter((request) => request.turnId !== turnId || request.interruptId !== event.interruptId))
           }
           if (event.type === 'usage') {
             patchTeamRun(chatId, (teamRun) => ({ ...teamRun, usage: {
@@ -694,13 +711,17 @@ export default function App() {
           if (event.type !== 'notice' || event.level !== 'info') {
             setChats((previous) => routeEvent(previous, chatId, event, speaker))
           }
-          if (event.type !== 'turnFinished') arm()
+          if (event.type !== 'turnFinished' && event.type !== 'approvalRequired') arm()
           if (event.type === 'turnFinished') resolve(event.reason)
         }).catch((error) => {
           setChats((previous) => routeEvent(previous, chatId, { type: 'turnError', message: errorText(error) }, speaker))
           resolve('failed')
         })
       }).finally(() => clearTimeout(watchdog))
+      teamTurns.current.delete(turnId)
+      live.current = teamTurns.current.values().next().value ?? null
+      setRunning(live.current)
+      setInterrupts((queue) => queue.filter((request) => request.turnId !== turnId))
       // A user stop ends the run; the backend reporting a stage as cancelled on
       // its own must not — it only loses that stage's work.
       if (run.cancelled) break
@@ -713,16 +734,17 @@ export default function App() {
       }
       const parsed = parseRetry(reply)
       const retry = role === 'ralph' && reason === 'completed' && parsed.retry
-      const status: StageStatus = reason === 'completed' && !timedOut ? 'done' : 'failed'
-      notes.push({ from: role, text: status === 'done'
+      const again = retry && iteration < maxIterations
+      const status: StageStatus = reason === 'completed' && !timedOut && !retry ? 'done' : 'failed'
+      notes.push({ from: role, harness:backend, assignmentId:run.team.stages[index].assignmentId, text: retry ? 'Checks failed: ' + parsed.clean : status === 'done'
         ? parsed.clean || 'No written handoff was returned.'
         : 'This stage failed. See the transcript for details and do not treat this work as verified.' })
       patchTeamRun(chatId, (teamRun) => ({
         ...teamRun,
         stages: teamRun.stages.map((stage, at) => at === index
-          ? { ...stage, status: retry ? 'running' : status, iteration, finishedAt: retry ? undefined : Date.now() }
+          ? { ...stage, status: again ? 'running' : status, iteration, finishedAt: again ? undefined : Date.now() }
           : stage),
-        handoffs: notes.map(({ from, text }) => ({ from, text: text.slice(0, 2000) })),
+        handoffs: notes.map((note) => ({ ...note, text:note.text.slice(0, 2000) })),
       }))
       if (!retry || iteration >= maxIterations) {
         if (retry) setNotice(`${CREW[role].name} reached the ${maxIterations}-iteration limit. A check still needs attention.`)
@@ -732,11 +754,12 @@ export default function App() {
   }
 
   const sendCrew = (task: string, mode: CrewMode) => {
-    if (live.current || !workspace || folderBusy || wrongFolder) return false
+    if (live.current || crewRun.current || !workspace || folderBusy || wrongFolder) return false
     if (!preferences.trustedWorkspaces.includes(workspace.root)) {
       setOfferedWorkspace(workspace.root)
       return false
     }
+    stopSpeaking()
     const chatId = active.id
     const roles = mode === 'team' ? teamRoles() : [mode]
     const history = active.items.flatMap((item) => {
@@ -750,39 +773,37 @@ export default function App() {
       return []
     }).slice(-8).join('\n\n')
     const notes: Handoff[] = []
-    const run = { cancelled: false }
+    const stages: TeamStage[] = roles.map((role) => ({ role, status:'pending', iteration:1, assignmentId:crypto.randomUUID(),
+      harness:preferences.crew[role]?.agent ?? 'nova', model:preferences.crew[role]?.model, systemPrompt:preferences.crew[role]?.systemPrompt, readOnly:role === 'nora' && preferences.crew[role]?.agent === 'codex' }))
+    const team: TeamRun = { id:crypto.randomUUID(), task, stages, startedAt:Date.now(), usage:{ input:0, output:0 }, handoffs:[], awaitingPlan:null }
+    const run: CrewControl = { cancelled:false, id:team.id, chatId, team, notes, delegated:false }
     crewRun.current = run
     setCrewActive(true)
     setNotice(null)
-    const stages: TeamStage[] = roles.map((role) => ({ role, status: 'pending', iteration: 1 }))
     setChats((previous) => previous.map((chat) => chat.id === chatId ? {
       ...chat, workspace: workspace.root, state: 'running', items: appendUser(chat.items, task, mode),
       title: chat.title === 'New task' ? titleFromPrompt(task) : chat.title,
-      teamRun: { id: crypto.randomUUID(), task, stages, startedAt: Date.now(),
-        usage: { input: 0, output: 0 }, handoffs: [], awaitingPlan: null },
+      teamRun: team,
     } : chat))
 
     void (async () => {
-      for (const [index, role] of roles.entries()) {
-        const final = index === roles.length - 1
-        await executeStage({ chatId, task, mode, roles, index, role, final, notes, run, history })
+      await beginTeam(run.id, preferences.agentLimit)
+      for (;;) {
+        const batch = nextTeamBatch(run.team.stages, preferences.agentLimit)
+        if (!batch.length || run.cancelled) break
+        const currentRoles = run.team.stages.map(({ role }) => role)
+        await Promise.all(batch.map((index) => executeStage({ chatId, task, mode, roles:currentRoles, index,
+          role:currentRoles[index], final:index === currentRoles.length - 1, notes, run, history })))
+        const index = batch[0]
         if (run.cancelled) break
-        // The plan gate: Nova's plan pauses the pipeline until the user
-        // approves, rewrites or skips it — only when the setting asks for it.
-        if (mode === 'team' && preferences.team.planApproval && index === 0 && notes.length) {
-          patchTeamRun(chatId, (teamRun) => ({ ...teamRun, awaitingPlan: index + 1 }))
-          const decision = await new Promise<'approve' | 'skip' | string>((resolve) => {
-            planGate.current = { runId: '', resolve }
-          })
-          planGate.current = null
-          patchTeamRun(chatId, (teamRun) => ({ ...teamRun, awaitingPlan: null }))
-          if (typeof decision === 'string' && decision.trim()) {
-            notes.push({ from: 'user', text: 'User steering after reviewing the plan: ' + decision.trim().slice(0, 2000) })
-          }
+        if (mode === 'team' && index === 0 && notes.length) {
+          if (run.team.stages[0].status === 'failed' && preferences.team.planApproval && !automatic.current) break
+          await reviewTeamPlan(run)
         }
         if (run.cancelled) break
       }
     })().finally(() => {
+      void finishTeam(run.id).catch((error) => setNotice(errorText(error)))
       crewRun.current = null
       planGate.current = null
       setCrewActive(false)
@@ -795,7 +816,7 @@ export default function App() {
         ...chat, state: 'idle',
         teamRun: chat.teamRun ? {
           ...chat.teamRun, finishedAt: Date.now(),
-          stages: chat.teamRun.stages.map((stage) => stage.status === 'running'
+          stages: chat.teamRun.stages.map((stage) => (stage.status === 'running' || stage.status === 'pending')
             ? { ...stage, status: 'failed' as StageStatus, finishedAt: Date.now() } : stage),
         } : undefined,
       } : chat))
@@ -805,7 +826,7 @@ export default function App() {
   /// Re-runs only the failed stages of the last team run, replaying the recorded
   /// handoffs so the retry picks up where the run stopped.
   const retryTeamStages = () => {
-    const run = active.teamRun
+    const run = active.teamRun ? structuredClone(active.teamRun) : undefined
     if (!run || live.current || !workspace || folderBusy || wrongFolder) return
     if (!preferences.trustedWorkspaces.includes(workspace.root)) {
       setOfferedWorkspace(workspace.root)
@@ -816,11 +837,11 @@ export default function App() {
       .filter(({ stage }) => stage.status === 'failed')
     if (!failed.length) return
     const chatId = active.id
-    const cancelled = { cancelled: false }
+    const cancelled: CrewControl = { cancelled:false, id:run.id, chatId, team:run, notes:run.handoffs.slice(), delegated:true }
     crewRun.current = cancelled
     setCrewActive(true)
     setNotice(null)
-    const notes: Handoff[] = run.handoffs.map(({ from, text }) => ({ from, text }))
+    const notes = cancelled.notes
     const history = active.items.flatMap((item) => {
       if (item.kind === 'user' && item.recipient === 'team') return ['User: ' + item.text.slice(0, 2000)]
       if (item.kind === 'assistant' && !item.provisional && item.speaker &&
@@ -830,12 +851,14 @@ export default function App() {
       return []
     }).slice(-8).join('\n\n')
     patchTeamRun(chatId, (teamRun) => ({
-      ...teamRun, finishedAt: undefined, handoffs: notes,
+      ...teamRun, finishedAt: undefined, interrupted:false, planApproved:failed.some(({ index }) => index === 0) ? false : teamRun.planApproved, handoffs: notes,
       stages: teamRun.stages.map((stage, index) =>
         failed.some(({ index: at }) => at === index)
           ? { ...stage, status: 'pending', startedAt: undefined, finishedAt: undefined } : stage),
     }))
     void (async () => {
+      await beginTeam(run.id, preferences.agentLimit)
+      if (run.stages.length > 1 && run.stages[0].role === 'nova' && run.stages[0].status === 'done') await reviewTeamPlan(cancelled)
       for (const { index } of failed) {
         const role = run.stages[index].role
         await executeStage({
@@ -843,8 +866,13 @@ export default function App() {
           index, role, final: index === run.stages.length - 1, notes, run: cancelled, history,
         })
         if (cancelled.cancelled) break
+        if (index === 0 && role === 'nova' && run.stages.length > 1) {
+          if (cancelled.team.stages[0].status === 'failed' && preferences.team.planApproval && !automatic.current) break
+          await reviewTeamPlan(cancelled)
+        }
       }
     })().finally(() => {
+      void finishTeam(run.id).catch((error) => setNotice(errorText(error)))
       crewRun.current = null
       setCrewActive(false)
       live.current = null
@@ -912,7 +940,7 @@ export default function App() {
   /// another task switches to it and settles when the composer's own path has
   /// run, so the answer it returns is the real outcome rather than a guess.
   const startIn = (chatId: string, text: string) => new Promise<boolean>((resolve) => {
-    if (live.current || deferredSend.current || !chats.some(({ id }) => id === chatId)) {
+    if (live.current || crewRun.current || deferredSend.current || !chats.some(({ id }) => id === chatId)) {
       resolve(false)
       return
     }
@@ -953,7 +981,7 @@ export default function App() {
       archive: (id) => {
         // Same rule as the rail's ×: deleting under a live turn would leave the
         // stream with nowhere to land.
-        if (live.current?.chatId === id) return 'Stop the running turn before deleting this task.'
+        if (live.current?.chatId === id || crewRun.current?.chatId === id) return 'Stop the running turn before deleting this task.'
         const index = chats.findIndex((chat) => chat.id === id)
         const remaining = chats.filter((chat) => chat.id !== id)
         if (!remaining.length) remaining.push(createChat())
@@ -964,6 +992,10 @@ export default function App() {
       start: startIn,
     })
     toolHandler.current = async (name, args) => {
+      if (name.startsWith('team_')) return teamTools({
+        preferences, run:() => crewRun.current, patch:patchTeamRun,
+        message:(chatId, message) => setChats((previous) => routeEvent(previous, chatId, { type:'notice', level:'info', message })),
+      })(name, args)
       if (name === 'deliver_queued_message') {
         if (typeof args.chatId !== 'string' || typeof args.text !== 'string') throw new Error('Invalid queued message')
         if (await startIn(args.chatId, args.text)) return true
@@ -1003,13 +1035,13 @@ export default function App() {
     }
   }, [])
   const bridge = bridgeQueue.find((request) => request.needsApproval)
-  const busy = running?.chatId === active.id
+  const busy = running?.chatId === active.id || (crewActive && active.state === 'running')
   const interrupt = busy ? interrupts[0] : undefined
   const work = interrupt ? 'Waiting for approval'
     : lastItem?.kind === 'tool' && lastItem.ok === undefined ? `Running ${lastItem.label}`
       : lastItem?.kind === 'assistant' ? 'Writing response' : 'Working'
   const selectModel = ({ agent: nextAgent, model, effort }: ModelSelection) => {
-    if (live.current?.chatId === active.id) return
+    if (live.current?.chatId === active.id || crewRun.current?.chatId === active.id) return
     const switched = nextAgent !== agent
     const connectionId = switched ? crypto.randomUUID() : active.connectionId
     setChats((previous) => previous.map((chat) => chat.id === active.id ? {
@@ -1041,6 +1073,12 @@ export default function App() {
       <div className="shell" hidden={settings}>
         <Sidebar chats={chats} activeId={active.id} workspace={workspace}
           open={sidebarOpen} onToggle={() => setSidebarOpen((open) => !open)}
+          onTeams={() => {
+            const existing = chats.find((chat) => chat.crew === 'team' && chat.workspace === workspace?.root)
+            if (existing) setActiveId(existing.id)
+            else addTasks([{ ...createChat(), title:'Team workspace', crew:'team', workspace:workspace?.root }])
+            setView('Chat')
+          }}
           onSelect={(id) => withViewTransition(() => setActiveId(id))}
           width={railWidth} onWidth={setRailWidth}
           onRename={(id, title) => {
@@ -1052,7 +1090,7 @@ export default function App() {
           onDelete={(id) => {
             // Deleting under a live turn would leave the stream with nowhere to
             // land, so say why instead of closing the menu on a no-op.
-            if (live.current?.chatId === id) {
+            if (live.current?.chatId === id || crewRun.current?.chatId === id) {
               setNotice('Stop the running turn before deleting this task.')
               return
             }
@@ -1074,10 +1112,15 @@ export default function App() {
 
         <main className="main">
           {preferences.wallpaper && <Sky still={preferences.still} />}
+          {active.crew === 'team' && <section className="teams-workspace" aria-label="Teams workspace">
+            <header><h1>Teams</h1><span>Nova coordinates · one editor at a time</span></header>
+            <details><summary>Members and run settings</summary><TeamMembers preferences={preferences} update={update} /></details>
+          </section>}
           <ChatLog key={active.id} items={active.items} busy={busy}
             markdown={preferences.markdown} backend={backendName} workspaceReady={!!workspace}
             compact={preferences.compactConversation} expandTools={preferences.expandToolActivity} />
-          {interrupt && <Interrupt key={interrupt.interruptId} request={interrupt} pending={replyPending}
+          {interrupt?.speaker && <small className="approval-owner">{CREW[interrupt.speaker.role].name} · {interrupt.speaker.harness ?? preferences.crew[interrupt.speaker.role]?.agent ?? 'nova'} · {interrupt.turnId.slice(0,8)}</small>}
+          {interrupt && <Interrupt key={interrupt.turnId + interrupt.interruptId} request={interrupt} pending={replyPending}
             onReply={(reply) => void answer(reply)} />}
           {bridge && <div className="approval bridge-approval">
             <div className="approval-detail" role="status">
@@ -1136,11 +1179,12 @@ export default function App() {
           )}
           {active.teamRun && <TeamPipeline run={active.teamRun} busy={busy && crewActive}
             onDecision={(decision) => planGate.current?.resolve(decision)}
-            onRetry={retryTeamStages} />}
+            onRetry={retryTeamStages} onCancel={(turnId) => void cancelTurn(turnId).catch((error) => setNotice(errorText(error)))} />}
+          <Playback />
           <Composer chatId={active.id} commands={commands} busy={busy} disabled={!workspace || folderBusy || wrongFolder || Boolean(running && !busy)}
             agent={agent} model={taskModel(active, preferences.models[agent])} effort={active.effort}
             recentModels={preferences.recentModels} configuredModels={preferences.models} onSelectModel={selectModel}
-            work={busy && running.role ? CREW[running.role].name + (running.iteration && running.iteration > 1
+            work={busy && running?.role ? CREW[running.role].name + (running.iteration && running.iteration > 1
               ? ' · iteration ' + running.iteration : '') + ' · ' + work.toLowerCase() : work}
             waiting={!!interrupt} hasHistory={active.items.length > 0} obscured={settings}
             crew={active.crew} onCrew={(crew) => setChats((previous) => previous.map(

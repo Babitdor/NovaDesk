@@ -36,15 +36,16 @@ export const appendUser = (items: ChatItem[], text: string, recipient?: CrewMode
 /// assistant item so streaming reads as typing rather than as new bubbles.
 export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewSpeaker): ChatItem[] {
   switch (event.type) {
+    case 'finalAnswerDelta':
     case 'messagePreview': {
-      const index = items.findLastIndex((item) => item.kind === 'assistant' && item.provisional)
+      const index = items.findLastIndex((item) => item.kind === 'assistant' && item.provisional && item.speaker?.stage === speaker?.stage)
       if (index < 0) return [...items, { id: nextId(), kind: 'assistant', text: event.text, provisional: true, speaker }]
       return items.map((item, at) => at === index && item.kind === 'assistant'
         ? { ...item, text: item.text + event.text } : item)
     }
     case 'messageFinal': {
       const index = event.replacePreview
-        ? items.findLastIndex((item) => item.kind === 'assistant' && item.provisional)
+        ? items.findLastIndex((item) => item.kind === 'assistant' && item.provisional && item.speaker?.stage === speaker?.stage)
         : -1
       const reply: ChatItem = { id: items[index]?.id ?? nextId(), kind: 'assistant', text: event.text,
         author: event.author ?? undefined, plain: event.plain, speaker }
@@ -58,7 +59,7 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
       return [...items, { id: nextId(), kind: 'assistant', text: event.text, speaker }]
     }
     case 'textDiscard':
-      return items.filter((item) => item.kind !== 'assistant' || !item.provisional)
+      return items.filter((item) => item.kind !== 'assistant' || !item.provisional || item.speaker?.stage !== speaker?.stage)
     case 'toolCall':
       return [
         ...items,
@@ -110,6 +111,7 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
     }
     case 'notice':
       return [...items, { id: nextId(), kind: 'notice', level: event.level, text: event.message }]
+    case 'approvalResolved':
     case 'approvalRequired':
       // A pending decision is a banner, not a transcript bubble: it disappears
       // once answered and must not be scrolled past.
@@ -117,7 +119,8 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
     case 'turnError':
       return [...items, { id: nextId(), kind: 'error', text: speaker ? CREW[speaker.role].name + ' · ' + event.message : event.message, errorKind: event.kind }]
     case 'turnFinished':
-      return items.filter((item) => item.kind !== 'assistant' || !item.provisional)
+      return items.filter((item) => item.kind !== 'assistant' || !item.provisional || item.speaker?.stage !== speaker?.stage)
+    case 'timing':
     case 'turnStarted':
     case 'session':
     case 'usage':

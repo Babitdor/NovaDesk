@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { clearAllDrafts, draftCount } from '../lib/drafts'
 import type { WorkspaceInfo } from '../lib/events'
@@ -246,8 +246,17 @@ function CrashDialog({ report, onClose, onClear }: {
   report: CrashReport; onClose: () => void; onClear: () => void
 }) {
   const [copy, setCopy] = useState('')
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const modal = dialog.current
+    modal?.showModal()
+    return () => { modal?.close() }
+  }, [])
   return (
-    <div className="crash-dialog" role="dialog" aria-modal="true" aria-label="Crash report">
+    <dialog ref={dialog} className="crash-dialog" {...{ closedby:'any' }} onClose={(event) => {
+        // Effect replay can deliver close after the dialog has reopened.
+        if (!event.currentTarget.open) onClose()
+      }} aria-label="Crash report">
       <div className="crash-card">
         <header>
           <h2>{report.source === 'webview' ? 'Page error' : 'Crash'} · {new Date(report.at).toLocaleString()}</h2>
@@ -265,6 +274,6 @@ function CrashDialog({ report, onClose, onClear }: {
           <button type="button" onClick={onClose}>Close</button>
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }

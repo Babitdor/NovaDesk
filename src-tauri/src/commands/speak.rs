@@ -277,6 +277,7 @@ pub struct SpeechAudio {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakRequest {
+    id: Option<String>,
     destination: String,
     model_id: Option<String>,
     profile: Option<Profile>,
@@ -291,7 +292,50 @@ pub async fn speak_synthesize(
     request: SpeakRequest,
     state: State<'_, AppState>,
 ) -> Result<SpeechAudio, AppError> {
+    let id = request
+        .id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if uuid::Uuid::parse_str(&id).is_err() {
+        return Err(AppError::Speak("Invalid speech request ID".into()));
+    }
+    let cancel = CancellationToken::new();
+    state
+        .speech_jobs
+        .lock()
+        .expect("speech jobs mutex")
+        .insert(id.clone(), cancel.clone());
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(AppError::Cancelled),
+        result = synthesize_request(app, request, state.inner().clone()) => result,
+    };
+    state
+        .speech_jobs
+        .lock()
+        .expect("speech jobs mutex")
+        .remove(&id);
+    result
+}
+
+#[tauri::command]
+pub fn speak_stop(id: String, state: State<'_, AppState>) {
+    if let Some(cancel) = state
+        .speech_jobs
+        .lock()
+        .expect("speech jobs mutex")
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+}
+
+async fn synthesize_request(
+    app: AppHandle,
+    request: SpeakRequest,
+    state: AppState,
+) -> Result<SpeechAudio, AppError> {
     let SpeakRequest {
+        id: _,
         destination,
         model_id,
         profile,

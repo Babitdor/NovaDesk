@@ -15,7 +15,9 @@ export const AGENTS = {
 
 export type AgentId = keyof typeof AGENTS
 export type ModelSelection = { agent: AgentId; model: string | null; effort?: string }
+export type HarnessCapabilities = { streaming:boolean; permissions:boolean; steering:boolean; sessionReuse:boolean; readOnly:boolean; finalStreaming:boolean }
 export type AgentStatus = {
+  capabilities?: HarnessCapabilities
   id: AgentId
   name: string
   installed: boolean
@@ -239,11 +241,12 @@ export type Preferences = {
   /// Which approval interrupts are answered without asking. Off by default:
   /// the same hook answers a plan only when explicitly chosen, and never
   /// answers a question on the user's behalf.
-  autoApprove: AutoApprove
+  autoApprove: boolean
+  approvalMigrationNotice: boolean
 }
 
 /// 'tools' answers tool-permission requests only; 'all' also approves plans.
-export type AutoApprove = 'off' | 'tools' | 'all'
+export type AutoApprove = boolean
 
 const defaults: Preferences = {
   appearance: 'system', accent: 'Nova', customAccent: '#b891f7', customAccentLight: '#7a2f3a',
@@ -265,7 +268,7 @@ const defaults: Preferences = {
   disabledSkills: [],
   agentsMaySchedule: false, askBeforeCrossThread: true, pauseSchedules: false,
   agentLimit: 10, scheduleActivity: [],
-  autoApprove: 'off',
+  autoApprove: false, approvalMigrationNotice: false,
 }
 
 export const INTERFACE_MIN = 50
@@ -499,9 +502,8 @@ export function migratePreferences(raw: unknown): Preferences {
     },
     // Three spellings and nothing else: a stored blob cannot widen what the
     // app approves without the user having picked it.
-    autoApprove: stored.autoApprove === 'tools' || stored.autoApprove === 'all'
-      ? stored.autoApprove
-      : defaults.autoApprove,
+    autoApprove: stored.autoApprove === true || (stored.autoApprove as unknown) === 'all',
+    approvalMigrationNotice: (stored.autoApprove as unknown) === 'tools' || stored.approvalMigrationNotice === true,
     interfaceSize: clampInterfaceSize(typeof stored.interfaceSize === 'number' ? stored.interfaceSize : defaults.interfaceSize),
     agentLimit: typeof stored.agentLimit === 'number'
       ? Math.min(100, Math.max(1, Math.round(stored.agentLimit)))

@@ -6,9 +6,12 @@ export type FinishReason = 'completed' | 'cancelled' | 'failed'
 /// turn owns its own channel, so the caller already knows which turn it is on.
 export type AgentEvent =
   | { type: 'turnStarted' }
+  | { type:'timing'; phase:string; ms:number }
+  | { type: 'approvalResolved'; interruptId: string }
   | { type: 'session'; id: string }
   | { type: 'usage'; input: number; output: number }
   | { type: 'messageDelta'; text: string }
+  | { type: 'finalAnswerDelta'; text: string }
   | { type: 'messagePreview'; text: string }
   | { type: 'messageFinal'; text: string; author?: string | null; replacePreview: boolean; plain: boolean }
   | { type: 'textDiscard' }
