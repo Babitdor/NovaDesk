@@ -10,7 +10,7 @@ import { errorText, saveFile } from '../lib/ipc'
 import { fileDraft, keepFileDraft } from '../lib/fileDrafts'
 
 export type SourceHandle = { dirty: () => boolean; save: () => Promise<boolean>; discard: () => void }
-type Props = { path:string; root:string; text:string; hidden:boolean; ref:Ref<SourceHandle>; onDirty:(dirty:boolean) => void; onSaved:() => void; onText:(text:string) => void }
+type Props = { path:string; root:string; text:string; hidden:boolean; readOnly:boolean; ref:Ref<SourceHandle>; onDirty:(dirty:boolean) => void; onSaved:() => void; onText:(text:string) => void }
 
 const colors = HighlightStyle.define([
   { tag:tags.keyword, color:'var(--code-keyword)' },
@@ -24,8 +24,15 @@ const colors = HighlightStyle.define([
   { tag:tags.link, color:'var(--code-property)', textDecoration:'underline' },
 ])
 
-export function SourceEditor({ path, root, text, hidden, ref, onDirty, onSaved, onText }: Props) {
-  const [initial] = useState(() => fileDraft(root, path) ?? { base:text, text })
+/// A file a tool handed over opens locked: reading it is the point, and an editor
+/// that takes a keystroke on the way past is a way to lose a change. The toolbar's
+/// Edit unlocks it; nothing else about the editor changes.
+export function SourceEditor({ path, root, text, hidden, readOnly, ref, onDirty, onSaved, onText }: Props) {
+  // A locked file ignores a recovered draft: that draft belongs to an editing
+  // session, and this is a read.
+  const [openingReadOnly] = useState(readOnly)
+  const [initial] = useState(() => (openingReadOnly ? null : fileDraft(root, path)) ?? { base:text, text })
+  const [locked, setLocked] = useState(openingReadOnly)
   const base = useRef(initial.base)
   const document = useRef(initial.text)
   const lineEnding = useRef(initial.base.includes('\r\n') ? '\r\n' : '\n')
@@ -53,6 +60,8 @@ export function SourceEditor({ path, root, text, hidden, ref, onDirty, onSaved, 
     setDirty(changed)
     onText(document.current)
     updateDirty.current(changed)
+    // A read-only visit must not erase a draft left by an earlier editing session.
+    if (locked) return
     try { keepFileDraft(root, path, base.current, document.current) }
     catch { setFailure('Draft recovery is unavailable. Save before leaving this workspace.'); }
   }
@@ -104,7 +113,9 @@ export function SourceEditor({ path, root, text, hidden, ref, onDirty, onSaved, 
     const syntax = new Compartment()
     const view = new EditorView({ parent:host.current, state:EditorState.create({
       doc:initial.text,
-      extensions:[basicSetup, syntaxHighlighting(colors), syntax.of([]), wrap.current.of([]), editable.current.of([]),
+      extensions:[basicSetup, syntaxHighlighting(colors), syntax.of([]), wrap.current.of([]),
+        // The compartment's first value is the lock; Edit reconfigures it empty.
+        editable.current.of(openingReadOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
         EditorView.contentAttributes.of({ 'aria-label':'File editor', spellcheck:'false', autocapitalize:'off' }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !replacing.current) {
@@ -132,7 +143,34 @@ export function SourceEditor({ path, root, text, hidden, ref, onDirty, onSaved, 
     }).catch(() => { if (alive) setMessage('Syntax unavailable; showing plain text') })
     return () => { alive = false; editor.current = null; view.destroy() }
     // A file owns one editor and undo history; refreshes update its document below.
-  }, [path, root, initial, language])
+  }, [path, root, initial, language, openingReadOnly])
+
+  const unlock = () => {
+    const draft = fileDraft(root, path)
+    if (draft && draft.text !== draft.base) {
+      base.current = draft.base
+      document.current = draft.text
+      lineEnding.current = draft.base.includes('\r\n') ? '\r\n' : '\n'
+      setEnding(lineEnding.current)
+      const view = editor.current
+      replacing.current = true
+      view?.dispatch({ changes:{ from:0, to:view.state.doc.length, insert:draft.text } })
+      replacing.current = false
+      setMessage('Recovered unsaved changes')
+    }
+    setLocked(false)
+  }
+
+  // Edit unlocks the read; the lock is only ever the opening state, so this fires
+  // once and never fights the save that reconfigures the same compartment.
+  useEffect(() => {
+    editor.current?.dispatch({
+      effects: editable.current.reconfigure(
+        locked ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [],
+      ),
+    })
+    if (!locked) actions.current.remember()
+  }, [locked])
 
   useEffect(() => {
     if (text === base.current) return
@@ -152,6 +190,7 @@ export function SourceEditor({ path, root, text, hidden, ref, onDirty, onSaved, 
 
   return <section className="source-editor" hidden={hidden} aria-label="Source editor">
     <div className="source-toolbar" role="group" aria-label="Editor actions">
+      {locked && <button type="button" className="ghost" onClick={unlock} title="Unlock this file for editing">Edit</button>}
       <button type="button" className="ghost" onClick={() => editor.current && openSearchPanel(editor.current)} title="Find and replace (Ctrl+F / Ctrl+H)">Find</button>
       <button type="button" className="ghost" onClick={() => editor.current && gotoLine(editor.current)} title="Go to line (Ctrl+G)">Go to line</button>
       <button type="button" className="ghost" aria-pressed={wrapped} onClick={() => {
@@ -160,7 +199,7 @@ export function SourceEditor({ path, root, text, hidden, ref, onDirty, onSaved, 
       <button type="button" className="source-save" disabled={!dirty || busy} onClick={() => void save()} title="Save file (Ctrl+S)">{busy ? 'Saving…' : 'Save'}</button>
     </div>
     <div className="code-editor" ref={host} />
-    <footer className="source-status"><span>{dirty ? '● Unsaved' : 'Saved'}</span><span>Ln {position.line}, Col {position.column}</span><span>{language?.name ?? 'Plain text'}</span><span>UTF-8 · {ending === '\r\n' ? 'CRLF' : 'LF'}</span></footer>
+    <footer className="source-status"><span>{locked ? 'Read-only' : dirty ? '● Unsaved' : 'Saved'}</span><span>Ln {position.line}, Col {position.column}</span><span>{language?.name ?? 'Plain text'}</span><span>UTF-8 · {ending === '\r\n' ? 'CRLF' : 'LF'}</span></footer>
     {(failure || message) && <p className={failure ? 'source-message is-error' : 'source-message'} role="status">{failure || message}</p>}
   </section>
 }

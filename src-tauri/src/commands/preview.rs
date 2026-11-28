@@ -205,6 +205,20 @@ async fn handle(
         )
         .await;
     }
+    // Chromium scrubs audio and video, and lays out a PDF, with ranged requests:
+    // without this a media preview would download the whole file and then refuse
+    // to seek.
+    if let Some((first, last)) = requested_range(&head, bytes.len()) {
+        return respond_range(
+            &mut stream,
+            content_type(&found),
+            &bytes,
+            first,
+            last,
+            method == "HEAD",
+        )
+        .await;
+    }
     respond(
         &mut stream,
         200,
@@ -347,6 +361,51 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// The single range a request asks for, as inclusive `(first, last)` bytes.
+///
+/// Only the `bytes=` form matters, and only one of them: this server answers whole
+/// files, and a client asking for several ranges at once is asking a question no
+/// preview needs answered. Anything unparseable answers `None`, which serves the
+/// whole file — a client that cannot use a 206 still gets its bytes.
+fn requested_range(head: &str, len: usize) -> Option<(usize, usize)> {
+    if len == 0 {
+        return None;
+    }
+    let value = head.lines().find_map(|line| {
+        let (name, rest) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("range").then(|| rest.trim())
+    })?;
+    let spec = value.strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (first, last) = spec.split_once('-')?;
+    let (start, end) = match (first.trim(), last.trim()) {
+        // `-500`: the last 500 bytes, which is how a player asks for a tail.
+        ("", suffix) => (len.saturating_sub(suffix.parse().ok()?), len - 1),
+        (start, "") => (start.parse().ok()?, len - 1),
+        (start, end) => (start.parse().ok()?, end.parse().ok()?),
+    };
+    (start <= end && end < len).then_some((start, end))
+}
+
+/// The header block every response shares. `extra` carries `Content-Range` for a
+/// 206 and nothing at all otherwise.
+fn headers(status: u16, mime: &str, len: usize, extra: &str) -> String {
+    let reason = match status {
+        200 => "OK",
+        206 => "Partial Content",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        413 => "Content Too Large",
+        _ => "Internal Server Error",
+    };
+    format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\n{extra}Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n"
+    )
+}
+
 async fn respond(
     stream: &mut TcpStream,
     status: u16,
@@ -354,18 +413,40 @@ async fn respond(
     body: &[u8],
     head_only: bool,
 ) -> std::io::Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Content Too Large",
-        _ => "Internal Server Error",
-    };
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
-        body.len()
-    );
+    send(
+        stream,
+        &headers(status, mime, body.len(), ""),
+        body,
+        head_only,
+    )
+    .await
+}
+
+/// A 206 for one range of `bytes`: the same headers, plus where the slice sits.
+async fn respond_range(
+    stream: &mut TcpStream,
+    mime: &str,
+    bytes: &[u8],
+    first: usize,
+    last: usize,
+    head_only: bool,
+) -> std::io::Result<()> {
+    let extra = format!("Content-Range: bytes {first}-{last}/{}\r\n", bytes.len());
+    send(
+        stream,
+        &headers(206, mime, last - first + 1, &extra),
+        &bytes[first..=last],
+        head_only,
+    )
+    .await
+}
+
+async fn send(
+    stream: &mut TcpStream,
+    head: &str,
+    body: &[u8],
+    head_only: bool,
+) -> std::io::Result<()> {
     stream.write_all(head.as_bytes()).await?;
     if !head_only {
         stream.write_all(body).await?;
@@ -379,6 +460,30 @@ mod tests {
     use crate::testtmp::TempDir;
 
     const SECRET: &str = "abc123";
+
+    #[test]
+    fn a_range_request_is_one_inclusive_slice_or_nothing() {
+        let head = "GET /x HTTP/1.1\r\nRange: bytes=0-9\r\n\r\n";
+        assert_eq!(requested_range(head, 100), Some((0, 9)));
+        assert_eq!(requested_range("Range: bytes=90-\r\n", 100), Some((90, 99)));
+        assert_eq!(requested_range("Range: bytes=-5\r\n", 100), Some((95, 99)));
+        // Out of bounds, several ranges at once, another unit, and no range at all
+        // are all "serve the whole file" rather than a refusal.
+        assert_eq!(requested_range("Range: bytes=0-100\r\n", 100), None);
+        assert_eq!(requested_range("Range: bytes=0-1,5-6\r\n", 100), None);
+        assert_eq!(requested_range("Range: items=0-1\r\n", 100), None);
+        assert_eq!(requested_range("Accept: */*\r\n", 100), None);
+        assert_eq!(requested_range("Range: bytes=0-9\r\n", 0), None);
+    }
+
+    #[test]
+    fn a_partial_response_names_the_slice_it_carries() {
+        let head = headers(206, "audio/mpeg", 10, "Content-Range: bytes 5-14/100\r\n");
+        assert!(head.starts_with("HTTP/1.1 206 Partial Content\r\n"));
+        assert!(head.contains("Content-Length: 10\r\n"));
+        assert!(head.contains("Accept-Ranges: bytes\r\n"));
+        assert!(head.contains("Content-Range: bytes 5-14/100\r\n"));
+    }
 
     #[test]
     fn a_nested_request_maps_to_its_relative_path() {

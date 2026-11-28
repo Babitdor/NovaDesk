@@ -30,7 +30,7 @@ import {
   beginTeam, finishTeam, cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval, setAutoApprove,
   setCrashPolicy, setQuickLauncher, setWidget, setWorkspace, startTurn, type TerminalShell,
 } from './lib/ipc'
-import { MAX_CHATS, createChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
+import { MAX_CHATS, createChat, forkChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
 import { startToolBridge, type ToolHandler } from './lib/toolBridge'
 import type { BrowserTarget } from './components/BrowserPane'
 import { setDisabledSkills } from './lib/tools'
@@ -411,6 +411,17 @@ export default function App() {
       return protectedTask ? [...next.slice(0, MAX_CHATS - 1), protectedTask] : next.slice(0, MAX_CHATS)
     })
     setActiveId(drafts[0].id)
+  }
+
+  /// A fork is a new task that starts from one reply: it keeps the folder, the
+  /// harness and the backend session, so the branch inherits the conversation it
+  /// split from. A running turn is refused for the same reason deleting one is.
+  const forkFrom = (itemId: string) => {
+    if (live.current || crewRun.current) {
+      setNotice('Stop the running turn before forking this task.')
+      return
+    }
+    addTasks([forkChat(active, itemId)])
   }
 
   const approveWorkspace = (root: string) => {
@@ -1127,7 +1138,8 @@ export default function App() {
           </section>}
           <ChatLog key={active.id} items={active.items} busy={busy}
             markdown={preferences.markdown} backend={backendName} workspaceReady={!!workspace}
-            compact={preferences.compactConversation} expandTools={preferences.expandToolActivity} />
+            compact={preferences.compactConversation} expandTools={preferences.expandToolActivity}
+            onFork={forkFrom} />
           {interrupt?.speaker && <small className="approval-owner">{CREW[interrupt.speaker.role].name} · {interrupt.speaker.harness ?? preferences.crew[interrupt.speaker.role]?.agent ?? 'nova'} · {interrupt.turnId.slice(0,8)}</small>}
           {interrupt && <Interrupt key={interrupt.turnId + interrupt.interruptId} request={interrupt} pending={replyPending}
             onReply={(reply) => void answer(reply)} />}

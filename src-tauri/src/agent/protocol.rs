@@ -1119,6 +1119,12 @@ impl AgentBackend for InteractiveAgent {
 }
 
 fn normalize(id: &str, frame: &Value, sink: &EventSink, frames: &mut cli::Frames) -> bool {
+    if let Some(text) = cli::reasoning(id, frame) {
+        let _ = sink.send(AgentEvent::ReasoningDelta {
+            text: text.chars().take(64000).collect(),
+        });
+        return false;
+    }
     let mut text = None;
     match id {
         "codex" => match frame["method"].as_str() {
@@ -1428,6 +1434,37 @@ mod tests {
             );
         }
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn exposed_thinking_uses_its_own_channel_across_protocols() {
+        for (id, frame) in [
+            (
+                "codex",
+                json!({"method":"item/reasoning/summaryTextDelta","params":{"delta":"Checking"}}),
+            ),
+            (
+                "pi",
+                json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"Checking"}}),
+            ),
+            (
+                "claude",
+                json!({"type":"stream_event","event":{"delta":{"type":"thinking_delta","thinking":"Checking"}}}),
+            ),
+            (
+                "opencode",
+                json!({"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"Checking"}}}}),
+            ),
+        ] {
+            let (sink, seen) = crate::events::testutil::collect_events();
+            assert!(!normalize(id, &frame, &sink, &mut cli::Frames::default()));
+            assert_eq!(
+                *seen.lock().unwrap(),
+                vec![AgentEvent::ReasoningDelta {
+                    text: "Checking".into()
+                }]
+            );
+        }
     }
 
     #[test]

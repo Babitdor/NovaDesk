@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { kindOf, resolveRelative } from './preview.ts'
+import { crumbsOf, iconOf, kindOf, resolveRelative, servedByUrl } from './preview.ts'
 
 test('the extension alone decides the kind', () => {
   assert.equal(kindOf('assets/logo.svg'), 'image')
@@ -50,4 +50,43 @@ test('a query or fragment is stripped before the path is resolved', () => {
 test('a percent-encoded name is decoded, and an absolute path means the root', () => {
   assert.equal(resolveRelative('docs/page.md', 'my%20file.md'), 'docs/my file.md')
   assert.equal(resolveRelative('docs/page.md', '/assets/x.png'), 'assets/x.png')
+})
+
+test('a PDF, a video and an audio track are kinds of their own', () => {
+  assert.equal(kindOf('docs/spec.pdf'), 'pdf')
+  assert.equal(kindOf('clip.MP4'), 'video')
+  assert.equal(kindOf('song.flac'), 'audio')
+})
+
+test('only what the loopback server has to serve asks for a URL', () => {
+  assert.equal(servedByUrl('html'), true)
+  assert.equal(servedByUrl('pdf'), true)
+  assert.equal(servedByUrl('video'), true)
+  assert.equal(servedByUrl('audio'), true)
+  assert.equal(servedByUrl('markdown'), false)
+  assert.equal(servedByUrl('image'), false)
+  assert.equal(servedByUrl('text'), false)
+})
+
+test('the tree paints a category from the extension, and a name without one still gets a category', () => {
+  assert.equal(iconOf('src/App.tsx'), 'code')
+  assert.equal(iconOf('src/styles.scss'), 'style')
+  assert.equal(iconOf('README.md'), 'doc')
+  assert.equal(iconOf('package.json'), 'data')
+  assert.equal(iconOf('assets/logo.svg'), 'image')
+  assert.equal(iconOf('clip.mp4'), 'media')
+  assert.equal(iconOf('bundle.zip'), 'archive')
+  assert.equal(iconOf('index.html'), 'page')
+  assert.equal(iconOf('Makefile'), 'file')
+  assert.equal(iconOf('.gitignore'), 'file')
+})
+
+test('a breadcrumb carries the prefix each segment stands for', () => {
+  assert.deepEqual(crumbsOf('docs/img/diagram.png'), [
+    { name: 'docs', path: 'docs' },
+    { name: 'img', path: 'docs/img' },
+    { name: 'diagram.png', path: 'docs/img/diagram.png' },
+  ])
+  assert.deepEqual(crumbsOf('README.md'), [{ name: 'README.md', path: 'README.md' }])
+  assert.deepEqual(crumbsOf(''), [])
 })

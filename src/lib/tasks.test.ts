@@ -53,4 +53,9 @@ test('task tools read, search, update, open and start the named task', async () 
   await assert.rejects(tool('archive_task', { taskId: chat.id }), /running turn/)
   await tool('archive_task', { taskId })
   assert.deepEqual(chats, [chat])
+  chat.items = [{ id:'thought', kind:'thinking', text:'Harness summary', active:false },
+    { id:'reply', kind:'assistant', text:'Public reply' }]
+  const transcript = await tool('read_task', { taskId:chat.id }) as { messages:Array<{ role:string; text:string }> }
+  assert.deepEqual(transcript.messages, [{ role:'assistant', text:'Public reply', author:null }])
+  assert.equal((await tool('search_tasks', { query:'Harness summary' }) as { hits:unknown[] }).hits.length, 0)
 })

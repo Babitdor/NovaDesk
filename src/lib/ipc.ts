@@ -10,6 +10,10 @@ export const setWorkspace = (path: string) => invoke<WorkspaceInfo>('set_workspa
 
 export const listDir = (path: string) => invoke<DirEntry[]>('list_dir', { path })
 
+/// The Go-to-file box: filenames matching a query, walked and pruned in Rust, so
+/// the pane pays one call instead of one per folder.
+export const searchFiles = (query: string) => invoke<DirEntry[]>('search_files', { query })
+
 export const saveFile = (path: string, root: string, expected: string, content: string) =>
   invoke<void>('save_file', { path, root, expected, content })
 

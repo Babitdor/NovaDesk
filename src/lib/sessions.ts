@@ -63,6 +63,29 @@ export const createChat = (): Chat => ({
   state: 'idle',
 })
 
+/// A fork is a task of its own that starts from one entry of another: the
+/// transcript is copied through the entry it was forked at, and the harness
+/// session comes along, so the branch inherits the conversation the agent was
+/// already having. From the fork point the two tasks diverge — nothing is shared
+/// but the text, and a pinned flag or a finished team run belongs to the parent.
+export function forkChat(chat: Chat, itemId: string): Chat {
+  const at = chat.items.findIndex((item) => item.id === itemId)
+  return {
+    ...createChat(),
+    title: chat.title,
+    items: at === -1 ? chat.items : chat.items.slice(0, at + 1),
+    column: chat.column,
+    workspace: chat.workspace,
+    agent: chat.agent,
+    crew: chat.crew,
+    model: chat.model,
+    effort: chat.effort,
+    connectionId: chat.connectionId,
+    session: chat.session,
+    usage: chat.usage,
+  }
+}
+
 export function taskModel(chat: Chat, configured?: string): string | undefined {
   if (chat.model !== undefined) return chat.model ?? undefined
   if (chat.agent && chat.items.length) return undefined
@@ -127,7 +150,8 @@ export function load(): Chat[] {
         // An unknown column is dropped rather than invented: `boardColumn`
         // derives it from the task itself, which is truer than a stored guess.
         column: COLUMNS.includes(chat.column as Column) ? chat.column : undefined,
-        items: chat.items.slice(-MAX_ITEMS),
+        items: chat.items.slice(-MAX_ITEMS).map((item:ChatItem) => item.kind === 'thinking' ? { ...item, active:false }
+          : item.kind === 'tool' && item.ok === undefined ? { ...item, finished:true } : item),
       }))
   } catch {
     // Corrupt history is not a startup error: an empty list beats a blank window.

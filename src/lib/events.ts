@@ -10,6 +10,7 @@ export type AgentEvent =
   | { type: 'approvalResolved'; interruptId: string }
   | { type: 'session'; id: string }
   | { type: 'usage'; input: number; output: number }
+  | { type: 'reasoningDelta'; text: string }
   | { type: 'messageDelta'; text: string }
   | { type: 'finalAnswerDelta'; text: string }
   | { type: 'messagePreview'; text: string }

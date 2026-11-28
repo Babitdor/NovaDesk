@@ -951,7 +951,47 @@ pub(super) struct Frames {
     tools: HashMap<String, VecDeque<String>>,
 }
 
+/// Only text the harness explicitly publishes as thinking; never signatures or opaque payloads.
+pub(super) fn reasoning<'a>(id: &str, frame: &'a Value) -> Option<&'a str> {
+    let kind = frame["type"].as_str().unwrap_or_default();
+    let value = match (id, kind) {
+        ("codex", _) if frame["method"] == "item/reasoning/summaryTextDelta" => {
+            &frame["params"]["delta"]
+        }
+        ("codex", "item.completed") if frame["item"]["type"] == "reasoning" => {
+            &frame["item"]["text"]
+        }
+        ("pi", "message_update") if frame["assistantMessageEvent"]["type"] == "thinking_delta" => {
+            &frame["assistantMessageEvent"]["delta"]
+        }
+        ("claude", "stream_event") if frame["event"]["delta"]["type"] == "thinking_delta" => {
+            &frame["event"]["delta"]["thinking"]
+        }
+        ("opencode" | "hermes" | "commandcode", _)
+            if frame["params"]["update"]["sessionUpdate"] == "agent_thought_chunk" =>
+        {
+            &frame["params"]["update"]["content"]["text"]
+        }
+        ("opencode", "reasoning") => &frame["part"]["text"],
+        ("commandcode", "event") if frame["event"]["type"] == "reasoning_delta" => {
+            &frame["event"]["delta"]
+        }
+        (_, "reasoning_delta" | "thinking_delta") => frame
+            .get("text")
+            .or_else(|| frame.get("content"))
+            .unwrap_or(&frame["delta"]),
+        _ => return None,
+    };
+    value.as_str().filter(|text| !text.is_empty())
+}
+
 pub(super) fn handle_frame(id: &str, frame: &Value, sink: &EventSink, state: &mut Frames) {
+    if let Some(text) = reasoning(id, frame) {
+        let _ = sink.send(AgentEvent::ReasoningDelta {
+            text: clip(text, 64000),
+        });
+        return;
+    }
     let kind = frame["type"].as_str().unwrap_or_default();
     let sent = &mut state.sent;
     let failure = &mut state.failure;

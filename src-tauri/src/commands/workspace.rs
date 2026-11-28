@@ -7,8 +7,10 @@ use crate::error::AppError;
 use crate::workspace::WorkspaceGuard;
 use crate::AppState;
 
-/// Bounded so a stray multi-megabyte file cannot stall the IPC channel.
-const MAX_READ_BYTES: u64 = 256 * 1024;
+/// Bounded so a stray multi-megabyte file cannot stall the IPC channel. Two
+/// MiB is where a minified bundle or a long log still opens; past it the file is
+/// a mistake to paste into a text editor, and the pane says so by name.
+const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -320,9 +322,92 @@ pub async fn file_stamp(path: String, state: State<'_, AppState>) -> Result<File
     })
 }
 
+/// The walk behind the pane's Go-to-file box. Bounded three ways — depth, entries
+/// visited, results returned — because it runs on the command thread and a repo
+/// with a stray `node_modules` is the normal case, not the exception.
+const SEARCH_MAX_RESULTS: usize = 100;
+const SEARCH_MAX_ENTRIES: usize = 20_000;
+const SEARCH_MAX_DEPTH: usize = 12;
+
+/// Folders no one opens from a picker and everyone pays for in a walk: build
+/// output, dependency trees, and this app's own scratch directories.
+const SEARCH_SKIP: [&str; 12] = [
+    ".git",
+    ".nuxt",
+    ".playwright-mcp",
+    ".temp",
+    ".venv",
+    ".next",
+    "build",
+    "dist",
+    "node_modules",
+    "target",
+    "venv",
+    "__pycache__",
+];
+
+/// Files whose name contains `query`, case-insensitively, for Ctrl+P. An empty
+/// query answers nothing rather than the whole tree: the box only means something
+/// once it has narrowed it.
+#[tauri::command]
+pub async fn search_files(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<DirEntry>, AppError> {
+    let guard = state.require_guard().await?;
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(search(&guard, &needle))
+}
+
+/// A stack walk, not recursion: depth is a guard, and a symlink loop is a real
+/// possibility in a workspace. Paths come from the walk itself, never from the
+/// caller, so this cannot address anything outside the root.
+fn search(guard: &WorkspaceGuard, needle: &str) -> Vec<DirEntry> {
+    let mut found: Vec<DirEntry> = Vec::new();
+    let mut stack = vec![(guard.root().to_path_buf(), 0_usize)];
+    let mut visited = 0_usize;
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > SEARCH_MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > SEARCH_MAX_ENTRIES || found.len() >= SEARCH_MAX_RESULTS {
+                found.sort_by(|a, b| a.path.cmp(&b.path));
+                return found;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if !SEARCH_SKIP
+                    .iter()
+                    .any(|skip| skip.eq_ignore_ascii_case(&name))
+                {
+                    stack.push((entry.path(), depth + 1));
+                }
+            } else if name.to_lowercase().contains(needle) {
+                found.push(DirEntry {
+                    path: guard.display_relative(&entry.path()),
+                    name,
+                    is_dir,
+                });
+            }
+        }
+    }
+    // read_dir order is the filesystem's, so sort for a stable picker order.
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{base64, save_text};
+    use super::{base64, save_text, search, MAX_READ_BYTES};
     use crate::{error::AppError, testtmp::TempDir, workspace::WorkspaceGuard};
 
     #[test]
@@ -343,7 +428,13 @@ mod tests {
         std::fs::write(&path, [0xff, 0, 0x41]).unwrap();
         assert!(save_text(&guard, "file.ts", "�\0A", "oops").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), [0xff, 0, 0x41]);
-        assert!(save_text(&guard, "file.ts", "", &"x".repeat(256 * 1024 + 1)).is_err());
+        assert!(save_text(
+            &guard,
+            "file.ts",
+            "",
+            &"x".repeat(MAX_READ_BYTES as usize + 1)
+        )
+        .is_err());
     }
 
     #[test]
@@ -383,5 +474,26 @@ mod tests {
              q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj\
              5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
         );
+    }
+
+    #[test]
+    fn go_to_file_walks_the_workspace_but_not_build_or_dependency_folders() {
+        let tmp = TempDir::new("search-files");
+        for dir in ["src/deep", "node_modules/pkg", ".git/objects"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        for file in [
+            "src/app.ts",
+            "src/deep/Helper.TSX",
+            "README.md",
+            "node_modules/pkg/hidden.ts",
+            ".git/objects/blob.ts",
+        ] {
+            std::fs::write(tmp.path().join(file), "x").unwrap();
+        }
+        let guard = WorkspaceGuard::new(tmp.path()).unwrap();
+        let found: Vec<String> = search(&guard, "ts").into_iter().map(|e| e.path).collect();
+        assert_eq!(found, ["src/app.ts", "src/deep/Helper.TSX"]);
+        assert_eq!(search(&guard, "readme")[0].path, "README.md");
     }
 }

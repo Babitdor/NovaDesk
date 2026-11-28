@@ -50,6 +50,23 @@ if credentials and shim:
 from novacode_cli.agents import core_agent
 from novacode_cli.headless import pipe
 
+# Pipe releases that omit the thinking event already expose it in their TUI wire.
+original_frame = getattr(pipe.PipeSession, "_frame", None)
+
+
+def desktop_frame(self, msg):
+    if msg.get("t") == "ev" and msg.get("c") == "ReasoningDelta":
+        text = msg.get("d", {}).get("text", "")
+        if isinstance(text, str) and text:
+            self.publish("reasoning_delta", content=text, request_id=self._turn_id)
+        return
+    return original_frame(self, msg)
+
+
+if callable(original_frame):
+    pipe.PipeSession._frame = desktop_frame
+
+
 create_agent = core_agent.create_agent_with_config
 
 

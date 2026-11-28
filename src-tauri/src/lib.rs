@@ -245,6 +245,7 @@ pub fn run() {
         commands::workspace::save_file,
         commands::workspace::read_file_data_url,
         commands::workspace::file_stamp,
+        commands::workspace::search_files,
         commands::preview::preview_open,
         commands::agent::start_turn,
         commands::agent::cancel_turn,

@@ -3,6 +3,7 @@ import { CREW, type CrewMode, type CrewSpeaker } from './crew.ts'
 
 export type ChatItem =
   | { id: string; kind: 'user'; text: string; recipient?: CrewMode }
+  | { id: string; kind: 'thinking'; text: string; active: boolean; speaker?: CrewSpeaker }
   | { id: string; kind: 'assistant'; text: string; provisional?: boolean; author?: string; plain?: boolean; speaker?: CrewSpeaker }
   | {
       id: string
@@ -11,6 +12,8 @@ export type ChatItem =
       label: string
       input: string
       ok?: boolean
+      finished?: boolean
+      speaker?: CrewSpeaker
       output?: string
       /// Live stdout/stderr from a running command.
       stream?: string
@@ -35,7 +38,24 @@ export const appendUser = (items: ChatItem[], text: string, recipient?: CrewMode
 /// Folds one backend event into the transcript. Deltas extend the trailing
 /// assistant item so streaming reads as typing rather than as new bubbles.
 export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewSpeaker): ChatItem[] {
+  if (['toolCall', 'messageDelta', 'messagePreview', 'finalAnswerDelta', 'messageFinal', 'turnFinished', 'turnError'].includes(event.type)) {
+    items = items.map((item) => item.kind === 'thinking' && item.active && item.speaker?.stage === speaker?.stage
+      ? { ...item, active:false } : item)
+  }
+  if (event.type === 'turnFinished' || event.type === 'turnError') {
+    items = items.map((item) => item.kind === 'tool' && item.ok === undefined && item.speaker?.stage === speaker?.stage
+      ? { ...item, finished:true } : item)
+  }
   switch (event.type) {
+    case 'reasoningDelta': {
+      if (!event.text) return items
+      const index = items.findLastIndex((item) => item.kind === 'thinking' && item.active && item.speaker?.stage === speaker?.stage)
+      if (index >= 0) {
+        return items.map((item, at) => at === index && item.kind === 'thinking'
+          ? { ...item, text:(item.text + event.text).slice(0, 64000) } : item)
+      }
+      return [...items, { id:nextId(), kind:'thinking', text:event.text.slice(0, 64000), active:true, speaker }]
+    }
     case 'finalAnswerDelta':
     case 'messagePreview': {
       const index = items.findLastIndex((item) => item.kind === 'assistant' && item.provisional && item.speaker?.stage === speaker?.stage)
@@ -64,7 +84,7 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
       return [
         ...items,
         { id: nextId(), kind: 'tool', callId: speaker ? speaker.stage + event.callId : event.callId,
-          label: speaker ? CREW[speaker.role].name + ' · ' + event.name : event.name, input: event.input },
+          label: speaker ? CREW[speaker.role].name + ' · ' + event.name : event.name, input: event.input, speaker },
       ]
     case 'toolResult':
       return items.map((item) =>
@@ -73,17 +93,14 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
           : item,
       )
     case 'processOutput': {
-      const last = items.at(-1)
-      if (last?.kind !== 'tool') return items
-      return [
-        ...items.slice(0, -1),
-        { ...last, stream: (last.stream ?? '') + event.chunk },
-      ]
+      const index = items.findLastIndex((item) => item.kind === 'tool' && item.speaker?.stage === speaker?.stage)
+      return items.map((item, at) => at === index && item.kind === 'tool'
+        ? { ...item, stream:(item.stream ?? '') + event.chunk } : item)
     }
     case 'fileEdit':
       return [
         ...items,
-        { id: nextId(), kind: 'tool', callId: nextId(), label: `edit ${event.path}`, input: event.diff },
+        { id: nextId(), kind: 'tool', callId: nextId(), label: `edit ${event.path}`, input: event.diff, ok:true, speaker },
       ]
     case 'subagentTask': {
       // One row per subagent dispatch, upserted by task id; the label on a row
@@ -93,7 +110,7 @@ export function applyEvent(items: ChatItem[], event: AgentEvent, speaker?: CrewS
         ?? (event.subagentType ? 'Subagent · ' + event.subagentType : 'Subagent task')
       const index = items.findIndex((item) => item.kind === 'tool' && item.callId === callId)
       if (index < 0) {
-        return [...items, { id: nextId(), kind: 'tool', callId, label, input: '' }]
+        return [...items, { id: nextId(), kind: 'tool', callId, label, input: '', speaker }]
       }
       const finished = event.status !== 'running'
       const suffix = finished && event.durationMs ? ` · ${Math.round(event.durationMs / 1000)}s` : ''

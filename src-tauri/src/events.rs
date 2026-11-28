@@ -29,6 +29,10 @@ pub enum AgentEvent {
     FinalAnswerDelta {
         text: String,
     },
+    /// Thinking text or a summary explicitly exposed by the harness.
+    ReasoningDelta {
+        text: String,
+    },
     MessageDelta {
         text: String,
     },

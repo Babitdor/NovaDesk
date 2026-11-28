@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { ActivityGroup, Thinking } from './ActivityGroup'
+import { activityEntries } from '../lib/activity'
 import type { ChatItem } from '../lib/chat'
 import { CREW, crewRoles, ralphRetry } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
@@ -9,8 +11,36 @@ import { NovaCoin } from './NovaCoin'
 
 const FOLLOW_DISTANCE = 32
 
-const ConversationItem = memo(function ConversationItem({ item, markdown, backend, expand }: {
-  item: ChatItem; markdown: boolean; backend: string; expand: boolean
+/// Two sheets, one behind the other: the reply can be copied, and a check says it
+/// was without spending a line of text on the buttons.
+function CopyGlyph() {
+  return <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+    <rect x="5.8" y="2.6" width="7.6" height="9" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    <path d="M10.2 12.4v.5a1.2 1.2 0 0 1-1.2 1.2H4a1.2 1.2 0 0 1-1.2-1.2V6.4A1.2 1.2 0 0 1 4 5.2h.5"
+      fill="none" stroke="currentColor" strokeWidth="1.3" />
+  </svg>
+}
+
+function CheckGlyph() {
+  return <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M3.4 8.4 6.6 11.6 12.6 4.6" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/// One node branching off another: this task continues from this reply.
+function ForkGlyph() {
+  return <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M4.6 11.6V7.4a2 2 0 0 1 2-2h4.1" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    <path d="M9.2 3.6 11.4 5.4 9.2 7.2" fill="none" stroke="currentColor" strokeWidth="1.3"
+      strokeLinecap="round" strokeLinejoin="round" />
+    <circle cx="4.6" cy="3.4" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    <circle cx="4.6" cy="12.6" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.3" />
+  </svg>
+}
+
+const ConversationItem = memo(function ConversationItem({ item, markdown, backend, onFork }: {
+  item: ChatItem; markdown: boolean; backend: string; onFork: (itemId: string) => void
 }) {
   const [copy, setCopy] = useState('')
   switch (item.kind) {
@@ -34,14 +64,26 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
                 {role && <small>{item.speaker?.to ? 'To ' + CREW[item.speaker.to].name : CREW[role].title}{item.speaker?.harness && ' · ' + item.speaker.harness}</small>}
               </div>
             </div>
-            {!item.provisional && text && <button className="ghost reply-copy" type="button" onClick={() => {
-              if (!navigator.clipboard) {
-                setCopy('Copy unavailable')
-                return
-              }
-              void navigator.clipboard.writeText(text).then(() => setCopy('Copied'), () => setCopy('Copy failed'))
-            }}>{copy || 'Copy reply'}</button>}
-            {!item.provisional && !item.plain && text && <Playback id={item.id} text={text} />}
+            {!item.provisional && text && (
+              <div className="reply-actions">
+                <button className="ghost" type="button" title={copy || 'Copy reply'} aria-label={copy || 'Copy reply'}
+                  onClick={() => {
+                    if (!navigator.clipboard) {
+                      setCopy('Copy unavailable')
+                      return
+                    }
+                    void navigator.clipboard.writeText(text).then(() => setCopy('Copied'), () => setCopy('Copy failed'))
+                  }}>
+                  {copy === 'Copied' ? <CheckGlyph /> : <CopyGlyph />}
+                </button>
+                {copy && copy !== 'Copied' && <small role="status">{copy}</small>}
+                {!item.plain && <Playback id={item.id} text={text} />}
+                <button className="ghost" type="button" title="Fork from this reply"
+                  aria-label="Fork from this reply" onClick={() => onFork(item.id)}>
+                  <ForkGlyph />
+                </button>
+              </div>
+            )}
           </header>
           {markdown && !item.plain ? <Markdown text={text} /> : <div className="reply-plain">{text}</div>}
         </article>
@@ -52,25 +94,14 @@ const ConversationItem = memo(function ConversationItem({ item, markdown, backen
     case 'error':
       return <div className="msg msg-error">{item.text}</div>
     case 'tool':
-      return (
-        <details className="msg msg-tool" open={expand}>
-          <summary>
-            <span className="tool-name">{item.label}</span>
-            <span className={item.ok === undefined ? 'badge' : item.ok ? 'badge ok' : 'badge bad'}>
-              {item.ok === undefined ? 'Running' : item.ok ? 'Done' : 'Failed'}
-            </span>
-          </summary>
-          {item.input && <pre className="tool-output">{item.input}</pre>}
-          {item.stream && <pre className="tool-output">{item.stream}</pre>}
-          {item.output && <pre className="tool-output">{item.output}</pre>}
-        </details>
-      )
+    case 'thinking':
+      return null
   }
 })
 
-export function ChatLog({ items, busy, markdown, backend, workspaceReady, compact, expandTools }: {
+export function ChatLog({ items, busy, markdown, backend, workspaceReady, compact, expandTools, onFork }: {
   items: ChatItem[]; busy: boolean; markdown: boolean; backend: string; workspaceReady: boolean
-  compact: boolean; expandTools: boolean
+  compact: boolean; expandTools: boolean; onFork: (itemId: string) => void
 }) {
   const viewport = useRef<HTMLDivElement>(null)
   const flow = useRef<HTMLDivElement>(null)
@@ -100,10 +131,20 @@ export function ChatLog({ items, busy, markdown, backend, workspaceReady, compac
     return () => observer.disconnect()
   }, [scrollToLatest])
 
+  const latestTurn = items.slice(items.findLastIndex((item) => item.kind === 'user') + 1)
+  const waitingForProgress = busy && !latestTurn.some((item) => item.kind === 'thinking' || item.kind === 'tool' || item.kind === 'assistant')
+
   return (
     <div className="chat-area">
       <div className="chat-log" ref={viewport} role="region" aria-label="Conversation" tabIndex={0}
         data-compact={compact ? 'true' : undefined}
+        onClickCapture={(event) => {
+          // Inspecting a disclosure must not scroll it away to follow the reply.
+          if ((event.target as HTMLElement).closest('summary')) {
+            following.current = false
+            setShowLatest(true)
+          }
+        }}
         onScroll={(event) => {
           const el = event.currentTarget
           following.current = el.scrollHeight - el.clientHeight - el.scrollTop <= FOLLOW_DISTANCE
@@ -117,8 +158,10 @@ export function ChatLog({ items, busy, markdown, backend, workspaceReady, compac
               {!workspaceReady && <p>Open a workspace to start a task.</p>}
             </div>
           )}
-          {items.map((item) => <ConversationItem key={item.id} item={item} markdown={markdown}
-            backend={backend} expand={expandTools} />)}
+          {activityEntries(items).map((item) => item.kind === 'activity'
+            ? <ActivityGroup key={item.id} items={item.items} expand={expandTools} />
+            : <ConversationItem key={item.id} item={item} markdown={markdown} backend={backend} onFork={onFork} />)}
+          {waitingForProgress && <Thinking text="" active /> }
         </div>
       </div>
       {showLatest && <button type="button" className="jump-to-latest" onClick={() => {

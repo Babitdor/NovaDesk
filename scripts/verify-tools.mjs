@@ -95,6 +95,18 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     emit({ type:'approval_required', request_id:frame.id, interrupt_id:'same-id',
       kind:frame.content === 'fixture-question' ? 'question' : 'tool', payload:{ question:'Fixture question?', tool:'fixture' } }); return
   }
+  if (frame.content === 'fixture-activity') {
+    emit({ type:'reasoning_delta', request_id:frame.id, content:'Checking the local server, then opening the page.' });
+    setTimeout(() => {
+      for (let i = 0; i < 16; i++) {
+        emit({ type:'tool_call', request_id:frame.id, tool_call_id:'activity-' + i, tool:i % 3 ? 'eval' : 'Desktop · open_browser', args:{ command:'fixture ' + i } });
+        emit({ type:'tool_result', request_id:frame.id, tool_call_id:'activity-' + i, is_error:i < 3, output:i < 3 ? 'Fixture failure ' + i : 'Fixture success ' + i });
+      }
+      emit({ type:'text', request_id:frame.id, content:'Activity fixture finished.' });
+      emit({ type:'done', request_id:frame.id, status:'completed', ok:true });
+    }, 1500);
+    return;
+  }
   const finish = () => {
     emit({ type: 'text', id: frame.id, content: 'fixture response ' + frame.content })
     emit({ type: 'done', id: frame.id, status: 'completed', ok: true })
@@ -252,9 +264,10 @@ try {
   await waitFor('document.body.innerText.includes("desktop fixture needle")', 'File preview did not open')
   await call('open_file', { path:'editor.ts' })
   await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const greeting')`, 'Editable source did not open')
-  await waitFor(`document.querySelector('.source-status')?.textContent.includes('TypeScript') && document.querySelector('.cm-line span')`, 'Syntax highlighting did not load')
+  await waitFor(`document.querySelector('.source-status')?.textContent.includes('TypeScript') && Boolean(document.querySelector('.cm-line span'))`, 'Syntax highlighting did not load')
   assert.ok(await pageEval(`document.querySelector('.cm-lineNumbers').textContent.includes('1')`), 'Line numbers are missing')
   async function editSource(text) {
+    await pageEval(`Array.from(document.querySelectorAll('.source-toolbar button')).find((button) => button.textContent.trim() === 'Edit')?.click()`)
     await pageEval(`(() => { const content = document.querySelector('.cm-content'); content.focus(); document.execCommand('selectAll'); document.execCommand('insertText', false, ${JSON.stringify(text)}) })()`)
     await waitFor(`document.querySelector('.source-status')?.textContent.includes('Unsaved')`, 'Edits were not tracked')
   }
@@ -285,11 +298,13 @@ try {
   await waitFor(`Boolean(document.querySelector('.rail-settings'))`, 'App did not reload')
   await wait(500)
   await call('open_file', { path:'editor.ts' })
+  await waitFor(`Boolean(document.querySelector('.cm-content'))`, 'Reopened file did not render')
+  await pageEval(`Array.from(document.querySelectorAll('.source-toolbar button')).find((button) => button.textContent.trim() === 'Edit')?.click()`)
   await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const recovered')`, 'Unsaved draft did not survive reload')
   await pageEval(`document.querySelector('[aria-label="Close preview"]').click()`)
   await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Close did not protect the recovered draft')
   await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Save and continue').click()`)
-  await waitFor(`!document.querySelector('.preview')`, 'Save and continue did not close the file')
+  await waitFor(`!document.querySelector('.unsaved-dialog') && !document.querySelector('.preview-head')?.textContent.includes('editor.ts')`, 'Save and continue did not close the file')
   assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const recovered = true;\r\n')
   await call('open_terminal', { shell: 'cmd' })
   await waitFor(`Array.from(document.querySelectorAll('.dock-terminal-tab button')).some(
@@ -500,6 +515,29 @@ try {
     await writeFile(`.temp/responsive-settings-${width}x${height}.png`, Buffer.from((await debugCommand(resizeCommand++, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
   }
   await pageEval(`document.querySelector('.settings-back').click()`)
+  const activityTask = (await call('create_task', { title:'Condensed activity fixture' })).taskId
+  await call('open_task', { taskId:activityTask })
+  await pageEval(`Array.from(document.querySelectorAll('.view-tab[role="tab"]')).find((button) => button.textContent.trim() === 'Chat').click()`)
+  await call('start_task', { taskId:activityTask, prompt:'fixture-activity' })
+  await waitFor(`document.querySelector('.thinking-panel summary')?.textContent.includes('Thinking')`, 'Thinking UI did not appear')
+  await waitFor(`document.querySelector('.activity-summary')?.textContent.includes('16 tools')`, 'Tool burst was not grouped')
+  assert.equal(await pageEval(`document.querySelectorAll('.activity-group').length`), 1)
+  assert.equal(await pageEval(`document.querySelector('.activity-group').open`), false, 'Activity should start collapsed')
+  assert.ok(await pageEval(`document.querySelector('.activity-summary').textContent.includes('3 failed')`), 'Collapsed activity hides failures')
+  assert.ok(await pageEval(`document.querySelector('.activity-group').getBoundingClientRect().height < 65`), 'Collapsed activity is too tall')
+  await writeFile('.temp/activity-collapsed.png', Buffer.from((await debugCommand(resizeCommand++, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+  await pageEval(`document.querySelector('.activity-summary').focus()`)
+  await debugCommand(resizeCommand++, 'Input.dispatchKeyEvent', { type:'keyDown', key:'Enter', code:'Enter', text:'\r', unmodifiedText:'\r', windowsVirtualKeyCode:13 })
+  await debugCommand(resizeCommand++, 'Input.dispatchKeyEvent', { type:'keyUp', key:'Enter', code:'Enter', windowsVirtualKeyCode:13 })
+  await waitFor(`document.querySelector('.activity-group').open`, 'Keyboard could not expand activity')
+  assert.equal(await pageEval(`document.querySelectorAll('.tool-row').length`), 16)
+  assert.ok(await pageEval(`(() => { const log = document.querySelector('.chat-log').getBoundingClientRect(); const summary = document.querySelector('.activity-summary').getBoundingClientRect(); return summary.top >= log.top && summary.bottom <= log.bottom })()`), 'Expanding activity scrolled its header out of view')
+  await pageEval(`document.querySelector('.thinking-panel summary').click()`)
+  assert.ok(await pageEval(`document.querySelector('.thinking-text').textContent.includes('Checking the local server')`), 'Thinking text was not retained')
+  await pageEval(`document.querySelector('.tool-row summary').click()`)
+  assert.ok(await pageEval(`document.querySelector('.tool-row').open && document.querySelector('.tool-row-detail').textContent.includes('Fixture failure 0')`), 'Tool output was lost')
+  await writeFile('.temp/activity-expanded.png', Buffer.from((await debugCommand(resizeCommand++, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+  console.log('Condensed activity, failure counts, keyboard disclosure, thinking text and tool output passed.')
   await pageEval(`Array.from(document.querySelectorAll('.sidebar button, .new-task')).find((button) => button.textContent.includes('Teams'))?.click()`)
   await waitFor(`Boolean(document.querySelector('[aria-label="Teams workspace"]'))`, 'Teams workspace did not open')
   await pageEval(`document.querySelector('.teams-workspace summary').click()`)

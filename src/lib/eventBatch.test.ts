@@ -17,3 +17,19 @@ test('text batches while approvals and completion flush immediately in order', (
   ticks.forEach((flush) => flush())
   assert.equal(seen.length, 3)
 })
+
+test('thinking batches stay separate from the answer stream', () => {
+  const seen:AgentEvent[] = []
+  const ticks:Array<() => void> = []
+  const accept = batchAgentEvents((event) => seen.push(event), (flush) => ticks.push(flush))
+  accept({ type:'reasoningDelta', text:'Check ' })
+  accept({ type:'reasoningDelta', text:'the server' })
+  accept({ type:'messagePreview', text:'The page is ready.' })
+  accept({ type:'turnFinished', reason:'completed' })
+  ticks.forEach((flush) => flush())
+  assert.deepEqual(seen, [
+    { type:'reasoningDelta', text:'Check the server' },
+    { type:'messagePreview', text:'The page is ready.' },
+    { type:'turnFinished', reason:'completed' },
+  ])
+})

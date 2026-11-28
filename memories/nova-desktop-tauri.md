@@ -84,3 +84,41 @@ Typing into a CodeMirror editor needs a real click (`Input.dispatchMouseEvent`) 
 `Input.insertText`; Ctrl+S is `Input.dispatchKeyEvent` `keyDown`/`keyUp` with `modifiers: 2`.
 Judge layout with `getBoundingClientRect()` — reading `textContent` proves nothing about whether a
 pane has width (a closed `.right.is-closed` column still renders its whole subtree at 0 px).
+
+
+---
+
+
+## Condensed activity and the reasoning channel (0.10.0)
+`ChatItem` gained `thinking` (with `active`), and tool rows gained `finished`/`speaker`. `activityEntries`
+in `src/lib/activity.ts` folds every consecutive run of `tool`/`thinking` items into one `activity` entry —
+the transcript model stays flat, so `tasks.ts`, drafts and forks keep working unchanged.
+
+* **Sealing is the rule that keeps a transcript honest.** A thinking item goes `active:false` as soon as any
+  `toolCall`/`messageDelta`/`turnFinished` arrives, and a tool row with no `ok` becomes `finished` on
+  `turnFinished`/`turnError` (rendered **Interrupted**). `load()` applies both on read, so a reloaded
+  transcript never shows a live spinner. A new item kind that can be "in flight" owes the same treatment.
+* **`AgentEvent::ReasoningDelta` is the only reasoning channel.** `cli::reasoning` maps each harness
+  (codex `item/reasoning/summaryTextDelta` plus `item.completed` reasoning items, pi/claude `thinking_delta`,
+  opencode/hermes/commandcode `agent_thought_chunk`, commandcode `event.reasoning_delta`), and
+  `normalize`/`handle_frame` return early, so thinking can never fall through to assistant text
+  (`reasoning_never_becomes_assistant_text`). Nova's pipe has no such frame, so `personality.py` monkeypatches
+  `pipe.PipeSession._frame` and republishes the TUI's `ReasoningDelta` as `reasoning_delta`. If a pipe release
+  starts publishing it natively, that hook must be dropped or thinking arrives twice.
+* `get_task` filters `thinking` out of the transcript it hands a tool: private reasoning is not task context.
+* A `details` element cannot take React's `open` prop for a controlled "expand all" — the browser rewrites the
+  attribute on toggle. `ActivityDisclosure` sets `ref.current.open` in `useLayoutEffect` instead.
+
+## Files pane: tabs, go-to-file, and media over the loopback server (0.10.0)
+* `FilesPane` owns the tab strip and the tree/preview switch; `PreviewPanel` owns navigation, the unsaved
+  dialog and the read-only lock. The active tab has no `✕` (closing goes through the preview header, where the
+  guard is); background tabs are always clean because leaving a tab settles its draft.
+* The tree stays mounted behind a preview (`div.files-body` plus `inert`), so folder expansion survives a trip
+  into a file and back.
+* `search_files` (Ctrl+P) is a stack walk bounded by `SEARCH_MAX_DEPTH 12`, `SEARCH_MAX_ENTRIES 20_000` and
+  `SEARCH_MAX_RESULTS 100` with a 12-entry skip list; paths come from the walk, never from the caller.
+* `MAX_READ_BYTES` is now **2 MiB**; `pdf`/`video`/`audio` previews go through the loopback server because
+  Chromium needs ranged requests, so `preview.rs` answers `Range` with `206`/`Content-Range`, and
+  `tauri.conf.json`'s CSP needs `media-src http://127.0.0.1:*` (a data URL cannot seek).
+* `forkChat(chat, itemId)` copies the transcript through that item and **keeps `session`**, so the branch
+  inherits the harness conversation; `pinned`/`teamRun` stay with the parent, and a running turn refuses it.

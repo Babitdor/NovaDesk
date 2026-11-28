@@ -6,6 +6,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+class DesktopThinking(unittest.TestCase):
+    def test_only_explicit_thinking_events_are_published_separately(self):
+        tree = ast.parse((Path(__file__).parents[1] / "src-tauri/src/agent/personality.py").read_text(encoding="utf-8"))
+        function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "desktop_frame")
+        forwarded, published = [], []
+        namespace = {"original_frame": lambda self, msg: forwarded.append(msg)}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "desktop_frame", "exec"), namespace)
+        session = SimpleNamespace(_turn_id="p1", publish=lambda kind, **fields: published.append((kind, fields)))
+        namespace["desktop_frame"](session, {"t":"ev", "c":"ReasoningDelta", "d":{"text":"Checking"}})
+        namespace["desktop_frame"](session, {"t":"ev", "c":"TextDelta", "d":{"text":"Answer"}})
+        self.assertEqual(published, [("reasoning_delta", {"content":"Checking", "request_id":"p1"})])
+        self.assertEqual(forwarded, [{"t":"ev", "c":"TextDelta", "d":{"text":"Answer"}}])
+
+
 class DesktopArguments(unittest.TestCase):
     def setUp(self):
         tree = ast.parse((Path(__file__).parents[1] / "src-tauri/src/agent/personality.py").read_text(encoding="utf-8"))

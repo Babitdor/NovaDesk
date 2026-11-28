@@ -373,6 +373,14 @@ fn handle_frame(line: &str, pid: &str, sink: &EventSink, state: &mut TurnFrames)
     }
 
     match kind {
+        "reasoning_delta" | "thinking_delta" => {
+            if let Some(text) = frame["content"].as_str().filter(|text| !text.is_empty()) {
+                state.model_activity = true;
+                let _ = sink.send(AgentEvent::ReasoningDelta {
+                    text: clip(text, 64000),
+                });
+            }
+        }
         "text_delta" => {
             if let Some(text) = frame["content"].as_str().filter(|text| !text.is_empty()) {
                 state.preview = true;
@@ -1043,6 +1051,31 @@ mod tests {
         let (events, finished) = feed("not json at all", "p1");
         assert!(!finished);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn thinking_deltas_stay_out_of_the_final_answer_and_ignore_other_turns() {
+        let (sink, seen) = crate::events::testutil::collect_events();
+        let mut state = TurnFrames::default();
+        handle_frame(
+            r#"{"type":"reasoning_delta","request_id":"other","content":"stale"}"#,
+            "p1",
+            &sink,
+            &mut state,
+        );
+        handle_frame(
+            r#"{"type":"reasoning_delta","request_id":"p1","content":"Checking"}"#,
+            "p1",
+            &sink,
+            &mut state,
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![AgentEvent::ReasoningDelta {
+                text: "Checking".into()
+            }]
+        );
+        assert!(!state.preview);
     }
 
     #[test]
