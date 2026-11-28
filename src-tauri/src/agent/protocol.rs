@@ -1118,6 +1118,44 @@ impl AgentBackend for InteractiveAgent {
     }
 }
 
+/// A codex tool item is one JSON object, and the fields a person reads — the
+/// diff, the command, the output — hold real newlines. `Value::to_string`
+/// flattens those into escapes, so the transcript gets a single line of \n; take
+/// the payload out of the item instead and let the row's label say what ran.
+fn codex_payload(item: &Value, keys: &[&str]) -> String {
+    if let Some(changes) = item["changes"].as_array() {
+        return changes
+            .iter()
+            .map(|change| match change["diff"].as_str() {
+                Some(diff) => format!("{}\n{diff}", change["path"].as_str().unwrap_or("")),
+                None => change["path"].as_str().unwrap_or("").to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+    for key in keys {
+        let value = &item[*key];
+        if value.is_null() {
+            continue;
+        }
+        return match value.as_str() {
+            Some(text) => text.to_string(),
+            None => serde_json::to_string_pretty(value).unwrap_or_default(),
+        };
+    }
+    String::new()
+}
+
+fn codex_input(item: &Value) -> String {
+    // The order matters: commandExecution carries a command, mcpToolCall its
+    // arguments, a search its query.
+    codex_payload(item, &["command", "arguments", "query", "prompt"])
+}
+
+fn codex_output(item: &Value) -> String {
+    codex_payload(item, &["aggregatedOutput", "result", "content", "error"])
+}
+
 fn normalize(id: &str, frame: &Value, sink: &EventSink, frames: &mut cli::Frames) -> bool {
     if let Some(text) = cli::reasoning(id, frame) {
         let _ = sink.send(AgentEvent::ReasoningDelta {
@@ -1149,7 +1187,7 @@ fn normalize(id: &str, frame: &Value, sink: &EventSink, frames: &mut cli::Frames
                     let _ = sink.send(AgentEvent::ToolCall {
                         call_id: item["id"].as_str().unwrap_or_default().into(),
                         name: item["type"].as_str().unwrap_or("Tool").into(),
-                        input: item.to_string(),
+                        input: codex_input(item).chars().take(8_000).collect(),
                     });
                 }
             }
@@ -1176,7 +1214,7 @@ fn normalize(id: &str, frame: &Value, sink: &EventSink, frames: &mut cli::Frames
                         ) && item["exitCode"].as_i64().unwrap_or(0) == 0
                             && item["error"].is_null()
                             && item["result"]["isError"] != true,
-                        output: item.to_string().chars().take(32000).collect(),
+                        output: codex_output(item).chars().take(32_000).collect(),
                     });
                 }
             }
@@ -1307,6 +1345,26 @@ mod tests {
         );
         assert!(mcp_disable_override("local.files").is_err());
         assert!(mcp_disable_override("\"quoted\"").is_err());
+    }
+
+    #[test]
+    fn codex_tool_items_are_read_as_their_payload_not_as_escaped_json() {
+        let change = json!({"changes":[
+            {"path":"src/lib/patch.py","diff":"@@ -1 +1 @@\n-old\n+new"},
+            {"path":"src/gone.py","diff":null}
+        ]});
+        assert_eq!(
+            codex_input(&change),
+            "src/lib/patch.py\n@@ -1 +1 @@\n-old\n+new\n\nsrc/gone.py"
+        );
+        let command = json!({"command":"npm run lint","aggregatedOutput":"ok\n"});
+        assert_eq!(codex_input(&command), "npm run lint");
+        assert_eq!(codex_output(&command), "ok\n");
+        let mcp = json!({"arguments":{"path":"README"},"result":{"content":"# Fixture"}});
+        assert_eq!(codex_input(&mcp), "{\n  \"path\": \"README\"\n}");
+        assert_eq!(codex_output(&mcp), "{\n  \"content\": \"# Fixture\"\n}");
+        // Nothing to show is empty, not a dump of the protocol item.
+        assert_eq!(codex_output(&json!({"type":"webSearch"})), "");
     }
 
     #[test]

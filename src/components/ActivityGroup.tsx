@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type ComponentPropsWithoutRef } from 'react'
-import { activityCounts, toolLabel, type ActivityItem } from '../lib/activity'
+import { activityCounts, formatToolDetail, toolLabel, type ActivityItem } from '../lib/activity'
 import { CREW } from '../lib/crew'
 
 // The browser keeps disclosure state while streaming updates rerender its parent.
@@ -37,9 +37,9 @@ export function ActivityGroup({ items, expand }: { items:ActivityItem[]; expand:
             <span className={item.ok === false ? 'tool-state is-failed' : 'tool-state'}>{item.ok === undefined ? item.finished ? 'Interrupted' : 'Running' : item.ok ? 'Done' : 'Failed'}</span>
           </summary>
           <div className="tool-row-detail">
-            {item.input && <div><small>Input</small><pre className="tool-output">{item.input}</pre></div>}
-            {item.stream && <div><small>Live output</small><pre className="tool-output">{item.stream}</pre></div>}
-            {item.output && <div><small>Output</small><pre className="tool-output">{item.output}</pre></div>}
+            {item.input && <div><small>Input</small><pre className="tool-output">{formatToolDetail(item.input)}</pre></div>}
+            {item.stream && <div><small>Live output</small><pre className="tool-output">{formatToolDetail(item.stream)}</pre></div>}
+            {item.output && <div><small>Output</small><pre className="tool-output">{formatToolDetail(item.output)}</pre></div>}
           </div>
         </ActivityDisclosure>)}
     </div>

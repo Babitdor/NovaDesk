@@ -28,6 +28,26 @@ export function activityCounts(items:ActivityItem[]) {
 
 export function toolLabel(label:string) {
   return label.replace(/nova-desktop[_-]|desktop\s*[·:]\s*/gi, '')
+    // Harnesses name tools in their own convention: codex sends camelCase item
+    // types (fileChange, commandExecution), everyone else snake_case.
+    .replace(/([a-z0-9])([A-Z])/g, (_, word:string, next:string) => word + ' ' + next.toLowerCase())
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .replace(/_/g, ' ').replace(/\b(?:eval)\b/gi, 'Run code')
     .replace(/\s+/g, ' ').trim()
+}
+
+/// Tool arguments arrive as JSON, and the interesting half of one — a diff, a
+/// file body, a shell script — is usually a JSON *string* inside it. Rendered
+/// raw that is a single line of escaped \n in a 220px box, so decode the string
+/// case and indent the object case. Anything that is not JSON passes through.
+export function formatToolDetail(text:string) {
+  const head = text.trimStart().slice(0, 1)
+  if (head !== '{' && head !== '[' && head !== '"') return text
+  try {
+    const value:unknown = JSON.parse(text)
+    if (typeof value === 'string') return value
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return text
+  }
 }
