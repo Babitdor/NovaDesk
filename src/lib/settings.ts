@@ -188,7 +188,7 @@ export type Preferences = {
   defaultAgent: AgentId
   models: Partial<Record<AgentId, string>>
   recentModels: ModelSelection[]
-  crew: Partial<Record<CrewRole, { agent: AgentId; model?: string; systemPrompt?: string }>>
+  crew: Partial<Record<CrewRole, { agent: AgentId; model?: string; effort?: string; systemPrompt?: string }>>
   routes: Record<string, AgentId>
   checks: Record<string, string[]>
   trustedWorkspaces: string[]

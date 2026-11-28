@@ -8,3 +8,5 @@ export const attachmentPrompt = (draft: string, paths: string[]) => {
   const head = draft.trimEnd()
   return head ? head + ' ' + list : list
 }
+
+export type AttachmentRequest = { chatId: string; paths: string[]; nonce: string }

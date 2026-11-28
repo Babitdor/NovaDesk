@@ -1,3 +1,5 @@
+import { CREW, crewRoles, type CrewRole } from '../lib/crew'
+import { CrewPortrait } from './CrewPortrait'
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 
 import { invoke } from '@tauri-apps/api/core'
@@ -53,6 +55,7 @@ function windowLabel(context: string) {
 
 type Props = {
   id: string
+  team?: {role:CrewRole; onRole:(role:CrewRole)=>void}
   anchor: RefObject<HTMLDivElement | null>
   agent: AgentId
   model?: string
@@ -64,7 +67,7 @@ type Props = {
   onClose: (restoreFocus?: boolean) => void
 }
 
-export function ModelPicker({ id, anchor, agent, model, effort, recent, configured, hasHistory, onSelect, onClose }: Props) {
+export function ModelPicker({ id, team, anchor, agent, model, effort, recent, configured, hasHistory, onSelect, onClose }: Props) {
   const panel = useRef<HTMLDivElement>(null)
   const search = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
@@ -170,6 +173,11 @@ export function ModelPicker({ id, anchor, agent, model, effort, recent, configur
   return (
     <div id={id} ref={panel} popover="auto" className="model-picker" role="dialog" aria-label="Select agent and model"
       onToggle={(event) => { if (event.newState === 'closed') onClose() }} onKeyDown={navigate}>
+      {team && <div className="model-picker-roles" role="group" aria-label="Team member model">
+        {crewRoles.map(role => <button key={role} type="button" aria-pressed={team.role === role} onClick={() => team.onRole(role)}>
+          <CrewPortrait role={role} />{CREW[role].name}
+        </button>)}
+      </div>}
       <div className="model-picker-search">
         <input ref={search} type="search" aria-label="Search models" placeholder="Search models or enter an ID…"
           value={query}

@@ -27,6 +27,7 @@ type Props = {
   onOpenFolder: (path: string) => void
   /// Requests a tool made that this panel carries out: a file to show in the
   /// tree's preview, a page the browser child should navigate to.
+  onAttach: (paths: string[]) => void
   fileToOpen: { path: string; nonce: number } | null
   browserTarget: BrowserTarget | null
 }
@@ -40,7 +41,7 @@ type Props = {
 /// pane reopen it.
 export function RightPanel({
   workspace, tab, open, obscured, width, sidebarWidth, chats, activeId, preferences,
-  onOpenChat, onMove, onWidth, onUpdatePreferences, onOpenFolder, fileToOpen, browserTarget,
+  onAttach, onOpenChat, onMove, onWidth, onUpdatePreferences, onOpenFolder, fileToOpen, browserTarget,
 }: Props) {
   const pane = (name: Pane) => (name === tab ? 'pane' : 'pane is-hidden')
 
@@ -60,7 +61,7 @@ export function RightPanel({
       )}
 
       <div className={pane('Files')} role="tabpanel" aria-label="Files">
-        <FilesPane key={workspace?.root} workspace={workspace} open={fileToOpen} />
+        <FilesPane key={workspace?.root} workspace={workspace} open={fileToOpen} onAttach={onAttach} />
       </div>
       <div className={pane('GitHub')} role="tabpanel" aria-label="GitHub">
         <GitHubPane workspace={workspace} preferences={preferences}

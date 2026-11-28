@@ -4,7 +4,7 @@ import { CrewPortrait } from './CrewPortrait'
 import { Group, Toggle } from './SettingsRows'
 const agentIds = Object.keys(AGENTS) as AgentId[]
 export function TeamMembers({ preferences:p, update }: { preferences:Preferences; update:(patch:Partial<Preferences>) => void }) {
-  return <>
+  return <div className="settings-form team-members">
               <Group title="Team pipeline">
                 <p className="settings-help">Nova coordinates bounded assignments and reports the results. Enabled workers form the fallback sequence. Only enforced read-only investigations run concurrently; editing turns run one at a time.</p>
                 <Toggle title="Require plan approval" detail="Pause the run after Nova's plan until you approve, edit or skip it."
@@ -69,5 +69,5 @@ export function TeamMembers({ preferences:p, update }: { preferences:Preferences
                 </section>
               })}
               </Group>
-            </>
+            </div>
 }

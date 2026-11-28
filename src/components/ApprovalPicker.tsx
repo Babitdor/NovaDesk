@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { ComposerPicker } from './ComposerPicker'
 import { APPROVAL_MODES, type ApprovalMode } from '../lib/approval'
 
 export function ApprovalIcon({ mode }: { mode: ApprovalMode }) {
@@ -13,42 +13,7 @@ export function ApprovalIcon({ mode }: { mode: ApprovalMode }) {
 export function ApprovalPicker({ mode, onChange, planReason }: {
   mode: ApprovalMode; onChange: (mode: ApprovalMode) => void; planReason?: string
 }) {
-  const id = useId()
-  const [open, setOpen] = useState(false)
-  const selected = APPROVAL_MODES.find(option => option.id === mode)!
-  return <>
-    <button type="button" className="ghost approval-trigger" data-mode={mode}
-      aria-label={`Approval mode: ${selected.label}`} title={`${selected.label}: ${selected.detail}`}
-      aria-haspopup="menu" aria-expanded={open} aria-controls={id} popoverTarget={id}>
-      <ApprovalIcon mode={mode} />
-    </button>
-    <div id={id} className="approval-menu" popover="auto" role="menu" aria-label="Approval mode"
-      onToggle={event => setOpen(event.newState === 'open')}
-      onKeyDown={event => {
-        const menu = event.currentTarget
-        if (event.key === 'Tab') { menu.hidePopover(); return }
-        const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
-        const current = items.indexOf(document.activeElement as HTMLButtonElement)
-        const next = event.key === 'ArrowDown' ? (current + 1) % items.length
-          : event.key === 'ArrowUp' ? (current + items.length - 1) % items.length
-          : event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : -1
-        if (next >= 0) { event.preventDefault(); items[next].focus() }
-      }}>
-      {APPROVAL_MODES.map(option => {
-        const reason = option.id === 'plan' ? planReason : undefined
-        return <button key={option.id} type="button" role="menuitemradio" tabIndex={-1}
-          aria-checked={mode === option.id} aria-disabled={Boolean(reason)} data-mode={option.id}
-          ref={button => { if (mode === option.id) button?.setAttribute('autofocus', ''); else button?.removeAttribute('autofocus') }}
-          onClick={event => {
-            if (reason) return
-            event.currentTarget.closest<HTMLElement>('[popover]')?.hidePopover()
-            onChange(option.id)
-          }}>
-          <ApprovalIcon mode={option.id} />
-          <span><strong>{option.label}</strong><small>{reason ?? option.detail}</small></span>
-          {mode === option.id && <svg className="approval-check" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>}
-        </button>
-      })}
-    </div>
-  </>
+  return <ComposerPicker name="approval" label="Approval mode" value={mode} onChange={onChange}
+    options={APPROVAL_MODES.map(option => ({ ...option, icon: <ApprovalIcon mode={option.id} />,
+      reason: option.id === 'plan' ? planReason : undefined }))} />
 }

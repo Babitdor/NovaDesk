@@ -19,3 +19,7 @@ test('a path with whitespace is quoted, an already quoted one is left alone', ()
 test('no paths is a no-op, even with trailing whitespace', () => {
   assert.equal(attachmentPrompt('half typed  ', []), 'half typed  ')
 })
+
+test('folder and drawing paths keep the same editable prompt format', () => {
+  assert.equal(attachmentPrompt('Inspect', ['./', 'design notes/', '.nova/attachments/sketch-1.png']), 'Inspect ./ "design notes/" .nova/attachments/sketch-1.png')
+})

@@ -1,3 +1,4 @@
+import { SettingsIcon } from './SettingsRows'
 import { useEffect, useState, type KeyboardEvent } from 'react'
 
 import type { DirEntry, WorkspaceInfo } from '../lib/events'
@@ -8,6 +9,7 @@ import { PreviewPanel } from './PreviewPanel'
 
 type Props = {
   workspace: WorkspaceInfo | null
+  onAttach: (paths: string[]) => void
   open?: { path: string; nonce: number } | null
 }
 
@@ -22,7 +24,7 @@ type Props = {
 ///
 /// Ctrl+P opens Go to file while this pane has the focus; it is deliberately not a
 /// window-wide shortcut, because the pane stays mounted while hidden.
-export function FilesPane({ workspace, open }: Props) {
+export function FilesPane({ workspace, open, onAttach }: Props) {
   const [tabs, setTabs] = useState<{ path: string; read: boolean }[]>([])
   const [request, setRequest] = useState<{ path: string; nonce: number } | null>(null)
   /// What the preview is actually showing, which is not the same as the request
@@ -131,6 +133,13 @@ export function FilesPane({ workspace, open }: Props) {
 
   return (
     <div className="files-pane" onKeyDown={onKeyDown}>
+      <div className="files-attach-bar">
+        <span>{showingFile ? 'File context' : 'Project context'}</span>
+        <button type="button" className="ghost" title={dirty ? 'Attaches the saved file on disk; unsaved edits stay in this editor.' : 'Add this path to the prompt'}
+          onClick={() => onAttach([showingFile && shown ? shown : reveal?.path || './'])}>
+          <SettingsIcon name="attach" />{showingFile ? (dirty ? 'Attach saved file' : 'Attach file') : 'Attach folder'}
+        </button>
+      </div>
       {tabs.length > 0 && (
         <div className="file-tabs" role="tablist" aria-label="Open files">
           {tabs.map((tab) => (

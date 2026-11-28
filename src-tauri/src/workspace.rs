@@ -83,7 +83,14 @@ pub(crate) fn attachment_label(guard: Option<&WorkspaceGuard>, path: &Path) -> S
     // with like — otherwise nothing inside the workspace ever looks inside it.
     // A path outside keeps its own readable form rather than the verbatim one.
     match std::fs::canonicalize(path) {
-        Ok(real) if real.starts_with(guard.root()) => guard.display_relative(&real),
+        Ok(real) if real.starts_with(guard.root()) => {
+            let relative = guard.display_relative(&real);
+            if relative.is_empty() {
+                "./".into()
+            } else {
+                relative
+            }
+        }
         _ => path.to_string_lossy().replace('\\', "/"),
     }
 }
@@ -100,6 +107,11 @@ mod tests {
         std::fs::write(tmp.path().join("src/a.ts"), "x").unwrap();
         let guard = WorkspaceGuard::new(tmp.path()).unwrap();
 
+        assert_eq!(attachment_label(Some(&guard), tmp.path()), "./");
+        assert_eq!(
+            attachment_label(Some(&guard), &tmp.path().join("src")),
+            "src"
+        );
         let inside = tmp.path().join("src/a.ts");
         assert_eq!(attachment_label(Some(&guard), &inside), "src/a.ts");
 

@@ -1,3 +1,4 @@
+import type { AttachmentRequest } from './lib/attachments'
 import type { ApprovalMode } from './lib/approval'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
@@ -93,6 +94,7 @@ export default function App() {
   /// through this when the user approves, edits or skips the plan.
   const planGate = useRef<{ runId: string; resolve: (decision: 'approve' | 'skip' | string) => void } | null>(null)
   const teamTurns = useRef(new Map<string, Running>())
+  const [attachmentRequest, setAttachmentRequest] = useState<AttachmentRequest | null>(null)
   const [appliedApproval, setAppliedApproval] = useState<ApprovalMode | null>(null)
   const lastAppliedApproval = useRef<ApprovalMode>('standard')
   const approvalUpdates = useRef(Promise.resolve())
@@ -720,6 +722,7 @@ export default function App() {
       const reason: FinishReason = await new Promise<FinishReason>((resolve) => {
         void startTurn({
           turnId, chatId: run.team.stages[index].assignmentId ?? turnId, teamId: run.id, readOnly:run.team.stages[index].readOnly, backend, model: stage.model?.trim() || configuration?.model?.trim() || undefined,
+          effort: !stage.harness || stage.harness === configuration?.agent ? configuration?.effort : undefined,
           personality: { role, systemPrompt: stage.systemPrompt?.trim() || configuration?.systemPrompt?.trim() || systemPrompt(role) },
           prompt: crewPrompt(role, run.team.stages[index].task ?? task, history, notes, mode === 'team', final),
           trustWorkspace: true, check: final && role !== 'ralph' && role !== 'serena' && role !== 'nora'
@@ -1080,8 +1083,15 @@ export default function App() {
   const work = interrupt ? 'Waiting for approval'
     : lastItem?.kind === 'tool' && lastItem.ok === undefined ? `Running ${lastItem.label}`
       : lastItem?.kind === 'assistant' ? 'Writing response' : 'Working'
-  const selectModel = ({ agent: nextAgent, model, effort }: ModelSelection) => {
+  const selectModel = ({ agent: nextAgent, model, effort }: ModelSelection, role?: CrewRole) => {
     if (live.current?.chatId === active.id || crewRun.current?.chatId === active.id) return
+    if (role) {
+      setPreferences(previous => ({ ...previous,
+        crew: {...previous.crew, [role]: {...previous.crew[role], agent:nextAgent, model:model ?? undefined, effort}},
+        recentModels: [{agent:nextAgent, model, effort}, ...previous.recentModels.filter(entry => entry.agent !== nextAgent || entry.model !== model)].slice(0,12),
+      }))
+      return
+    }
     if (preferences.approvalMode === 'plan' && nextAgent !== 'codex') update({ approvalMode: 'standard' })
     const switched = nextAgent !== agent
     const connectionId = switched ? crypto.randomUUID() : active.connectionId
@@ -1230,7 +1240,7 @@ export default function App() {
             && <div className="playback-dock"><Playback /></div>}
           <Composer chatId={active.id} commands={commands} busy={busy} disabled={appliedApproval !== preferences.approvalMode || (preferences.approvalMode === 'plan' && (agent !== 'codex' || Boolean(active.crew))) || !workspace || folderBusy || wrongFolder || Boolean(running && !busy)}
             agent={agent} model={taskModel(active, preferences.models[agent])} effort={active.effort}
-            recentModels={preferences.recentModels} configuredModels={preferences.models} onSelectModel={selectModel}
+            recentModels={preferences.recentModels} configuredModels={preferences.models} onSelectModel={selectModel} crewModels={preferences.crew}
             work={busy && running?.role ? CREW[running.role].name + (running.iteration && running.iteration > 1
               ? ' · iteration ' + running.iteration : '') + ' · ' + work.toLowerCase() : work}
             waiting={!!interrupt} hasHistory={active.items.length > 0} obscured={settings}
@@ -1240,7 +1250,8 @@ export default function App() {
             }}
             onConfigureCrew={() => openSettings('Agents', 'Agent teams')}
             voice={preferences.voice} onOpenVoice={() => openSettings('Voice')}
-            usage={active.usage} workspace={workspace?.name ?? null}
+            usage={active.usage} workspace={workspace?.name ?? null} workspaceRoot={workspace?.root ?? null}
+            attachmentRequest={attachmentRequest} onBrowseFiles={() => selectView('Files')}
             approvalMode={preferences.approvalMode} onApprovalMode={(approvalMode) => update({ approvalMode })}
             keepDrafts={preferences.keepDrafts} onSend={submit} onStop={stopTurn} />
           <TerminalDock key={workspace?.root} dock={dock} height={dockHeight} onDock={setDock} onHeight={setDockHeight}
@@ -1251,7 +1262,11 @@ export default function App() {
           width={panelWidth} onWidth={setPanelWidth} sidebarWidth={sidebarOpen ? railWidth : railCollapsed}
           chats={chats} activeId={active.id} preferences={preferences} onOpenChat={openChat}
           onMove={moveChat} onUpdatePreferences={update} onOpenFolder={(path) => void openFolder(path)}
-          fileToOpen={fileToOpen} browserTarget={browserTarget} />
+          fileToOpen={fileToOpen} browserTarget={browserTarget}
+          onAttach={paths => {
+            if (wrongFolder) { setNotice('Open this task’s folder before attaching project files.'); return }
+            setAttachmentRequest({chatId:active.id, paths, nonce:crypto.randomUUID()})
+          }} />
       </div>
       {settings && <Settings key={workspace?.root} preferences={preferences} update={update}
         initialSection={settingsPage.section} initialTab={settingsPage.tab}

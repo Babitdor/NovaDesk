@@ -72,6 +72,7 @@ pub async fn pick_attachments(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
+    let guard = state.guard.read().await.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     crate::commands::dialogs::pick_files(&app, move |picked| {
         let _ = tx.send(picked);
@@ -82,12 +83,101 @@ pub async fn pick_attachments(
         .map_err(|_| AppError::Agent("file picker closed unexpectedly".to_string()))?;
     // A dismissed dialog is an empty list, not an error: nothing to attach is
     // the most ordinary outcome there is.
-    let guard = state.guard.read().await.clone();
     Ok(picked
         .unwrap_or_default()
         .iter()
         .map(|path| crate::workspace::attachment_label(guard.as_ref(), path))
         .collect())
+}
+
+#[tauri::command]
+pub async fn pick_attachment_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    let guard = state.guard.read().await.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    crate::commands::dialogs::pick_folder(&app, move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx
+        .await
+        .map_err(|_| AppError::Agent("folder picker closed unexpectedly".into()))?;
+    Ok(picked
+        .into_iter()
+        .map(|path| crate::workspace::attachment_label(guard.as_ref(), &path))
+        .collect())
+}
+
+#[tauri::command]
+pub async fn save_sketch(
+    root: String,
+    data_url: String,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    let guard = state.require_guard().await?;
+    if guard.root().to_string_lossy() != root {
+        return Err(AppError::Io(
+            "Workspace changed; return to the original folder before attaching this sketch.".into(),
+        ));
+    }
+    save_sketch_png(&guard, &data_url)
+}
+
+fn save_sketch_png(guard: &WorkspaceGuard, data_url: &str) -> Result<String, AppError> {
+    use base64::Engine;
+    use std::io::Write;
+    let invalid =
+        || AppError::Io("Sketch must be a PNG up to 2 MiB and 4096 × 4096 pixels.".into());
+    if data_url.len() > 3 * 1024 * 1024 {
+        return Err(invalid());
+    }
+    let encoded = data_url
+        .strip_prefix("data:image/png;base64,")
+        .ok_or_else(invalid)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| invalid())?;
+    if bytes.len() < 57
+        || bytes.len() > 2 * 1024 * 1024
+        || !bytes.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR")
+        || !bytes.ends_with(b"\0\0\0\0IEND\xaeB`\x82")
+    {
+        return Err(invalid());
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().map_err(|_| invalid())?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().map_err(|_| invalid())?);
+    if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
+        return Err(invalid());
+    }
+    // Resolve after each mkdir too: an existing .nova symlink must not redirect a write.
+    for relative in [".nova", ".nova/attachments"] {
+        let target = guard.resolve_for_write(relative)?;
+        if let Err(error) = std::fs::create_dir(&target) {
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(AppError::from_io(error, &target));
+            }
+        }
+        let folder = guard.resolve(relative)?;
+        if !folder.is_dir() {
+            return Err(AppError::NotADirectory(relative.into()));
+        }
+    }
+    let relative = format!(".nova/attachments/sketch-{}.png", uuid::Uuid::new_v4());
+    let destination = guard.resolve_for_write(&relative)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(guard.resolve(".nova/attachments")?)
+        .map_err(|error| AppError::from_io(error, &destination))?;
+    temporary
+        .write_all(&bytes)
+        .map_err(|error| AppError::from_io(error, &destination))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| AppError::from_io(error, &destination))?;
+    temporary
+        .persist_noclobber(&destination)
+        .map_err(|error| AppError::from_io(error.error, &destination))?;
+    Ok(relative)
 }
 
 #[tauri::command]
@@ -433,8 +523,50 @@ fn search(guard: &WorkspaceGuard, needle: &str) -> Vec<DirEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64, save_text, search, MAX_READ_BYTES};
+    use super::{base64, save_sketch_png, save_text, search, MAX_READ_BYTES};
     use crate::{error::AppError, testtmp::TempDir, workspace::WorkspaceGuard};
+
+    #[test]
+    fn sketch_saves_unique_pngs_and_refuses_invalid_content() {
+        let tmp = crate::testtmp::TempDir::new("sketch");
+        let guard = WorkspaceGuard::new(tmp.path()).unwrap();
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK9sAAAAASUVORK5CYII=";
+        let first = save_sketch_png(&guard, png).unwrap();
+        let second = save_sketch_png(&guard, png).unwrap();
+        assert_ne!(first, second);
+        assert!(guard.resolve(&first).unwrap().is_file());
+        for invalid in [
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "data:image/png;base64,!!!",
+            "data:image/png;base64,aGVsbG8=",
+        ] {
+            assert!(save_sketch_png(&guard, invalid).is_err());
+        }
+        use base64::Engine;
+        let mut bytes = std::fs::read(guard.resolve(&first).unwrap()).unwrap();
+        bytes[16..20].copy_from_slice(&5000u32.to_be_bytes());
+        assert!(save_sketch_png(
+            &guard,
+            &format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sketch_does_not_write_through_an_attachment_directory_file() {
+        let tmp = crate::testtmp::TempDir::new("sketch-parent");
+        std::fs::write(tmp.path().join(".nova"), "keep").unwrap();
+        let guard = WorkspaceGuard::new(tmp.path()).unwrap();
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK9sAAAAASUVORK5CYII=";
+        assert!(save_sketch_png(&guard, png).is_err());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".nova")).unwrap(),
+            "keep"
+        );
+    }
 
     #[test]
     fn editor_save_preserves_bytes_and_refuses_stale_or_binary_content() {

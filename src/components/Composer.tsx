@@ -1,17 +1,20 @@
+import { AttachmentMenu, type AttachmentKind } from './AttachmentMenu'
+import { SketchDialog } from './SketchDialog'
+import { PersonalityPicker } from './PersonalityPicker'
 import { ApprovalPicker } from './ApprovalPicker'
 import type { ApprovalMode } from '../lib/approval'
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { SlashCommand } from '../lib/slash'
 import { AGENTS, type AgentId, type ModelSelection, type Preferences } from '../lib/settings'
 import { AgentMark } from './AgentMark'
 import { ModelPicker } from './ModelPicker'
-import { CREW, addressedCrew, crewRoles, crewTargets, type CrewMode } from '../lib/crew'
+import { CREW, addressedCrew, crewTargets, type CrewMode, type CrewRole } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
 import { VOICE_SHORTCUT_LABEL, MicRecorder, voiceInstalled, voiceTranscribe, voiceTranscribeService } from '../lib/voice'
-import { errorText, pickAttachments } from '../lib/ipc'
+import { errorText, pickAttachments, pickAttachmentFolder } from '../lib/ipc'
 import { loadDrafts, saveDraft } from '../lib/drafts'
-import { attachmentPrompt } from '../lib/attachments'
+import { attachmentPrompt, type AttachmentRequest } from '../lib/attachments'
 
 type Props = {
   chatId: string
@@ -23,7 +26,8 @@ type Props = {
   effort?: string
   recentModels: ModelSelection[]
   configuredModels: Preferences['models']
-  onSelectModel: (selection: ModelSelection) => void
+  onSelectModel: (selection: ModelSelection, role?: CrewRole) => void
+  crewModels: Preferences['crew']
   hasHistory: boolean
   work: string
   waiting: boolean
@@ -33,6 +37,9 @@ type Props = {
   onConfigureCrew: () => void
   usage?: { input: number; output: number }
   workspace: string | null
+  workspaceRoot: string | null
+  attachmentRequest: AttachmentRequest | null
+  onBrowseFiles: () => void
   voice: Preferences['voice']
   onOpenVoice: () => void
   /// "Keep unsent drafts": the store is only touched while the preference is on.
@@ -43,36 +50,9 @@ type Props = {
   onStop: () => void
 }
 
-/// The composer's own drawn icons, at the weight of the labels beside them and
-/// aria-hidden: each sits inside a control that is already named.
-function Glyph({ name }: { name: 'attach' | 'people' }) {
-  const shape = () => {
-    switch (name) {
-      case 'attach':
-        return <path d="M11.5 7.5 7 12a2.8 2.8 0 0 1-4-4l5-5a1.9 1.9 0 0 1 2.7 2.7l-5 5a1 1 0 0 1-1.4-1.4l4.4-4.4"
-          fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      case 'people':
-        return (
-          <>
-            <circle cx="6" cy="6" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M2 13c0-2.2 1.8-3.5 4-3.5s4 1.3 4 3.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M10.5 4.2a2 2 0 0 1 0 3.8M11.8 9.8c1.4.4 2.2 1.5 2.2 3.2"
-              fill="none" stroke="currentColor" strokeWidth="1.3" />
-          </>
-        )
-    }
-  }
-
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      {shape()}
-    </svg>
-  )
-}
-
 export function Composer({
-  chatId, commands, busy, disabled, agent, model, effort, recentModels, configuredModels, onSelectModel,
-  hasHistory, work, waiting, obscured, crew, onCrew, onConfigureCrew, usage, workspace, voice,
+  chatId, commands, busy, disabled, agent, model, effort, recentModels, configuredModels, onSelectModel, crewModels,
+  hasHistory, work, waiting, obscured, crew, onCrew, onConfigureCrew, usage, workspace, workspaceRoot, attachmentRequest, onBrowseFiles, voice,
   onOpenVoice, keepDrafts, approvalMode, onApprovalMode, onSend, onStop,
 }: Props) {
   const composer = useRef<HTMLDivElement>(null)
@@ -81,11 +61,21 @@ export function Composer({
   const menuId = useId()
   const modelId = useId()
   const [drafts, setDrafts] = useState<Record<string, string>>(() => keepDrafts ? loadDrafts() : {})
+  const draftsRef = useRef(drafts)
+  const currentChat = useRef(chatId)
+  useLayoutEffect(() => { currentChat.current = chatId }, [chatId])
   const [menu, setMenu] = useState<{ chat: string; kind: 'slash' | 'mention'; highlighted: number } | null>(null)
   const [modelMenu, setModelMenu] = useState<string | null>(null)
   if (modelMenu && (modelMenu !== chatId || obscured || busy)) setModelMenu(null)
   const modelOpen = modelMenu === chatId
   const backend = AGENTS[agent]?.name ?? agent
+  const [teamModelRole, setTeamModelRole] = useState<CrewRole>('nova')
+  const modelRole = crew === 'team' ? teamModelRole : crew
+  const crewModel = modelRole ? crewModels[modelRole] : undefined
+  const pickerAgent = modelRole ? crewModel?.agent ?? 'nova' : agent
+  const pickerModel = modelRole ? crewModel?.model : model
+  const pickerEffort = modelRole ? crewModel?.effort : effort
+  const pickerName = AGENTS[pickerAgent].name
   const recipient = crew === 'team' ? 'the team' : crew ? CREW[crew].name : backend
   const draft = drafts[chatId] ?? ''
   const slash = /^\/([a-z0-9_?:-]*)$/i.exec(draft.trimStart())
@@ -100,38 +90,40 @@ export function Composer({
   const optionId = (index: number) => `${menuId}-${index}`
   /// The draft store is a mirror of this state, never its source: clearing the
   /// composer writes an empty draft, which deletes the entry.
-  const persistDraft = (text: string) => { if (keepDrafts) saveDraft(chatId, text) }
-  const setDraft = (text: string) => {
-    persistDraft(text)
-    setDrafts((previous) => ({ ...previous, [chatId]: text }))
-  }
-  // Dictation appends instead of replacing: whatever was typed before the
-  // shortcut is part of the same prompt.
+  const setDraftFor = useCallback((target: string, text: string) => {
+    if (keepDrafts) saveDraft(target, text)
+    draftsRef.current = { ...draftsRef.current, [target]: text }
+    setDrafts(draftsRef.current)
+  }, [keepDrafts])
+  const setDraft = (text: string) => setDraftFor(chatId, text)
   const appendDraft = (text: string) => {
-    const current = drafts[chatId] ?? ''
-    const next = current.trim() ? current.trimEnd() + ' ' + text : text
-    persistDraft(next)
-    setDrafts((previous) => ({ ...previous, [chatId]: next }))
+    const current = draftsRef.current[chatId] ?? ''
+    setDraftFor(chatId, current.trim() ? current.trimEnd() + ' ' + text : text)
   }
-  /// Attaching picks files and writes their paths into the draft, where they are
-  /// text the user can edit before sending: every harness already reads a path.
+  const addPaths = useCallback((target: string, paths: string[]) => {
+    if (!paths.length) return
+    setDraftFor(target, attachmentPrompt(draftsRef.current[target] ?? '', paths))
+    if (currentChat.current === target) input.current?.focus()
+  }, [setDraftFor])
+  const lastAttachment = useRef('')
+  useEffect(() => {
+    if (!attachmentRequest || lastAttachment.current === attachmentRequest.nonce) return
+    lastAttachment.current = attachmentRequest.nonce
+    addPaths(attachmentRequest.chatId, attachmentRequest.paths)
+  }, [attachmentRequest, addPaths])
   const [attachError, setAttachError] = useState('')
   const [attaching, setAttaching] = useState(false)
-  const attach = async () => {
+  const [sketch, setSketch] = useState<{chatId:string; root:string} | null>(null)
+  const attach = async (kind: AttachmentKind) => {
+    if (kind === 'project') { onBrowseFiles(); return }
+    if (kind === 'sketch') { if (workspaceRoot) setSketch({chatId, root:workspaceRoot}); return }
     if (attaching) return
     setAttaching(true)
     setAttachError('')
     try {
-      const paths = await pickAttachments()
-      if (paths.length) {
-        setDraft(attachmentPrompt(drafts[chatId] ?? '', paths))
-        input.current?.focus()
-      }
-    } catch (err) {
-      setAttachError(errorText(err))
-    } finally {
-      setAttaching(false)
-    }
+      addPaths(chatId, await (kind === 'folder' ? pickAttachmentFolder() : pickAttachments()))
+    } catch (err) { setAttachError(errorText(err)) }
+    finally { setAttaching(false) }
   }
   const openMenu = (kind: 'slash' | 'mention' = 'slash') => setMenu({ chat: chatId, kind, highlighted: -1 })
   const closeMenu = () => setMenu(null)
@@ -314,8 +306,7 @@ export function Composer({
     if (/^\/models?$/i.test(text)) {
       if (!busy) {
         setDraft('')
-        if (crew) onConfigureCrew()
-        else openModels()
+        openModels()
       }
       return
     }
@@ -336,8 +327,12 @@ export function Composer({
     <div ref={composer} className="composer" onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) closeMenu()
     }}>
-      {modelOpen && <ModelPicker id={modelId} anchor={composer} agent={agent} model={model} effort={effort}
-        recent={recentModels} configured={configuredModels} hasHistory={hasHistory} onSelect={onSelectModel} onClose={closeModels} />}
+      {sketch && <SketchDialog root={sketch.root} onClose={() => setSketch(null)}
+        onAttach={path => { addPaths(sketch.chatId, [path]); setSketch(null) }} />}
+      {modelOpen && <ModelPicker key={modelRole ?? 'default'} id={modelId} anchor={composer} agent={pickerAgent} model={pickerModel} effort={pickerEffort}
+        team={crew === 'team' ? {role:teamModelRole, onRole:setTeamModelRole} : undefined}
+        recent={recentModels} configured={configuredModels} hasHistory={modelRole ? false : hasHistory}
+        onSelect={selection => onSelectModel(selection, modelRole)} onClose={closeModels} />}
       {menuOpen && <div className="slash-menu">
         <ul id={menuId} role="listbox" aria-label={mentionMenu ? 'Agent mentions' : 'Slash commands'}>
           {options.map((command, index) => (
@@ -423,38 +418,26 @@ export function Composer({
                 input.current?.focus()
               }
             }}>/</button>
-          {!crew && <button type="button" ref={modelButton} className="ghost model-trigger" disabled={busy}
+          <button type="button" ref={modelButton} className="ghost model-trigger" disabled={busy}
             aria-label="Choose agent and model" aria-haspopup="dialog" aria-expanded={modelOpen}
-            aria-controls={modelOpen ? modelId : undefined} title={model ? backend + ' · ' + model : backend + ' · Harness default'}
+            aria-controls={modelOpen ? modelId : undefined} title={(modelRole ? CREW[modelRole].name + ' · ' : '') + pickerName + ' · ' + (pickerModel ?? 'Harness default')}
             onClick={() => { if (modelOpen) closeModels(); else openModels() }}>
-            <AgentMark id={agent} />
-            <span className="model-trigger-agent">{backend}</span>
-            {model && <span className="model-trigger-name">{model}</span>}
-          </button>}
+            <AgentMark id={pickerAgent} />
+            <span className="model-trigger-agent">{crew === 'team' ? 'Team · ' + CREW[teamModelRole].name : pickerName}</span>
+            {pickerModel && <span className="model-trigger-name">{pickerModel}</span>}
+          </button>
           <ApprovalPicker mode={approvalMode} onChange={onApprovalMode}
             planReason={agent !== 'codex' ? 'Choose Codex to use its enforced read-only sandbox.'
               : crew ? 'Plan mode is available for a single Codex agent.'
               : busy || disabled ? 'Stop running tasks and open a folder before entering Plan mode.' : undefined} />
-          <label className="crew-select" data-mode={crew ?? 'none'} title={crew === 'team' ? 'Personality: Team' : crew ? `Personality: ${CREW[crew].name}` : 'Choose an agent personality'}>
-            {crew && crew !== 'team' ? <CrewPortrait role={crew} /> : <Glyph name="people" />}
-            <select aria-label="Agent personality" disabled={busy} value={crew ?? ''}
-              onChange={(event) => onCrew(event.target.value as CrewMode || undefined)}>
-              <option value="">Personality</option>
-              {crewRoles.map((role) => <option key={role} value={role}>{CREW[role].name}</option>)}
-              <option value="team">Team</option>
-            </select>
-          </label>
+          <PersonalityPicker crew={crew} onChange={onCrew} disabled={busy} />
           {crew && <button className="ghost" type="button" disabled={busy} onClick={onConfigureCrew}>Configure</button>}
           <span className="composer-workspace" title={workspace ?? undefined}>{workspace ?? 'no folder'}</span>
           {usage && <span className="composer-workspace" title="Input / output tokens">
             {usage.input.toLocaleString()} in · {usage.output.toLocaleString()} out
           </span>}
         </span>
-        <button type="button" className="ghost composer-attach" aria-label="Attach files"
-          disabled={!workspace || attaching} aria-busy={attaching}
-          title={attaching ? 'Choosing files…' : 'Attach files — their paths are added to the prompt'} onClick={() => void attach()}>
-          <Glyph name="attach" />
-        </button>
+        <AttachmentMenu disabled={!workspace || disabled} busy={attaching} onChoose={kind => void attach(kind)} />
         {busy ? (
           <button type="button" className="stop" onClick={onStop}>Stop</button>
         ) : (

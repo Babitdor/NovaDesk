@@ -25,6 +25,8 @@ export function Toggle({ title, detail, checked, onChange, disabled }: {
 
 
 const ICONS = {
+  attach: 'm21 11-8 8a6 6 0 0 1-8-8l8-8a4 4 0 0 1 6 6l-8 8a2 2 0 0 1-3-3l8-8',
+  folder: 'M3 6h6l2 2h10v12H3z',
   save: 'M5 3h12l4 4v14H3V3h2Zm2 0v6h10V3M7 21v-8h10v8',
   refresh: 'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 2M4 17l2 2a7 7 0 0 0 12-2',
   download: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',

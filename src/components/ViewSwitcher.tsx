@@ -43,7 +43,7 @@ export function ViewSwitcher({ view, dock, onSelect, onToggleDock }: Props) {
             aria-selected={name === view}
             className={name === view ? 'view-tab is-on' : 'view-tab'}
             title={`${TITLES[name]} (Ctrl + ${index + 1})`}
-            onClick={() => onSelect(name)}
+            onClick={() => onSelect(name === view && name !== 'Chat' ? 'Chat' : name)}
           >
             <Glyph view={name} />
             <span className="view-label">{name}</span>

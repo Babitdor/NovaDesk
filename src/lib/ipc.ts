@@ -10,6 +10,8 @@ export const pickWorkspace = () => invoke<WorkspaceInfo | null>('pick_workspace'
 /// Paths, not contents: a harness reads the file itself, so the picker only has
 /// to name it. Workspace-relative when a folder is open.
 export const pickAttachments = () => invoke<string[]>('pick_attachments')
+export const pickAttachmentFolder = () => invoke<string[]>('pick_attachment_folder')
+export const saveSketch = (root: string, dataUrl: string) => invoke<string>('save_sketch', {root, dataUrl})
 export const setWorkspace = (path: string) => invoke<WorkspaceInfo>('set_workspace', { path })
 
 export const listDir = (path: string) => invoke<DirEntry[]>('list_dir', { path })
