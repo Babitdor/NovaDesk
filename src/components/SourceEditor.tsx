@@ -114,6 +114,8 @@ export function SourceEditor({ path, root, text, hidden, readOnly, ref, onDirty,
     const view = new EditorView({ parent:host.current, state:EditorState.create({
       doc:initial.text,
       extensions:[basicSetup, syntaxHighlighting(colors), syntax.of([]), wrap.current.of([]),
+        // Tauri authorizes styles with a per-page nonce in packaged builds.
+        EditorView.cspNonce.of(window.document.querySelector<HTMLStyleElement>('style[nonce]')?.nonce ?? ''),
         // The compartment's first value is the lock; Edit reconfigures it empty.
         editable.current.of(openingReadOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
         EditorView.contentAttributes.of({ 'aria-label':'File editor', spellcheck:'false', autocapitalize:'off' }),

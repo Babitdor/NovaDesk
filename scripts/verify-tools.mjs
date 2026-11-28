@@ -25,7 +25,7 @@ async function eventually(fn, label) {
 async function evaluate(webSocketUrl, expression, method = 'Runtime.evaluate', params = { expression, awaitPromise:true, returnByValue:true }) {
   const socket = new WebSocket(webSocketUrl)
   try {
-    const { result, exceptionDetails } = await new Promise((resolve, reject) => {
+    const response = await new Promise((resolve, reject) => {
       const signal = AbortSignal.timeout(5000)
       signal.addEventListener('abort', () => reject(signal.reason), { once: true })
       socket.addEventListener('error', () => reject(new Error('WebView debugger disconnected')), { once: true })
@@ -39,6 +39,8 @@ async function evaluate(webSocketUrl, expression, method = 'Runtime.evaluate', p
         else resolve(reply.result)
       })
     })
+    if (method !== 'Runtime.evaluate') return response
+    const { result, exceptionDetails } = response
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text)
     return result?.value
   } finally {
@@ -46,6 +48,7 @@ async function evaluate(webSocketUrl, expression, method = 'Runtime.evaluate', p
   }
 }
 
+const packagedFiles = process.argv.includes('--packaged-files')
 const root = await mkdtemp(join(tmpdir(), 'nova-tools-smoke-'))
 // A concurrent development build must not replace or lock the running fixture.
 const debug = resolve('src-tauri/target/debug')
@@ -159,7 +162,9 @@ try {
   const webview = await eventually(async () => {
     assert.ok(app.exitCode === null, 'desktop process exited')
     const targets = await (await fetch('http://127.0.0.1:' + debugPort + '/json/list')).json()
-    const target = targets.find(({ url }) => url.startsWith('http://localhost:1420/'))
+    const target = targets.find(({ url }) => packagedFiles
+      ? url.startsWith('http://tauri.localhost/') || url.startsWith('tauri://localhost/')
+      : url.startsWith('http://localhost:1420/'))
     assert.ok(target?.webSocketDebuggerUrl)
     return target.webSocketDebuggerUrl
   }, 'No main window')
@@ -210,6 +215,113 @@ try {
   const { tools } = await rpc('tools/list', {})
   for (const name of ['team_delegate', 'team_follow_up', 'team_message', 'team_status']) await call(name, {}, /authenticated active teammate/)
 
+  // Chromium may attempt style attributes while replacing editable text. Those
+  // remain blocked; this regression checks admission of generated stylesheets.
+  const observeStyles = `window.__styleBlocks = []; document.addEventListener('securitypolicyviolation', (event) => window.__styleBlocks.push({ directive:event.effectiveDirective, uri:event.blockedURI, source:event.sourceFile, line:event.lineNumber }))`
+
+  async function editSource(text) {
+    await pageEval(`Array.from(document.querySelectorAll('.source-toolbar button')).find((button) => button.textContent.trim() === 'Edit')?.click()`)
+    await pageEval(`(() => { const content = document.querySelector('.cm-content'); content.focus(); document.execCommand('selectAll') })()`)
+    await evaluate(webview, null, 'Input.insertText', { text })
+    await waitFor(`document.querySelector('.source-status')?.textContent.includes('Unsaved')`, 'Edits were not tracked')
+  }
+
+  async function verifyFileEditor() {
+    await call('open_file', { path: 'fixture.txt' })
+    await waitFor('document.body.innerText.includes("desktop fixture needle")', 'File preview did not open')
+    await call('open_file', { path:'editor.ts' })
+    await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const greeting')`, 'Editable source did not open')
+    await waitFor(`document.querySelector('.source-status')?.textContent.includes('TypeScript') && Boolean(document.querySelector('.cm-line span'))`, 'Syntax highlighting did not load')
+    assert.ok(await pageEval(`document.querySelector('.cm-lineNumbers').textContent.includes('1')`), 'Line numbers are missing')
+    await editSource('const greeting: string = "edited";\nconsole.log(greeting);\n')
+    await pageEval(`document.querySelector('.source-save').click()`)
+    await waitFor(`document.querySelector('.source-status')?.textContent.startsWith('Saved')`, 'File did not save')
+    assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const greeting: string = "edited";\r\nconsole.log(greeting);\r\n', 'Save did not preserve CRLF')
+    await editSource('const greeting = "local draft";\n')
+    await writeFile(join(workspace, 'editor.ts'), 'const greeting = "external edit";\r\n')
+    await waitFor(`document.querySelector('.source-message')?.textContent.includes('changed on disk')`, 'Disk edits were not detected')
+    assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('local draft')`), 'Refresh destroyed unsaved edits')
+    await pageEval(`document.querySelector('.source-save').click()`)
+    await waitFor(`document.querySelector('.source-message.is-error')?.textContent.includes('changed on disk')`, 'Conflicting save was not refused')
+    assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const greeting = "external edit";\r\n')
+    await call('open_file', { path:'fixture.txt' })
+    await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Navigation did not protect unsaved changes')
+    await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Keep editing').click()`)
+    assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('local draft')`))
+    // Repeating the same tool navigation after cancelling must still prompt.
+    await call('open_file', { path:'fixture.txt' })
+    await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Repeated navigation bypassed the draft guard')
+    await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Discard changes').click()`)
+    await waitFor(`document.querySelector('.cm-content')?.textContent.includes('desktop fixture needle')`, 'Discard did not navigate')
+    await call('open_file', { path:'editor.ts' })
+    await waitFor(`document.querySelector('.cm-content')?.textContent.includes('external edit')`, 'Discarded draft came back')
+    await editSource('const recovered = true;\n')
+    if (packagedFiles) assert.deepEqual(await pageEval(`window.__styleBlocks.filter((event) => event.directive !== 'style-src-attr')`), [], 'Editor actions blocked a packaged stylesheet')
+    await pageEval(`location.reload()`)
+    await waitFor(`Boolean(document.querySelector('.rail-settings'))`, 'App did not reload')
+    await wait(500)
+    if (packagedFiles) await pageEval(observeStyles)
+    await call('open_file', { path:'editor.ts' })
+    await waitFor(`Boolean(document.querySelector('.cm-content'))`, 'Reopened file did not render')
+    await pageEval(`Array.from(document.querySelectorAll('.source-toolbar button')).find((button) => button.textContent.trim() === 'Edit')?.click()`)
+    await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const recovered')`, 'Unsaved draft did not survive reload')
+    await pageEval(`document.querySelector('[aria-label="Close preview"]').click()`)
+    await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Close did not protect the recovered draft')
+    await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Save and continue').click()`)
+    await waitFor(`!document.querySelector('.unsaved-dialog') && !document.querySelector('.preview-head')?.textContent.includes('editor.ts')`, 'Save and continue did not close the file')
+    assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const recovered = true;\r\n')
+  }
+
+  async function debugCommand(id, method, params) {
+    const next = once(motionSession, 'message', { signal:AbortSignal.timeout(10000) })
+    motionSession.send(JSON.stringify({ id, method, params }))
+    const reply = JSON.parse((await next)[0].data)
+    assert.equal(reply.id, id)
+    assert.ok(!reply.error, JSON.stringify(reply.error))
+    return reply.result
+  }
+  if (packagedFiles) {
+    // This mode deliberately requires an embedded frontend; Vite has no production CSP.
+    await writeFile(join(workspace, 'csp.ts'), Array.from({ length:30 }, (_, index) => `const value${index}: number = ${index};`).join('\n'))
+    await mkdir(join(workspace, 'docs'))
+    await writeFile(join(workspace, 'docs', 'start.md'), '# START_MARKER\n[Next file](next.md)\n')
+    await writeFile(join(workspace, 'docs', 'next.md'), '# NEXT_MARKER\nSecond file.\n')
+    await pageEval(observeStyles)
+    await call('open_file', { path:'csp.ts' })
+    await waitFor(`Boolean(document.querySelector('.cm-line'))`, 'Packaged editor did not render')
+    const layout = await pageEval(`(() => { const scroller = document.querySelector('.cm-scroller'); const line = document.querySelector('.cm-line'); return {
+      scroller:getComputedStyle(scroller).display, gutters:getComputedStyle(document.querySelector('.cm-gutters')).display,
+      top:line.getBoundingClientRect().top, bottom:scroller.getBoundingClientRect().bottom, blocked:window.__styleBlocks
+    } })()`)
+    assert.equal(layout.scroller, 'flex', 'Packaged CSP blocked CodeMirror layout styles')
+    assert.equal(layout.gutters, 'flex', 'Packaged editor gutters are stacked')
+    assert.ok(layout.top < layout.bottom, 'Code is laid out below the editor viewport')
+    assert.deepEqual(layout.blocked.filter((event) => event.directive !== 'style-src-attr'), [], 'Packaged CSP refused an editor stylesheet')
+    await waitFor(`Boolean(document.querySelector('.cm-line span'))`, 'Packaged syntax highlighting did not load')
+    await writeFile('.temp/files-packaged-fixed.png', Buffer.from((await evaluate(webview, null, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+    await verifyFileEditor()
+
+    await call('open_file', { path:'docs/start.md' })
+    await waitFor(`document.querySelector('.preview-body')?.textContent.includes('START_MARKER')`, 'Initial Markdown did not render')
+    await pageEval(`document.querySelector('.preview-body a').click()`)
+    await waitFor(`document.querySelector('.preview-body')?.textContent.includes('NEXT_MARKER')`, 'Relative link did not navigate')
+    await pageEval(`document.querySelector('.preview-head button[aria-pressed]').click()`)
+    await waitFor(`Boolean(document.querySelector('.source-editor:not([hidden])'))`, 'Markdown source did not open')
+    await editSource('# LOCAL_DRAFT')
+    await pageEval(`document.querySelector('.file-tab button[title="docs/next.md"]').click()`)
+    assert.equal(await pageEval(`Boolean(document.querySelector('.unsaved-dialog'))`), false, 'Clicking the active tab prompted to leave its own draft')
+    assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('LOCAL_DRAFT')`), 'Active-tab click discarded its draft')
+    await pageEval(`document.querySelector('.preview-crumbs button').click()`)
+    await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Breadcrumb did not protect the Markdown draft')
+    await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Discard changes').click()`)
+
+    await waitFor(`!document.querySelector('.preview')`, 'Breadcrumb did not return to the tree')
+    await pageEval(`document.querySelector('.file-tab button[title="docs/next.md"]').click()`)
+    await waitFor(`document.querySelector('.preview-crumb.is-file')?.textContent.trim() === 'next.md'`, 'Returning from the tree reopened the wrong file')
+    await waitFor(`document.querySelector('.preview-body')?.textContent.includes('NEXT_MARKER')`, 'Selected tab shows the wrong content')
+    assert.deepEqual(await pageEval(`window.__styleBlocks.filter((event) => event.directive !== 'style-src-attr')`), [], 'Editor remounts blocked a packaged stylesheet')
+    console.log('Packaged Files: CSP, visible code, highlighting, CRLF saves, conflicts, recovery and linked-file/tab navigation passed.')
+  } else {
   const catalog = await pageEval('window.__TAURI_INTERNALS__.invoke("tools_catalog")')
   assert.ok(catalog.listedTools.includes('nova'), 'The catalog did not record the shim connection')
   assert.ok((await call('list_projects')).projects.some((project) => project.path === info.root))
@@ -260,52 +372,7 @@ try {
     assert.ok(messages.some((message) => message.text === 'fixture response direct follow-up'))
   }, 'Direct follow-up not delivered')
   await call('archive_task', { taskId })
-  await call('open_file', { path: 'fixture.txt' })
-  await waitFor('document.body.innerText.includes("desktop fixture needle")', 'File preview did not open')
-  await call('open_file', { path:'editor.ts' })
-  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const greeting')`, 'Editable source did not open')
-  await waitFor(`document.querySelector('.source-status')?.textContent.includes('TypeScript') && Boolean(document.querySelector('.cm-line span'))`, 'Syntax highlighting did not load')
-  assert.ok(await pageEval(`document.querySelector('.cm-lineNumbers').textContent.includes('1')`), 'Line numbers are missing')
-  async function editSource(text) {
-    await pageEval(`Array.from(document.querySelectorAll('.source-toolbar button')).find((button) => button.textContent.trim() === 'Edit')?.click()`)
-    await pageEval(`(() => { const content = document.querySelector('.cm-content'); content.focus(); document.execCommand('selectAll'); document.execCommand('insertText', false, ${JSON.stringify(text)}) })()`)
-    await waitFor(`document.querySelector('.source-status')?.textContent.includes('Unsaved')`, 'Edits were not tracked')
-  }
-  await editSource('const greeting: string = "edited";\nconsole.log(greeting);\n')
-  await pageEval(`document.querySelector('.source-save').click()`)
-  await waitFor(`document.querySelector('.source-status')?.textContent.startsWith('Saved')`, 'File did not save')
-  assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const greeting: string = "edited";\r\nconsole.log(greeting);\r\n', 'Save did not preserve CRLF')
-  await editSource('const greeting = "local draft";\n')
-  await writeFile(join(workspace, 'editor.ts'), 'const greeting = "external edit";\r\n')
-  await waitFor(`document.querySelector('.source-message')?.textContent.includes('changed on disk')`, 'Disk edits were not detected')
-  assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('local draft')`), 'Refresh destroyed unsaved edits')
-  await pageEval(`document.querySelector('.source-save').click()`)
-  await waitFor(`document.querySelector('.source-message.is-error')?.textContent.includes('changed on disk')`, 'Conflicting save was not refused')
-  assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const greeting = "external edit";\r\n')
-  await call('open_file', { path:'fixture.txt' })
-  await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Navigation did not protect unsaved changes')
-  await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Keep editing').click()`)
-  assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('local draft')`))
-  // Repeating the same tool navigation after cancelling must still prompt.
-  await call('open_file', { path:'fixture.txt' })
-  await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Repeated navigation bypassed the draft guard')
-  await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Discard changes').click()`)
-  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('desktop fixture needle')`, 'Discard did not navigate')
-  await call('open_file', { path:'editor.ts' })
-  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('external edit')`, 'Discarded draft came back')
-  await editSource('const recovered = true;\n')
-  await pageEval(`location.reload()`)
-  await waitFor(`Boolean(document.querySelector('.rail-settings'))`, 'App did not reload')
-  await wait(500)
-  await call('open_file', { path:'editor.ts' })
-  await waitFor(`Boolean(document.querySelector('.cm-content'))`, 'Reopened file did not render')
-  await pageEval(`Array.from(document.querySelectorAll('.source-toolbar button')).find((button) => button.textContent.trim() === 'Edit')?.click()`)
-  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const recovered')`, 'Unsaved draft did not survive reload')
-  await pageEval(`document.querySelector('[aria-label="Close preview"]').click()`)
-  await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Close did not protect the recovered draft')
-  await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Save and continue').click()`)
-  await waitFor(`!document.querySelector('.unsaved-dialog') && !document.querySelector('.preview-head')?.textContent.includes('editor.ts')`, 'Save and continue did not close the file')
-  assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const recovered = true;\r\n')
+  await verifyFileEditor()
   await call('open_terminal', { shell: 'cmd' })
   await waitFor(`Array.from(document.querySelectorAll('.dock-terminal-tab button')).some(
     (button) => button.textContent === 'Command Prompt 1' && button.getAttribute('aria-pressed') === 'true'
@@ -423,14 +490,6 @@ try {
   motionSession.send(JSON.stringify({ id:1, method:'Emulation.setEmulatedMedia', params:{ features:[{ name:'prefers-reduced-motion', value:'reduce' }] } }))
   assert.ok(!JSON.parse((await motionReply)[0].data).error)
   await waitFor(`matchMedia('(prefers-reduced-motion: reduce)').matches`, 'Reduced-motion emulation did not take effect')
-  async function debugCommand(id, method, params) {
-    const next = once(motionSession, 'message', { signal:AbortSignal.timeout(10000) })
-    motionSession.send(JSON.stringify({ id, method, params }))
-    const reply = JSON.parse((await next)[0].data)
-    assert.equal(reply.id, id)
-    assert.ok(!reply.error, JSON.stringify(reply.error))
-    return reply.result
-  }
   for (const section of ['General', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About']) {
     await pageEval(`Array.from(document.querySelectorAll('.settings-nav nav button')).find((button) => button.textContent.trim() === ${JSON.stringify(section)}).click()`)
     await waitFor(`document.querySelector('.settings-stage')?.getAttribute('aria-label') === ${JSON.stringify(section)}`, section + ' settings did not open')
@@ -544,6 +603,7 @@ try {
   await waitFor(`Boolean(document.querySelector('.teams-workspace .crew-profile'))`, 'Team configuration did not expand')
   assert.ok(await pageEval(`Boolean(document.querySelector('textarea'))`), 'Teams composer is missing')
   console.log(`Called and checked all ${tested.size} advertised tools through the Windows app and MCP shim; resize checks passed across five window sizes, five workspace views and nine Settings sections.`)
+  }
 } finally {
   motionSession?.close()
   shim?.stdin.end()

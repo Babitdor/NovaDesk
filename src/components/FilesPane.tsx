@@ -47,7 +47,7 @@ export function FilesPane({ workspace, open }: Props) {
     )
     // Clicking the tab that is already on screen is not a new request: asking
     // would re-run the navigation and offer to save a clean file.
-    if (path !== shown) ask(path)
+    if (path !== shown || view !== 'file') ask(path)
     setView('file')
   }
 
