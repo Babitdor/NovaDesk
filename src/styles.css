@@ -2945,6 +2945,11 @@ code {
 }
 .agent-detail { background: var(--settings-surface); padding: 8px 15px 12px; overflow-wrap: anywhere; }
 .agent-detail p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+/* Updater output is whatever the CLI printed; cap it so a verbose log cannot
+   push the rest of the pane off screen, and wrap rather than scroll sideways. */
+.agent-detail pre { margin: 8px 0 0; padding: 8px 10px; max-height: 180px; overflow: auto;
+  background: var(--screen); color: var(--screen-ink); font-family: var(--f-mono);
+  font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings-output { background: var(--screen); padding: 12px; margin: 0; color: var(--screen-ink); overflow: auto; }
 
 /* The Tools pane: a row per tool or harness, with the small facts that decide

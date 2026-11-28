@@ -27,6 +27,11 @@ export type AgentStatus = {
   executable?: string
 }
 
+/// Mirrors `AgentUpdate` in src-tauri/src/agent/cli.rs: `ok` is the updater's
+/// exit status, `output` its combined stdout and stderr, and `version` whatever
+/// `--version` reported afterwards (null when the CLI printed nothing usable).
+export type AgentUpdate = { ok: boolean; output: string; version: string | null }
+
 export const ACCENTS = {
   Nova: ['#f7b98a', '#9e4a52'],
   Sky: ['#9dccfa', '#235680'],

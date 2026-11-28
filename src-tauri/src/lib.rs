@@ -254,6 +254,7 @@ pub fn run() {
         commands::agent::begin_team,
         commands::agent::finish_team,
         commands::agent::agent_status,
+        commands::agent::update_agent,
         commands::agent::agent_capabilities,
         commands::agent::prewarm_nova,
         agent::models::agent_models,

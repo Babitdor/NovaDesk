@@ -3,7 +3,7 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 import { batchAgentEvents } from './eventBatch.ts'
 import type { AgentEvent, DirEntry, InterruptReply, WorkspaceInfo } from './events'
 import type { CrewRole } from './crew'
-import type { HarnessCapabilities, AgentStatus, ColorTheme } from './settings'
+import type { AgentId, AgentUpdate, HarnessCapabilities, AgentStatus, ColorTheme } from './settings'
 
 export const pickWorkspace = () => invoke<WorkspaceInfo | null>('pick_workspace')
 export const setWorkspace = (path: string) => invoke<WorkspaceInfo>('set_workspace', { path })
@@ -57,6 +57,10 @@ export const agentStatus = async (versions = false) => {
   const [statuses, capabilities] = await Promise.all([invoke<AgentStatus[]>('agent_status', { versions }), invoke<Record<string, HarnessCapabilities>>('agent_capabilities')])
   return statuses.map((status) => ({ ...status, capabilities:capabilities[status.id] }))
 }
+
+/// Runs the harness's own updater; the argv is fixed in Rust, the id is the
+/// only thing this side chooses.
+export const updateAgent = (id: AgentId) => invoke<AgentUpdate>('update_agent', { id })
 
 /// Spawns Nova's pipe session for the open workspace in the background; the
 /// first turn of a task then streams immediately instead of paying the boot.

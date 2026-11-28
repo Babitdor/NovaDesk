@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { errorText, agentStatus, importTheme, installTheme, openProviderSetup } from '../lib/ipc'
+import { errorText, agentStatus, importTheme, installTheme, openProviderSetup, updateAgent } from '../lib/ipc'
 import {
   ACCENTS, AGENTS, PRESETS, findTheme, resetAppearance, type AgentId, type AgentStatus, type ColorTheme, type Preferences,
 } from '../lib/settings'
@@ -39,6 +39,9 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
   const [tab, setTab] = useState(initialTab)
   const [statuses, setStatuses] = useState<AgentStatus[]>([])
   const [checking, setChecking] = useState(false)
+  // One updater at a time: two npm/pip runs in the same install tree corrupt it.
+  const [updating, setUpdating] = useState<AgentId | null>(null)
+  const [lastUpdate, setLastUpdate] = useState<{ id: AgentId; text: string } | null>(null)
   const [selectedAgent, selectAgent] = useState<AgentId | null>(null)
   const [themeId, setThemeId] = useState('')
   const [themeBusy, setThemeBusy] = useState(false)
@@ -77,6 +80,24 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
     }
     catch (err) { setStatus(errorText(err)) }
     finally { setChecking(false) }
+  }
+  // Runs the harness's own updater, then re-reads installed versions so the row
+  // stops advertising an update that has already been applied.
+  const runUpdate = async (id: AgentId) => {
+    setUpdating(id)
+    setStatus('')
+    setLastUpdate(null)
+    try {
+      const result = await updateAgent(id)
+      setLastUpdate({ id, text: result.output })
+      const last = result.output.split('\n').filter((line) => line.trim()).pop() ?? ''
+      setStatus(result.ok
+        ? `Updated ${AGENTS[id].name}${result.version ? ` to ${result.version}` : ''}.`
+        : last || `The ${AGENTS[id].name} updater failed.`)
+      setStatuses(await agentStatus(true))
+    }
+    catch (err) { setStatus(errorText(err)) }
+    finally { setUpdating(null) }
   }
   const applyTheme = async (action: () => Promise<ColorTheme[]>) => {
     setThemeBusy(true)
@@ -293,7 +314,12 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                           {found?.capabilities?.readOnly && ' Enforced read-only investigation available.'}
                           {found?.capabilities?.sessionReuse && ' Sessions can be reused.'}</p>
                         {found?.latest && <p>Latest published version <code>{found.latest}</code></p>}
+                        {found?.updateAvailable && <ActionButton icon="download" type="button" disabled={updating !== null}
+                          onClick={() => void runUpdate(id)}>
+                          {updating === id ? 'Updating…' : `Update to ${found.latest}`}
+                        </ActionButton>}
                         <ActionButton icon="check" type="button" onClick={() => update({ defaultAgent: id })}>Use as default</ActionButton>
+                        {lastUpdate?.id === id && <pre>{lastUpdate.text}</pre>}
                       </div>}
                     </div>
                   )

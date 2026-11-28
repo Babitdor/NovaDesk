@@ -344,40 +344,12 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
                     .find_map(|part| semver::Version::parse(part.trim_start_matches('v')).ok())
             };
             let path = resolve(id);
-            let installed_version = async {
-                if let Some(path) = &path {
-                    tokio::time::timeout(
-                        Duration::from_secs(7),
-                        path.command().current_dir(cwd).arg("--version").output(),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .filter(|output| output.status.success())
-                    .and_then(|output| {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let lines: Vec<&str> = stdout
-                            .lines()
-                            .filter(|line| !line.trim().is_empty())
-                            .collect();
-                        // Some harnesses print a banner around the version; the
-                        // line that carries one beats merely being last.
-                        let numbered = lines
-                            .iter()
-                            .find(|line| {
-                                line.to_lowercase().contains(id) && version_number(line).is_some()
-                            })
-                            .or_else(|| lines.iter().find(|line| version_number(line).is_some()));
-                        numbered.or(lines.last()).map(|line| clip(line.trim(), 150))
-                    })
-                } else {
-                    None
+            let (version, latest) = match (&path, versions) {
+                (Some(entry), true) => {
+                    tokio::join!(installed_version(id, entry, &cwd), latest_version(id))
                 }
-            };
-            let (version, latest) = if versions {
-                tokio::join!(installed_version, latest_version(id))
-            } else {
-                (None, None)
+                (None, true) => (None, latest_version(id).await),
+                _ => (None, None),
             };
             let update_available = version
                 .as_deref()
@@ -405,6 +377,112 @@ pub async fn statuses(versions: bool, safe_cwd: &Path) -> Vec<AgentStatus> {
     }
     statuses.sort_by_key(|(index, _)| *index);
     statuses.into_iter().map(|(_, status)| status).collect()
+}
+
+/// What a harness says about its own version. Shared by the Harnesses list and
+/// the update result so both report the same string.
+async fn installed_version(id: &str, entry: &Executable, cwd: &Path) -> Option<String> {
+    let version_number = |version: &str| {
+        version
+            .split_whitespace()
+            .find_map(|part| semver::Version::parse(part.trim_start_matches('v')).ok())
+    };
+    tokio::time::timeout(
+        Duration::from_secs(7),
+        entry.command().current_dir(cwd).arg("--version").output(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .filter(|output| output.status.success())
+    .and_then(|output| {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        // Some harnesses print a banner around the version; the line that
+        // carries one beats merely being last.
+        let numbered = lines
+            .iter()
+            .find(|line| line.to_lowercase().contains(id) && version_number(line).is_some())
+            .or_else(|| lines.iter().find(|line| version_number(line).is_some()));
+        numbered.or(lines.last()).map(|line| clip(line.trim(), 150))
+    })
+}
+
+/// Every harness updates itself, so Nova only has to know which of its own
+/// verbs to run. This is the only source of update argv: the UI sends an agent
+/// id, never a command line.
+fn updater(id: &str) -> Option<&'static [&'static str]> {
+    Some(match id {
+        "nova" => &["update"],
+        "pi" => &["update"],
+        "claude" => &["update"],
+        "codex" => &["update"],
+        "opencode" => &["upgrade"],
+        "commandcode" => &["cmd", "update"],
+        "hermes" => &["update"],
+        _ => return None,
+    })
+}
+
+fn agent_name(id: &str) -> &'static str {
+    AGENTS
+        .iter()
+        .find(|entry| entry.0 == id)
+        .map_or("Agent", |entry| entry.1)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUpdate {
+    ok: bool,
+    output: String,
+    version: Option<String>,
+}
+
+/// Runs the resolved CLI's own updater and reads the version back afterwards,
+/// so the caller reports what is installed now rather than what a registry says.
+pub async fn update(id: &str, safe_cwd: &Path) -> Result<AgentUpdate, AppError> {
+    let name = agent_name(id);
+    let Some(argv) = updater(id) else {
+        return Err(AppError::Agent(format!(
+            "{id} has no updater Nova Desktop can run."
+        )));
+    };
+    let Some(entry) = resolve(id) else {
+        return Err(AppError::Agent(format!(
+            "{name} was not found on this PATH, so it cannot update itself."
+        )));
+    };
+    // A dev checkout is not an installed CLI: `nova update` would fetch a
+    // second copy instead of moving this one.
+    if let EntryPoint::NovaSource(checkout) = &entry.entry {
+        return Err(AppError::Agent(format!(
+            "This Nova runs from the checkout at {}, so update it with git and pip there.",
+            checkout.display()
+        )));
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(300),
+        entry.command().args(argv).current_dir(safe_cwd).output(),
+    )
+    .await
+    .map_err(|_| AppError::Agent(format!("The {name} updater did not finish in 5 minutes.")))?
+    .map_err(|error| AppError::Agent(format!("Could not run the {name} updater: {error}")))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(AgentUpdate {
+        ok: output.status.success(),
+        output: clip(text.trim(), 4000),
+        version: installed_version(id, &entry, safe_cwd).await,
+    })
 }
 
 async fn latest_version(id: &str) -> Option<String> {
@@ -1248,6 +1326,23 @@ mod tests {
             assert_eq!(command, "\"B:/Project with spaces/nova-tools.exe\"");
         } else {
             assert_eq!(command, path.display().to_string());
+        }
+    }
+
+    #[test]
+    fn updater_arguments_are_the_harness_own_commands() {
+        let expected: [(&str, Option<&[&str]>); 8] = [
+            ("nova", Some(&["update"])),
+            ("pi", Some(&["update"])),
+            ("claude", Some(&["update"])),
+            ("codex", Some(&["update"])),
+            ("opencode", Some(&["upgrade"])),
+            ("commandcode", Some(&["cmd", "update"])),
+            ("hermes", Some(&["update"])),
+            ("gemini", None),
+        ];
+        for (id, argv) in expected {
+            assert_eq!(updater(id), argv, "{id}");
         }
     }
 

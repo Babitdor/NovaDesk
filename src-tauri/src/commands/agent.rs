@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
@@ -418,18 +420,28 @@ pub async fn set_auto_approve(enabled: bool, state: State<'_, AppState>) -> Resu
     Ok(())
 }
 
-#[tauri::command]
-pub async fn agent_status(versions: bool, app: AppHandle) -> Vec<cli::AgentStatus> {
+/// Harness probes and updaters run from the config directory rather than the
+/// user's workspace: an updater must not see (or write) project files.
+fn status_cwd(app: &AppHandle) -> PathBuf {
     let cwd = app
         .path()
         .app_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir());
-    let cwd = if std::fs::create_dir_all(&cwd).is_ok() {
+    if std::fs::create_dir_all(&cwd).is_ok() {
         cwd
     } else {
         std::env::temp_dir()
-    };
-    cli::statuses(versions, &cwd).await
+    }
+}
+
+#[tauri::command]
+pub async fn agent_status(versions: bool, app: AppHandle) -> Vec<cli::AgentStatus> {
+    cli::statuses(versions, &status_cwd(&app)).await
+}
+
+#[tauri::command]
+pub async fn update_agent(id: String, app: AppHandle) -> Result<cli::AgentUpdate, AppError> {
+    cli::update(&id, &status_cwd(&app)).await
 }
 
 #[tauri::command]
