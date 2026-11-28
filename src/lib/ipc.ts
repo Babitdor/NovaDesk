@@ -1,3 +1,4 @@
+import type { ApprovalMode } from './approval'
 import { Channel, invoke } from '@tauri-apps/api/core'
 
 import { batchAgentEvents } from './eventBatch.ts'
@@ -214,7 +215,7 @@ export function errorText(err: unknown): string {
   return String(err)
 }
 
-export const setAutoApprove = (enabled: boolean) => invoke<void>('set_auto_approve', { enabled })
+export const setApprovalMode = (mode: ApprovalMode) => invoke<void>('set_approval_mode', { mode })
 
 export const beginTeam = (id: string, limit: number) => invoke<void>('begin_team', { id, limit })
 export const finishTeam = (id: string) => invoke<void>('finish_team', { id })

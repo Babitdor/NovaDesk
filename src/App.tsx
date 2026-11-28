@@ -1,3 +1,4 @@
+import type { ApprovalMode } from './lib/approval'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -28,7 +29,7 @@ import { withViewTransition } from './lib/motion'
 import type { AgentEvent, FinishReason, InterruptReply, WorkspaceInfo } from './lib/events'
 import { VIEWS, type Pane, type View } from './lib/panes'
 import {
-  beginTeam, finishTeam, cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval, setAutoApprove,
+  beginTeam, finishTeam, cancelTurn, errorText, openNovaTerminal, pickWorkspace, prewarmNova, reportCrash, respondApproval, setApprovalMode,
   setCrashPolicy, setQuickLauncher, setWidget, setWorkspace, startTurn, type TerminalShell,
 } from './lib/ipc'
 import { MAX_CHATS, createChat, forkChat, load, routeEvent, save, taskModel, titleFromPrompt, type Chat, type Column } from './lib/sessions'
@@ -92,7 +93,10 @@ export default function App() {
   /// through this when the user approves, edits or skips the plan.
   const planGate = useRef<{ runId: string; resolve: (decision: 'approve' | 'skip' | string) => void } | null>(null)
   const teamTurns = useRef(new Map<string, Running>())
-  const automatic = useRef(preferences.autoApprove)
+  const [appliedApproval, setAppliedApproval] = useState<ApprovalMode | null>(null)
+  const lastAppliedApproval = useRef<ApprovalMode>('standard')
+  const approvalUpdates = useRef(Promise.resolve())
+  const automatic = useRef(preferences.approvalMode === 'fullAccess')
   const replying = useRef(false)
   /// When the last turn finished: the gate for an "after a thread finishes" run.
   const lastFinish = useRef(0)
@@ -433,10 +437,24 @@ export default function App() {
   }
 
   useEffect(() => {
-    automatic.current = preferences.autoApprove
-    void setAutoApprove(preferences.autoApprove).catch((error) => setNotice(errorText(error)))
-    if (preferences.autoApprove) planGate.current?.resolve('approve')
-  }, [preferences.autoApprove])
+    let stale = false
+    // Keep rapid policy changes in order, including pending approval delivery.
+    const request = approvalUpdates.current.then(() => setApprovalMode(preferences.approvalMode))
+    approvalUpdates.current = request.catch(() => {})
+    void request.then(() => {
+      lastAppliedApproval.current = preferences.approvalMode
+      if (!stale) {
+        setAppliedApproval(preferences.approvalMode)
+        automatic.current = preferences.approvalMode === 'fullAccess'
+        if (automatic.current) planGate.current?.resolve('approve')
+      }
+    }).catch((error) => {
+      if (stale) return
+      setNotice(errorText(error))
+      setPreferences(previous => ({ ...previous, approvalMode: lastAppliedApproval.current }))
+    })
+    return () => { stale = true }
+  }, [preferences.approvalMode])
 
   useEffect(() => {
     if (!preferences.approvalMigrationNotice) return
@@ -444,7 +462,7 @@ export default function App() {
   }, [preferences.approvalMigrationNotice, update])
 
   const send = useCallback((prompt: string, chat: Chat, mode?: 'scheduled' | 'approveWorkspace') => {
-    if (live.current || crewRun.current || folderBusy || !workspace || (chat.workspace && chat.workspace !== workspace.root)) return false
+    if (appliedApproval !== preferences.approvalMode || live.current || crewRun.current || folderBusy || !workspace || (chat.workspace && chat.workspace !== workspace.root)) return false
     const fresh = mode === 'scheduled'
     const approvingWorkspace = mode === 'approveWorkspace'
     const backend = chat.agent ?? recommendedAgent(preferences, workspace.root)
@@ -481,7 +499,8 @@ export default function App() {
     let awaitingWorkspaceApproval = false
     void startTurn({ turnId, chatId: chat.connectionId ?? chatId, prompt, backend, model,
       effort: chat.effort, session: chat.session,
-      check: preferences.checks[workspace.root],
+      readOnly: preferences.approvalMode === 'plan',
+      check: preferences.approvalMode === 'plan' ? undefined : preferences.checks[workspace.root],
       trustWorkspace: approvingWorkspace || preferences.trustedWorkspaces.includes(workspace.root),
     }, (event) => {
       if (event.type === 'turnFinished') {
@@ -510,7 +529,7 @@ export default function App() {
       setChats((previous) => routeEvent(previous, chatId, { type: 'turnError', message: errorText(err) }))
     })
     return true
-  }, [folderBusy, preferences, workspace])
+  }, [appliedApproval, folderBusy, preferences, workspace])
 
   /// The schedule engine owns the decisions; this effect only starts turns and
   /// records what happened. The entry is advanced *before* the turn starts, so a
@@ -519,7 +538,7 @@ export default function App() {
     if (!workspace) return
     const root = workspace.root
     const tick = () => {
-      if (live.current || crewRun.current || preferences.pauseSchedules) return
+      if (appliedApproval !== preferences.approvalMode || live.current || crewRun.current || preferences.pauseSchedules) return
       const now = Date.now()
       const due = dueSchedules(preferences.schedules, root, now)
       const afterThread = dueAfterThread(preferences.schedules, root, lastFinish.current)
@@ -545,7 +564,7 @@ export default function App() {
     }
     const timer = setInterval(tick, 5000)
     return () => clearInterval(timer)
-  }, [workspace, preferences, send, update, record, bridgeQueue.length])
+  }, [appliedApproval, workspace, preferences, send, update, record, bridgeQueue.length])
 
   /// Cross-thread starts approved by the user run here, one at a time, always
   /// behind the task the user is already in.
@@ -1063,6 +1082,7 @@ export default function App() {
       : lastItem?.kind === 'assistant' ? 'Writing response' : 'Working'
   const selectModel = ({ agent: nextAgent, model, effort }: ModelSelection) => {
     if (live.current?.chatId === active.id || crewRun.current?.chatId === active.id) return
+    if (preferences.approvalMode === 'plan' && nextAgent !== 'codex') update({ approvalMode: 'standard' })
     const switched = nextAgent !== agent
     const connectionId = switched ? crypto.randomUUID() : active.connectionId
     setChats((previous) => previous.map((chat) => chat.id === active.id ? {
@@ -1130,7 +1150,7 @@ export default function App() {
           <ViewSwitcher view={view} dock={dock} onSelect={selectView}
             onToggleDock={() => setDock((current) => current === 'closed' ? 'open' : 'closed')} />
           <RunningAgents runs={activeRuns(running, chats)}
-            onSelect={(id) => withViewTransition(() => setActiveId(id))} />
+            onSelect={(id) => { setActiveId(id); selectView('Chat') }} />
         </div>
 
         <main className="main">
@@ -1208,19 +1228,20 @@ export default function App() {
               transport reachable here; when the row is on screen its own buttons are the ones shown. */}
           {playback.id !== '' && !active.items.some((item) => 'id' in item && item.id === playback.id)
             && <div className="playback-dock"><Playback /></div>}
-          <Composer chatId={active.id} commands={commands} busy={busy} disabled={!workspace || folderBusy || wrongFolder || Boolean(running && !busy)}
+          <Composer chatId={active.id} commands={commands} busy={busy} disabled={appliedApproval !== preferences.approvalMode || (preferences.approvalMode === 'plan' && (agent !== 'codex' || Boolean(active.crew))) || !workspace || folderBusy || wrongFolder || Boolean(running && !busy)}
             agent={agent} model={taskModel(active, preferences.models[agent])} effort={active.effort}
             recentModels={preferences.recentModels} configuredModels={preferences.models} onSelectModel={selectModel}
             work={busy && running?.role ? CREW[running.role].name + (running.iteration && running.iteration > 1
               ? ' · iteration ' + running.iteration : '') + ' · ' + work.toLowerCase() : work}
             waiting={!!interrupt} hasHistory={active.items.length > 0} obscured={settings}
-            crew={active.crew} onCrew={(crew) => setChats((previous) => previous.map(
-              (chat) => chat.id === active.id ? { ...chat, crew } : chat,
-            ))}
+            crew={active.crew} onCrew={(crew) => {
+              if (crew && preferences.approvalMode === 'plan') update({ approvalMode: 'standard' })
+              setChats(previous => previous.map(chat => chat.id === active.id ? { ...chat, crew } : chat))
+            }}
             onConfigureCrew={() => openSettings('Agents', 'Agent teams')}
             voice={preferences.voice} onOpenVoice={() => openSettings('Voice')}
             usage={active.usage} workspace={workspace?.name ?? null}
-            autoApprove={preferences.autoApprove} onAutoApprove={(autoApprove) => update({ autoApprove })}
+            approvalMode={preferences.approvalMode} onApprovalMode={(approvalMode) => update({ approvalMode })}
             keepDrafts={preferences.keepDrafts} onSend={submit} onStop={stopTurn} />
           <TerminalDock key={workspace?.root} dock={dock} height={dockHeight} onDock={setDock} onHeight={setDockHeight}
             workspaceReady={!!workspace} obscured={settings} spawn={shellToSpawn} />

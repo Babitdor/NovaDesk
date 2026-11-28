@@ -252,6 +252,7 @@ pub fn run() {
         commands::agent::cancel_turn,
         commands::agent::respond_approval,
         commands::agent::set_auto_approve,
+        commands::agent::set_approval_mode,
         commands::agent::begin_team,
         commands::agent::finish_team,
         commands::agent::agent_status,

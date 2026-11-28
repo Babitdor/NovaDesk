@@ -1,3 +1,4 @@
+import { migrateApprovalMode, type ApprovalMode } from './approval.ts'
 import type { CrewRole } from './crew'
 // The extension is required by `node --test`, which strips types without
 // resolving extensionless specifiers; everything else here is bundled by Vite.
@@ -246,7 +247,7 @@ export type Preferences = {
   /// Which approval interrupts are answered without asking. Off by default:
   /// the same hook answers a plan only when explicitly chosen, and never
   /// answers a question on the user's behalf.
-  autoApprove: boolean
+  approvalMode: ApprovalMode
   approvalMigrationNotice: boolean
 }
 
@@ -273,7 +274,7 @@ const defaults: Preferences = {
   disabledSkills: [],
   agentsMaySchedule: false, askBeforeCrossThread: true, pauseSchedules: false,
   agentLimit: 10, scheduleActivity: [],
-  autoApprove: false, approvalMigrationNotice: false,
+  approvalMode: 'standard', approvalMigrationNotice: false,
 }
 
 export const INTERFACE_MIN = 50
@@ -492,7 +493,7 @@ export function loadPreferences(): Preferences {
 /// trusted, so a stored blob from any previous version still loads.
 export function migratePreferences(raw: unknown): Preferences {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaults
-  const stored = raw as Partial<Preferences> & Record<string, unknown>
+  const { autoApprove: legacyApproval, ...stored } = raw as Partial<Preferences> & Record<string, unknown>
   const merged: Preferences = {
     ...defaults,
     ...stored,
@@ -505,10 +506,8 @@ export function migratePreferences(raw: unknown): Preferences {
       ralphIterations: clampRange((stored.team as TeamPreferences | undefined)?.ralphIterations, 1, 5, defaults.team.ralphIterations),
       stageTimeoutMin: clampRange((stored.team as TeamPreferences | undefined)?.stageTimeoutMin, 1, 30, defaults.team.stageTimeoutMin),
     },
-    // Three spellings and nothing else: a stored blob cannot widen what the
-    // app approves without the user having picked it.
-    autoApprove: stored.autoApprove === true || (stored.autoApprove as unknown) === 'all',
-    approvalMigrationNotice: (stored.autoApprove as unknown) === 'tools' || stored.approvalMigrationNotice === true,
+    approvalMode: migrateApprovalMode(stored.approvalMode, legacyApproval),
+    approvalMigrationNotice: legacyApproval === 'tools' || stored.approvalMigrationNotice === true,
     interfaceSize: clampInterfaceSize(typeof stored.interfaceSize === 'number' ? stored.interfaceSize : defaults.interfaceSize),
     agentLimit: typeof stored.agentLimit === 'number'
       ? Math.min(100, Math.max(1, Math.round(stored.agentLimit)))

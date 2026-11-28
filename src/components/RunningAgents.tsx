@@ -1,69 +1,56 @@
-import { useEffect, useId, useState } from 'react'
+import { useId, useState } from 'react'
 
 type Run = { chatId: string; title: string; work: string }
 
-/// What is running right now, at the end of the viewbar. A row is also how you
-/// get to the chat that owns it, which is the whole point of the card.
 export function RunningAgents({ runs, onSelect }: { runs: Run[]; onSelect: (chatId: string) => void }) {
   const [open, setOpen] = useState(false)
   const cardId = useId()
-
-  // Escape closes the card, as it does every other overlay in the window.
-  useEffect(() => {
-    if (!open) return
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
-    window.addEventListener('keydown', escape)
-    return () => window.removeEventListener('keydown', escape)
-  }, [open])
+  const titleId = useId()
+  const label = runs.length ? `Running agents (${runs.length})` : 'Running agents'
 
   return (
     <>
-      <button
-        type="button"
-        className={open ? 'view-tab is-on' : 'view-tab'}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? cardId : undefined}
-        title={runs.length ? `Running agents (${runs.length})` : 'Running agents'}
-        onClick={() => setOpen((current) => !current)}
-      >
+      <button type="button" className={open ? 'view-tab agents-trigger is-on' : 'view-tab agents-trigger'}
+        aria-label={label} aria-haspopup="dialog" aria-expanded={open} aria-controls={cardId}
+        popoverTarget={cardId} title={label}>
         <Glyph />
         <span className="view-label">Agents</span>
-        {runs.length > 0 && <span className="agent-count">{runs.length}</span>}
+        {runs.length > 0 && <span className="agent-count" aria-hidden="true">{runs.length}</span>}
       </button>
-
-      {open && (
-        <>
-          <div className="rail-scrim" onClick={() => setOpen(false)} />
-          <div className="agents-card" id={cardId} role="dialog" aria-label="Running agents">
-            <header>
-              <h2>Running agents</h2>
-              <button type="button" className="ghost" aria-label="Close" onClick={() => setOpen(false)}>×</button>
-            </header>
-            {runs.length === 0 ? (
-              <p className="agents-empty">No agents running</p>
-            ) : (
-              <ul>
-                {runs.map((run) => (
-                  <li key={run.chatId}>
-                    <button type="button" onClick={() => { setOpen(false); onSelect(run.chatId) }}>
-                      <span className="agent-live" aria-hidden="true" />
-                      <strong>{run.title}</strong>
-                      <small>{run.work}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </>
-      )}
+      <div className="agents-card" id={cardId} popover="auto" role="dialog" aria-labelledby={titleId}
+        onToggle={(event) => setOpen(event.newState === 'open')}>
+        <header>
+          <h2 id={titleId}>Running agents <span>{runs.length}</span></h2>
+          <button type="button" className="ghost agents-close" aria-label="Close running agents"
+            ref={(button) => { button?.setAttribute('autofocus', '') }} popoverTarget={cardId} popoverTargetAction="hide">
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="m4 4 8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
+          </button>
+        </header>
+        {runs.length === 0 ? (
+          <p className="agents-empty">No agents running.<span>Start a task to see its progress here.</span></p>
+        ) : (
+          <ul>
+            {runs.map((run) => (
+              <li key={run.chatId}>
+                <button type="button" title={`${run.title} · ${run.work}`} onClick={(event) => {
+                  event.currentTarget.closest<HTMLElement>('[popover]')?.hidePopover()
+                  onSelect(run.chatId)
+                }}>
+                  <span className="agent-live" aria-hidden="true" />
+                  <strong>{run.title}</strong>
+                  <small>{run.work}</small>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </>
   )
 }
 
-/// Two figures and a live dot: the run, not a robot. aria-hidden, because the
-/// label and the button's title already name the control.
 function Glyph() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">

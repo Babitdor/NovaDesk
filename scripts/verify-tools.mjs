@@ -93,10 +93,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (frame.type !== 'prompt') return
   frame.content = frame.content.split('\\n\\nDesktop session:')[0]
-  if (frame.content === 'fixture-permission' || frame.content === 'fixture-question') {
+  if (frame.content === 'fixture-permission' || frame.content === 'fixture-question' || frame.content === 'fixture-edit') {
     pending = frame
     emit({ type:'approval_required', request_id:frame.id, interrupt_id:'same-id',
-      kind:frame.content === 'fixture-question' ? 'question' : 'tool', payload:{ question:'Fixture question?', tool:'fixture' } }); return
+      kind:frame.content === 'fixture-question' ? 'question' : 'tool', payload:frame.content === 'fixture-edit' ? {action_requests:[{name:'write_file'}]} : { question:'Fixture question?', tool:'fixture' } }); return
   }
   if (frame.content === 'fixture-activity') {
     emit({ type:'reasoning_delta', request_id:frame.id, content:'Checking the local server, then opening the page.' });
@@ -214,6 +214,60 @@ try {
   assert.equal((await rpc('initialize', {})).serverInfo.name, 'nova-desktop')
   const { tools } = await rpc('tools/list', {})
   for (const name of ['team_delegate', 'team_follow_up', 'team_message', 'team_status']) await call(name, {}, /authenticated active teammate/)
+
+  // Exercise actual WebView input so native popover focus and dismissal are tested.
+  async function clickControl(selector) {
+    await waitFor(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x+r.width/2, r.y+r.height/2)) })()`, `Control is covered: ${selector}`)
+    await pageEval(`document.querySelector(${JSON.stringify(selector)}).focus()`)
+    const point = await pageEval(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x:r.x+r.width/2, y:r.y+r.height/2 } })()`)
+    await evaluate(webview, null, 'Input.dispatchMouseEvent', { type:'mousePressed', button:'left', clickCount:1, ...point })
+    await evaluate(webview, null, 'Input.dispatchMouseEvent', { type:'mouseReleased', button:'left', clickCount:1, ...point })
+  }
+  async function pressControl(key, code) {
+    await evaluate(webview, null, 'Input.dispatchKeyEvent', { type:'keyDown', key, code:key, windowsVirtualKeyCode:code, ...(key === 'Enter' ? {text:'\r',unmodifiedText:'\r'} : {}) })
+    await evaluate(webview, null, 'Input.dispatchKeyEvent', { type:'keyUp', key, code:key, windowsVirtualKeyCode:code })
+  }
+  async function selectApproval(mode) {
+    await clickControl('.approval-trigger')
+    await waitFor(`document.querySelector('.approval-menu').matches(':popover-open')`, 'Approval menu did not open')
+    await clickControl(`.approval-menu [data-mode="${mode}"]`)
+    await waitFor(`document.querySelector('.approval-trigger').dataset.mode === ${JSON.stringify(mode)} && !document.querySelector('.approval-menu').matches(':popover-open')`, 'Approval mode was not selected')
+    await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).approvalMode === ${JSON.stringify(mode)}`, 'Approval mode was not persisted')
+  }
+  await evaluate(webview, null, 'Page.bringToFront', {})
+  await waitFor(`!document.querySelector('#boot')`, 'Startup overlay did not close')
+  await clickControl('.agents-trigger')
+  await waitFor(`document.querySelector('.agents-card').matches(':popover-open')`, 'Agents popover did not open')
+  assert.ok(await pageEval(`document.activeElement.classList.contains('agents-close')`), 'Popover did not focus its close action')
+  assert.ok(await pageEval(`document.querySelector('.agents-empty').textContent.includes('Start a task')`), 'Missing empty-state guidance')
+  await pressControl('Escape', 27)
+  await waitFor(`!document.querySelector('.agents-card').matches(':popover-open')`, 'Escape did not dismiss agents')
+  assert.ok(await pageEval(`document.activeElement.classList.contains('agents-trigger')`), 'Popover did not return focus')
+  await clickControl('.agents-trigger')
+  await clickControl('.composer textarea')
+  await waitFor(`!document.querySelector('.agents-card').matches(':popover-open')`, 'Outside click did not dismiss agents')
+  assert.equal(await pageEval(`document.activeElement.getAttribute('aria-label')`), 'Prompt', 'Popover swallowed the outside click')
+  await pageEval(`document.querySelector('.view-tabs [aria-selected="true"]').focus()`)
+  await pressControl('ArrowDown', 40)
+  await waitFor(`document.querySelector('.view-tabs [aria-selected="true"]').getAttribute('aria-label') === 'Files'`, 'Tab arrow navigation failed')
+  await pressControl('Home', 36)
+  await waitFor(`document.querySelector('.view-tabs [aria-selected="true"]').getAttribute('aria-label') === 'Chat'`, 'Tab Home navigation failed')
+  await clickControl('.approval-trigger')
+  await waitFor(`document.querySelector('.approval-menu').matches(':popover-open')`, 'Approval menu did not open')
+  assert.equal(await pageEval(`document.querySelectorAll('.approval-menu [role="menuitemradio"]').length`), 4)
+  assert.equal(await pageEval(`document.querySelector('.approval-menu [data-mode="plan"]').getAttribute('aria-disabled')`), 'true', 'Plan must explain its Codex requirement')
+  await pressControl('ArrowDown', 40)
+  assert.equal(await pageEval(`document.activeElement.dataset.mode`), 'acceptEdits', 'Approval arrow navigation failed')
+  await pressControl('Enter', 13)
+  await waitFor(`document.querySelector('.approval-trigger').dataset.mode === 'acceptEdits'`, 'Keyboard approval selection failed')
+  await selectApproval('fullAccess')
+  await selectApproval('standard')
+  await waitFor(`Array.from(document.querySelectorAll('.crew-select select')).every(el => el.getBoundingClientRect().height >= 24 && el.contains(document.elementFromPoint(el.getBoundingClientRect().x + el.clientWidth / 2, el.getBoundingClientRect().y + el.clientHeight / 2)))`, 'Personality icon select is covered or too small')
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('set_approval_mode', {mode:'plan'})`)
+  const planError = await pageEval(`window.__TAURI_INTERNALS__.invoke('start_turn', {...${JSON.stringify({turnId:crypto.randomUUID(),chatId:crypto.randomUUID(),backend:'nova',prompt:'Plan fixture',trustWorkspace:true})}, onEvent:'__CHANNEL__:' + window.__TAURI_INTERNALS__.transformCallback(() => {})}).then(() => 'unexpected success', error => error.message)`)
+  assert.match(planError, /does not enforce read-only/)
+  await pageEval(`window.__TAURI_INTERNALS__.invoke('set_approval_mode', {mode:'standard'})`)
+  console.log('Four approval modes, Plan backend boundary, view-rail keyboard navigation, agents focus, Escape and click-through passed.')
 
   // Chromium may attempt style attributes while replacing editable text. Those
   // remain blocked; this regression checks admission of generated stylesheets.
@@ -349,6 +403,14 @@ try {
     const { messages } = await call('read_task', { taskId })
     assert.ok(messages.some((message) => message.text === 'fixture turn running'))
   }, 'The Nova pipe did not start the turn')
+  await pageEval(`document.querySelector('.view-tabs [aria-label="Board"]').click()`)
+  await clickControl('.agents-trigger')
+  await waitFor(`document.querySelector('.agents-card li strong')?.textContent === 'Renamed fixture'`, 'Running task is missing from agents')
+  assert.ok(await pageEval(`document.querySelector('select[aria-label="Agent personality"]').disabled`), 'Personality must stay locked during a run')
+  await clickControl('.agents-card li button')
+  await waitFor(`document.querySelector('.view-tabs [aria-label="Chat"]').getAttribute('aria-selected') === 'true' && !document.querySelector('.agents-card').matches(':popover-open')`, 'Selecting an agent did not open its chat and dismiss the card')
+  const changingPlan = await pageEval(`window.__TAURI_INTERNALS__.invoke('set_approval_mode', {mode:'plan'}).then(() => 'unexpected success', error => error.message)`)
+  assert.match(changingPlan, /Stop the running turn/)
   const steering = await call('steer_task', { taskId, text: 'focus on the fixture' })
   assert.equal(steering.accepted, true)
   await eventually(async () => {
@@ -417,6 +479,16 @@ try {
   // The backend owns permissions, cancellation and team writer exclusion.
   const teamId = crypto.randomUUID()
   const approvalTurn = crypto.randomUUID()
+  const editTask = (await call('create_task', {title:'Edit approval fixture'})).taskId
+  await call('open_task', {taskId:editTask})
+  await selectApproval('acceptEdits')
+  await call('start_task', {taskId:editTask, prompt:'fixture-edit'})
+  await eventually(async () => {
+    const task = await call('read_task', {taskId:editTask})
+    assert.ok(task.messages.some(message => message.text === 'permission delivered'))
+    assert.equal(task.state, 'idle')
+  }, 'Accept edits did not approve a recognized Nova file edit')
+  await selectApproval('standard')
   const approvalChat = crypto.randomUUID()
   await pageEval(`window.__TAURI_INTERNALS__.invoke('begin_team', { id:${JSON.stringify(teamId)}, limit:3 })`)
   await pageEval(`(async () => {
@@ -427,11 +499,11 @@ try {
   assert.equal(await pageEval(`window.__approvalEvents.some((event) => event.type === 'turnFinished')`), false)
   const competing = { turnId:crypto.randomUUID(), chatId:crypto.randomUUID(), backend:'local', prompt:'competing writer', trustWorkspace:true, teamId }
   assert.match(await pageEval(`(async () => { const { startTurn } = await import('/src/lib/ipc.ts'); try { await startTurn(${JSON.stringify(competing)}, () => {}); return 'unexpected success' } catch (error) { return error.message } })()`), /single-writer/)
-  assert.equal(await pageEval(`document.querySelector('select[aria-label="Permission mode"]').value`), 'manual')
-  assert.equal(await pageEval(`document.querySelector('select[aria-label="Permission mode"]').disabled`), false, 'Approval mode must remain usable during a pending decision')
-  assert.ok(await pageEval(`(() => { const mode = document.querySelector('select[aria-label="Permission mode"]'); const rect = mode.getBoundingClientRect(); return mode.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)) })()`), 'Approval mode is clipped or covered in the composer')
-  await pageEval(`(() => { const mode = document.querySelector('select[aria-label="Permission mode"]'); mode.value = 'auto'; mode.dispatchEvent(new Event('change', { bubbles:true })) })()`)
-  await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).autoApprove === true`, 'Composer approval preference was not saved')
+  assert.equal(await pageEval(`document.querySelector('.approval-trigger').dataset.mode`), 'standard')
+  assert.equal(await pageEval(`document.querySelector('.approval-trigger').disabled`), false, 'Approval mode must remain usable during a pending decision')
+  assert.ok(await pageEval(`(() => { const mode = document.querySelector('.approval-trigger'); const rect = mode.getBoundingClientRect(); return mode.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)) })()`), 'Approval mode is clipped or covered in the composer')
+  await selectApproval('fullAccess')
+  await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).approvalMode === 'fullAccess'`, 'Composer approval preference was not saved')
   await waitFor(`window.__approvalEvents.some((event) => event.type === 'turnFinished')`, 'Toggle did not release the pending permission')
   assert.ok(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`))
   const questionTurn = crypto.randomUUID()
@@ -443,8 +515,8 @@ try {
   await waitFor(`window.__approvalEvents.some((event) => event.type === 'turnFinished' && event.reason === 'cancelled')`, 'Cancellation while waiting did not finish')
   assert.ok(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`))
   await pageEval(`window.__TAURI_INTERNALS__.invoke('finish_team', { id:${JSON.stringify(teamId)} })`)
-  await pageEval(`(() => { const mode = document.querySelector('select[aria-label="Permission mode"]'); mode.value = 'manual'; mode.dispatchEvent(new Event('change', { bubbles:true })) })()`)
-  await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).autoApprove === false`, 'Manual approval was not saved')
+  await selectApproval('standard')
+  await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).approvalMode === 'standard'`, 'Manual approval was not saved')
   const scrollTask = (await call('create_task', { title:'Scroll preservation fixture' })).taskId
   await call('open_task', { taskId:scrollTask })
   await call('start_task', { taskId:scrollTask, prompt:'scroll fixture\n'.repeat(120) })
@@ -464,11 +536,11 @@ try {
   await pageEval(`document.querySelector('.rail-settings').click()` )
   await waitFor(`Boolean(document.querySelector('.settings-nav'))`, 'Settings did not open')
   await pageEval(`Array.from(document.querySelectorAll('.settings-nav button')).find((button) => button.textContent.includes('Schedules'))?.click()`)
-  await waitFor(`Array.from(document.querySelectorAll('.settings-row')).some((row) => row.querySelector('strong')?.textContent === 'Auto-approve')`, 'Schedules approval setting did not open')
-  await pageEval(`Array.from(document.querySelectorAll('.settings-row')).find((row) => row.querySelector('strong')?.textContent === 'Auto-approve').querySelector('input').click()`)
-  await waitFor(`document.querySelector('select[aria-label="Permission mode"]').value === 'auto'`, 'Schedules did not update the composer approval mode')
-  await pageEval(`Array.from(document.querySelectorAll('.settings-row')).find((row) => row.querySelector('strong')?.textContent === 'Auto-approve').querySelector('input').click()`)
-  await waitFor(`document.querySelector('select[aria-label="Permission mode"]').value === 'manual'`, 'Composer did not return to manual approval')
+  await waitFor(`Boolean(document.querySelector('select[aria-label="Approval mode"]'))`, 'Schedules approval setting did not open')
+  for (const mode of ['fullAccess', 'standard']) {
+    await pageEval(`(() => { const select = document.querySelector('select[aria-label="Approval mode"]'); select.value = ${JSON.stringify(mode)}; select.dispatchEvent(new Event('change', {bubbles:true})) })()`)
+    await waitFor(`document.querySelector('.approval-trigger').dataset.mode === ${JSON.stringify(mode)}`, 'Settings did not update composer approval mode')
+  }
   await pageEval(`Array.from(document.querySelectorAll('.settings-nav button')).find((button) => button.textContent.includes('Tools'))?.click()` )
   await waitFor(`Boolean(document.querySelector('.settings-stage[aria-label=Tools]'))`, 'Tools settings did not open')
   assert.equal(await pageEval(`Boolean(document.querySelector('#nova-integrations[open]'))`), false, 'Tools automatically opened the integrations sheet')

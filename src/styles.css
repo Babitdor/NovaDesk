@@ -324,16 +324,12 @@ button.stop:hover:not(:disabled) {
 .notice button { flex: none; min-height: 26px; }
 
 /* shell ------------------------------------------------------------ */
-/* Two rows. The switcher spans the transcript and the panel above them, because
-   it is the one control that has to survive the panel closing — Chat is what
-   closes it, and a control inside the panel could not reopen it. */
+/* Reserve a narrow lane for the floating view rail so it never covers content. */
 .shell {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas:
-    'sidebar views views'
-    'sidebar chat panel';
+  grid-template-columns: auto minmax(0, 1fr) auto 60px;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: 'sidebar chat panel views';
   height: 100vh;
   padding: 8px;
 }
@@ -648,43 +644,35 @@ button.stop:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-/* view bar --------------------------------------------------------- */
-/* The strip of views above the shell. Chat is a view rather than a tab that
-   closes something, so the panel's "closed" state is simply the Chat view and
-   there is never a second place to look for it. */
+/* Floating view rail ------------------------------------------------ */
 .viewbar {
   grid-area: views;
-  /* The Agents card is anchored to this row rather than to the tabs, so the
-     tabs' own overflow cannot clip it. */
-  position: relative;
+  align-self: center;
+  justify-self: end;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
-  padding: 0 0 6px 8px;
-}
-
-/* The tabs read as one floating card over the shell, in the surface/border/
-   shadow language the sidebars already use. */
-.view-tabs {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  overflow: hidden;
-  padding: 4px;
+  gap: 5px;
+  width: 48px;
+  max-height: calc(100dvh - 32px);
+  padding: 6px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  box-shadow: 0 10px 24px rgba(3, 14, 62, 0.35);
+  border-radius: 18px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
 }
+.view-tabs { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.view-label { display: none; }
 
 .view-tab {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 9px;
+  position: relative;
+  justify-content: center;
+  min-height: 34px;
+  min-width: 34px;
+  padding: 8px;
   font: 500 11px var(--f-mono);
   letter-spacing: 0;
   color: var(--muted);
@@ -709,13 +697,11 @@ button.stop:hover:not(:disabled) {
   flex: none;
 }
 
-/* The divider the rail drew between panes and the terminal, kept for the same
-   reason: the terminal is a different kind of control, not a sixth view. */
 .view-rule {
   flex: none;
-  width: 1px;
-  height: 18px;
-  margin: 0 2px;
+  width: 24px;
+  height: 1px;
+  margin: 3px 0;
   background: var(--line);
 }
 
@@ -726,20 +712,24 @@ button.stop:hover:not(:disabled) {
   letter-spacing: 0;
 }
 
-/* What is running, in the same surface language as the tabs it hangs from: a
-   popover here is a card, and a card is one radius and one shadow. */
+/* Native top-layer popover: light dismissal and focus return belong to the browser. */
+.agents-trigger { anchor-name: --agents-trigger; }
 .agents-card {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 7;
-  min-width: 260px;
-  max-width: 340px;
-  padding: 10px;
+  position: fixed;
+  position-anchor: --agents-trigger;
+  inset: auto;
+  top: clamp(12px, anchor(top), calc(100dvh - 360px));
+  right: anchor(left);
+  margin: 0 10px 0 0;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(348px, calc(100dvh - 24px));
+  overflow: auto;
+  padding: 12px;
+  color: var(--ink);
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  box-shadow: 0 18px 40px rgba(3, 14, 62, 0.45);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 22%);
 }
 
 .agents-card header {
@@ -772,7 +762,8 @@ button.stop:hover:not(:disabled) {
   align-items: center;
   gap: 2px 8px;
   width: 100%;
-  padding: 6px;
+  min-height: 52px;
+  padding: 9px 8px;
   text-align: left;
   color: var(--ink);
   background: transparent;
@@ -795,11 +786,17 @@ button.stop:hover:not(:disabled) {
 
 .agents-card small {
   grid-column: 2;
+  overflow-wrap: anywhere;
+  text-transform: none;
+  letter-spacing: normal;
   font-size: 11px;
   color: var(--muted);
 }
 
-/* The empty state is a sentence, not a table with no rows. */
+.agents-card h2 span { margin-left: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.agents-card .agents-close { display: grid; place-items: center; min-width: 32px; min-height: 32px; padding: 6px; }
+.agents-empty span { display: block; margin-top: 6px; }
+
 .agents-empty {
   margin: 0;
   padding: 18px 8px;
@@ -817,6 +814,9 @@ button.stop:hover:not(:disabled) {
 }
 
 .agent-count {
+  position: absolute;
+  top: -3px;
+  right: -4px;
   min-width: 14px;
   padding: 0 3px;
   font-size: 10px;
@@ -1106,19 +1106,36 @@ code {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 5px;
   flex: none;
-  --portrait-size: 34px;
-}
-.crew-select select {
-  appearance: none;
   min-height: var(--conversation-control);
-  padding: 3px 25px 3px 8px;
+  min-width: 44px;
+  padding: 5px 23px 5px 8px;
+  max-width: 100%;
   color: var(--ink);
   background: var(--panel);
   border: 1px solid var(--line);
-  font: 11px var(--f-mono);
+  border-radius: var(--radius-chip);
+  --portrait-size: 20px;
 }
+.crew-select > svg, .crew-select > .crew-portrait { flex: none; pointer-events: none; }
+.crew-select select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  appearance: none;
+  min-width: 0;
+  min-height: calc(var(--conversation-control) - 2px);
+  padding: 5px 25px 5px 7px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  font: 11px var(--f-mono);
+  cursor: pointer;
+}
+.crew-select option { color: var(--ink); background: var(--panel); }
 /* One chevron for the harness button and both native composer selects. */
 .composer .model-trigger::after, .crew-select::after {
   content: '';
@@ -1130,42 +1147,80 @@ code {
   transform: translateY(-2px) rotate(45deg);
   pointer-events: none;
 }
-/* Both composer selects are icon chips: the native control stays on top and
-   invisible, so the platform dropdown still opens over the icon, and the
-   keyboard and screen-reader paths are exactly what they were. */
-.crew-select[data-mode] {
-  min-height: var(--conversation-control);
-  padding: 3px 7px;
-  color: var(--muted);
-  background: var(--panel);
+.crew-select::after { position: absolute; right: 10px; }
+.crew-select:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.crew-select:has(select:disabled) { opacity: .5; }
+.crew-select select:disabled { cursor: default; }
+@media (hover: hover) {
+  .crew-select:hover:not(:has(select:disabled)) { border-color: var(--accent-line); }
+}
+@media (forced-colors: active) {
+  .crew-select { padding: 0; }
+  .crew-select select { position: static; width: auto; height: auto; opacity: 1; appearance: auto; padding-right: 5px; }
+  .crew-select > svg, .crew-select > .crew-portrait { display: none; }
+  .crew-select::after { display: none; }
+  .crew-select:focus-within { outline-color: Highlight; }
+  .view-tab.is-on { border-color: Highlight; }
+}
+/* Icon trigger, with the full policy and its limits in the menu. */
+.composer .approval-trigger {
+  anchor-name: --approval-trigger;
+  display: grid;
+  place-items: center;
+  min-width: var(--conversation-control);
+  padding: 7px;
   border: 1px solid var(--line);
   border-radius: var(--radius-chip);
+  color: var(--ink);
 }
-.crew-select[data-mode]:hover { color: var(--accent); border-color: var(--accent-line); }
-/* One glance answers "will this run without asking me?", which is why the padlock
-   opens and the chip turns accent rather than merely relabelling itself. */
-.crew-select[data-mode='auto'] { color: var(--accent); background: var(--accent-wash); border-color: var(--accent-line); }
-.crew-select[data-mode]::after { display: none; }
-.crew-select[data-mode] select {
-  position: absolute;
-  inset: 0;
+.composer .approval-trigger[data-mode='fullAccess'] { color: var(--accent); background: var(--accent-wash); border-color: var(--accent-line); }
+.approval-menu {
+  position: fixed;
+  position-anchor: --approval-trigger;
+  inset: auto;
+  left: clamp(12px, anchor(left), calc(100vw - 352px));
+  bottom: calc(anchor(top) + 8px);
+  margin: 0;
+  width: min(340px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 5px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 24%);
+}
+.approval-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
-  height: 100%;
-  min-height: 0;
-  padding: 0;
-  opacity: 0;
-  border: 0;
+  min-height: 54px;
+  padding: 9px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
 }
-.crew-select[data-mode]:focus-within { outline: 1px solid var(--accent); outline-offset: 1px; }
-.crew-select::after { position: absolute; right: 10px; }
+.approval-menu button > svg { flex: none; }
+.approval-menu button > span { flex: 1; min-width: 0; }
+.approval-menu strong { display: block; font-size: 12px; font-weight: 500; }
+.approval-menu small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.approval-menu button[aria-checked='true'] { background: var(--wash); border-color: var(--line); }
+.approval-menu button[aria-disabled='true'] { color: var(--muted); cursor: default; }
+.approval-menu button:focus-visible { outline-offset: -2px; }
+@media (hover: hover) {
+  .approval-menu button:hover:not([aria-disabled='true']) { background: var(--wash); border-color: var(--line); }
+}
 @media (forced-colors: active) {
-  .crew-select select { appearance: auto; padding-right: 5px; }
-  .crew-select::after { display: none; }
-  /* High contrast: the icon chip falls back to the native control it already
-     is, rather than leaving an invisible dropdown over a decorative glyph. */
-  .crew-select[data-mode] select { position: static; width: auto; height: auto; opacity: 1; }
-  .crew-select[data-mode] > svg, .crew-select[data-mode] > .crew-portrait { display: none; }
+  .approval-menu button[aria-checked='true'], .composer .approval-trigger[data-mode='fullAccess'] { border-color: Highlight; }
+  .approval-menu button[aria-disabled='true'] { color: GrayText; }
 }
+
 .crew-profile {
   display: grid;
   gap: 10px;
@@ -1474,7 +1529,10 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: var(--conversation-control);
   padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
 }
 
 .composer .model-trigger {
@@ -2759,10 +2817,8 @@ code {
   white-space: nowrap;
 }
 
-/* The shell is square: panels, dock and rails all butt against each other. The
-   view tabs are the exception they were drawn as — a floating card over the
-   shell — so they keep the radius set above instead of being flattened here. */
-.rail, .right, .dock, .dock-body, .viewbar { border-radius: 0; }
+/* Structural panes stay square; the floating view rail keeps its own contour. */
+.rail, .right, .dock, .dock-body { border-radius: 0; }
 
 .settings-view {
   --settings-surface: color-mix(in srgb, var(--ground) 82%, var(--panel));

@@ -174,12 +174,12 @@ test('no saved profile means no profile id at all', () => {
 /// Auto-approve widens what runs without asking, so the stored blob may only
 /// ever say one of the three strings the page offers.
 test('auto-approve is off unless the blob names an option', () => {
-  assert.equal(migratePreferences({}).autoApprove, false)
-  assert.equal(migratePreferences({ autoApprove: 'tools' }).autoApprove, false)
-  assert.equal(migratePreferences({ autoApprove: 'all' }).autoApprove, true)
-  assert.equal(migratePreferences({ autoApprove: 'everything' }).autoApprove, false)
-  assert.equal(migratePreferences({ autoApprove: true }).autoApprove, true)
-  assert.equal(migratePreferences({ autoApprove: 'ALL' }).autoApprove, false)
+  assert.equal(migratePreferences({}).approvalMode, 'standard')
+  assert.equal(migratePreferences({ autoApprove: 'tools' }).approvalMode, 'standard')
+  assert.equal(migratePreferences({ autoApprove: 'all' }).approvalMode, 'fullAccess')
+  assert.equal(migratePreferences({ autoApprove: 'everything' }).approvalMode, 'standard')
+  assert.equal(migratePreferences({ autoApprove: true }).approvalMode, 'fullAccess')
+  assert.equal(migratePreferences({ autoApprove: 'ALL' }).approvalMode, 'standard')
 })
 
 test('a speaker number is a whole number inside the range the page offers', () => {
@@ -192,4 +192,10 @@ test('a speaker number is a whole number inside the range the page offers', () =
  test('tools-only migration explains why approval was disabled', () => {
   assert.equal(migratePreferences({ autoApprove: 'tools' }).approvalMigrationNotice, true)
   assert.equal(migratePreferences({ autoApprove: false, approvalMigrationNotice: false }).approvalMigrationNotice, false)
+})
+
+test('migrating approval preferences removes the legacy widening flag', () => {
+  const migrated = migratePreferences({autoApprove:true, approvalMode:'standard'})
+  assert.equal(migrated.approvalMode, 'standard')
+  assert.equal('autoApprove' in migrated, false)
 })

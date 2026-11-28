@@ -1,3 +1,5 @@
+import { ApprovalPicker } from './ApprovalPicker'
+import type { ApprovalMode } from '../lib/approval'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { SlashCommand } from '../lib/slash'
@@ -35,34 +37,20 @@ type Props = {
   onOpenVoice: () => void
   /// "Keep unsent drafts": the store is only touched while the preference is on.
   keepDrafts: boolean
-  autoApprove: boolean
-  onAutoApprove: (enabled: boolean) => void
+  approvalMode: ApprovalMode
+  onApprovalMode: (mode: ApprovalMode) => void
   onSend: (prompt: string) => boolean
   onStop: () => void
 }
 
 /// The composer's own drawn icons, at the weight of the labels beside them and
 /// aria-hidden: each sits inside a control that is already named.
-function Glyph({ name }: { name: 'attach' | 'lock' | 'lock-open' | 'people' }) {
+function Glyph({ name }: { name: 'attach' | 'people' }) {
   const shape = () => {
     switch (name) {
       case 'attach':
         return <path d="M11.5 7.5 7 12a2.8 2.8 0 0 1-4-4l5-5a1.9 1.9 0 0 1 2.7 2.7l-5 5a1 1 0 0 1-1.4-1.4l4.4-4.4"
           fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      case 'lock':
-        return (
-          <>
-            <rect x="3.5" y="7" width="9" height="6.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M5.75 7V5.2a2.25 2.25 0 0 1 4.5 0V7" fill="none" stroke="currentColor" strokeWidth="1.4" />
-          </>
-        )
-      case 'lock-open':
-        return (
-          <>
-            <rect x="3.5" y="7" width="9" height="6.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M5.75 7V5.2a2.25 2.25 0 0 1 4.5 0" fill="none" stroke="currentColor" strokeWidth="1.4" />
-          </>
-        )
       case 'people':
         return (
           <>
@@ -85,7 +73,7 @@ function Glyph({ name }: { name: 'attach' | 'lock' | 'lock-open' | 'people' }) {
 export function Composer({
   chatId, commands, busy, disabled, agent, model, effort, recentModels, configuredModels, onSelectModel,
   hasHistory, work, waiting, obscured, crew, onCrew, onConfigureCrew, usage, workspace, voice,
-  onOpenVoice, keepDrafts, autoApprove, onAutoApprove, onSend, onStop,
+  onOpenVoice, keepDrafts, approvalMode, onApprovalMode, onSend, onStop,
 }: Props) {
   const composer = useRef<HTMLDivElement>(null)
   const modelButton = useRef<HTMLButtonElement>(null)
@@ -128,7 +116,10 @@ export function Composer({
   /// Attaching picks files and writes their paths into the draft, where they are
   /// text the user can edit before sending: every harness already reads a path.
   const [attachError, setAttachError] = useState('')
+  const [attaching, setAttaching] = useState(false)
   const attach = async () => {
+    if (attaching) return
+    setAttaching(true)
     setAttachError('')
     try {
       const paths = await pickAttachments()
@@ -138,6 +129,8 @@ export function Composer({
       }
     } catch (err) {
       setAttachError(errorText(err))
+    } finally {
+      setAttaching(false)
     }
   }
   const openMenu = (kind: 'slash' | 'mention' = 'slash') => setMenu({ chat: chatId, kind, highlighted: -1 })
@@ -438,16 +431,11 @@ export function Composer({
             <span className="model-trigger-agent">{backend}</span>
             {model && <span className="model-trigger-name">{model}</span>}
           </button>}
-          <label className="crew-select" data-mode={autoApprove ? 'auto' : 'manual'}
-            title={autoApprove ? 'Auto approval: ordinary tools and plans run without asking; questions still require an answer and harness restrictions remain in force.' : 'Manual approval: every tool call waits for you. Click for auto approval.'}>
-            <Glyph name={autoApprove ? 'lock-open' : 'lock'} />
-            <select aria-label="Permission mode" value={autoApprove ? 'auto' : 'manual'}
-              onChange={(event) => onAutoApprove(event.target.value === 'auto')}>
-              <option value="manual">Manual approval</option>
-              <option value="auto">Auto approval</option>
-            </select>
-          </label>
-          <label className="crew-select" data-mode={crew ?? 'none'}>
+          <ApprovalPicker mode={approvalMode} onChange={onApprovalMode}
+            planReason={agent !== 'codex' ? 'Choose Codex to use its enforced read-only sandbox.'
+              : crew ? 'Plan mode is available for a single Codex agent.'
+              : busy || disabled ? 'Stop running tasks and open a folder before entering Plan mode.' : undefined} />
+          <label className="crew-select" data-mode={crew ?? 'none'} title={crew === 'team' ? 'Personality: Team' : crew ? `Personality: ${CREW[crew].name}` : 'Choose an agent personality'}>
             {crew && crew !== 'team' ? <CrewPortrait role={crew} /> : <Glyph name="people" />}
             <select aria-label="Agent personality" disabled={busy} value={crew ?? ''}
               onChange={(event) => onCrew(event.target.value as CrewMode || undefined)}>
@@ -463,7 +451,8 @@ export function Composer({
           </span>}
         </span>
         <button type="button" className="ghost composer-attach" aria-label="Attach files"
-          title="Attach files — their paths are added to the prompt" onClick={() => void attach()}>
+          disabled={!workspace || attaching} aria-busy={attaching}
+          title={attaching ? 'Choosing files…' : 'Attach files — their paths are added to the prompt'} onClick={() => void attach()}>
           <Glyph name="attach" />
         </button>
         {busy ? (

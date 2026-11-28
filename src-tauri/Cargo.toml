@@ -7,7 +7,7 @@ members = ["shim"]
 
 [package]
 name = "novacode-desktop"
-version = "0.10.4"
+version = "0.11.0"
 description = "Nova Desktop — a Tauri shell for a desktop coding agent"
 edition = "2021"
 # 1.90 is tauri-plugin-updater's floor: the crate uses APIs stabilized there.

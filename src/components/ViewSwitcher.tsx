@@ -19,22 +19,27 @@ const TITLES: Record<View, string> = {
   Preview: 'Preview',
 }
 
-/// The strip above the shell: one tab per view, then the terminal. The terminal
-/// is a toggle here and not a tab, because it is a dock that opens under the
-/// transcript instead of replacing the panel.
-///
-/// It sits in its own row rather than on the panel, so closing the panel cannot
-/// take away the only way to reopen it — that was the whole job of the rail this
-/// replaced, and here Chat is that button.
+/// View navigation lives in the floating rail; Terminal toggles its own dock.
 export function ViewSwitcher({ view, dock, onSelect, onToggleDock }: Props) {
   return (
     <>
-      <div className="view-tabs" role="tablist" aria-label="Views">
+      <div className="view-tabs" role="tablist" aria-label="Views" aria-orientation="vertical" onKeyDown={(event) => {
+        const index = VIEWS.indexOf(view)
+        const next = event.key === 'ArrowDown' ? (index + 1) % VIEWS.length
+          : event.key === 'ArrowUp' ? (index + VIEWS.length - 1) % VIEWS.length
+          : event.key === 'Home' ? 0 : event.key === 'End' ? VIEWS.length - 1 : -1
+        if (next < 0) return
+        event.preventDefault()
+        onSelect(VIEWS[next])
+        event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
+      }}>
         {VIEWS.map((name, index) => (
           <button
             key={name}
             type="button"
             role="tab"
+            aria-label={name}
+            tabIndex={name === view ? 0 : -1}
             aria-selected={name === view}
             className={name === view ? 'view-tab is-on' : 'view-tab'}
             title={`${TITLES[name]} (Ctrl + ${index + 1})`}
@@ -51,6 +56,7 @@ export function ViewSwitcher({ view, dock, onSelect, onToggleDock }: Props) {
       <button
         type="button"
         className={dock === 'closed' ? 'view-tab' : 'view-tab is-on'}
+        aria-label="Terminal"
         aria-pressed={dock !== 'closed'}
         title="Terminal (Ctrl + `)"
         onClick={onToggleDock}

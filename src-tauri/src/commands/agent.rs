@@ -4,6 +4,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::permissions::{file_edit, ApprovalMode};
 use crate::agent::{cli, drive_turn, Personality, TurnRequest, DEFAULT_BACKEND};
 use crate::error::AppError;
 use crate::events::{AgentEvent, FinishReason, InterruptReply};
@@ -49,6 +50,9 @@ pub async fn prewarm_nova(
     app: AppHandle,
 ) -> Result<(), AppError> {
     let workspace = state.require_guard().await?;
+    if state.permissions.mode() == ApprovalMode::Plan {
+        return Ok(());
+    }
     if !state.turns.lock().expect("turns mutex").is_empty() {
         return Ok(());
     }
@@ -159,7 +163,7 @@ pub async fn start_turn(
     {
         return Err(AppError::Agent("Invalid project check command".into()));
     }
-    let read_only = read_only.unwrap_or(false);
+    let read_only = read_only.unwrap_or(false) || state.permissions.mode() == ApprovalMode::Plan;
     if read_only && !check.is_empty() {
         return Err(AppError::Agent(
             "Read-only investigation cannot run a project check command".into(),
@@ -190,6 +194,11 @@ pub async fn start_turn(
             .values()
             .map(|turn| (turn.read_only, turn.team_id.as_deref()))
             .collect();
+        if state.permissions.mode() == ApprovalMode::Plan && !read_only {
+            return Err(AppError::Agent(
+                "Approval mode changed to Plan; start a new read-only Codex turn".into(),
+            ));
+        }
         if turns.contains_key(&turn_id)
             || !crate::agent::teams::can_schedule(
                 &active,
@@ -264,6 +273,7 @@ pub async fn start_turn(
     let permissions = state.permissions.clone();
     let owner = turn_id.clone();
     let responder = agent.clone();
+    let approval_backend = backend.clone();
     let launched = std::time::Instant::now();
     let first_text = std::sync::atomic::AtomicBool::new(true);
     let on_event = Channel::new(move |body| {
@@ -286,7 +296,9 @@ pub async fn start_turn(
             })?;
         }
         if let AgentEvent::ApprovalRequired {
-            interrupt_id, kind, ..
+            interrupt_id,
+            kind,
+            payload,
         } = &event
         {
             // Render before auto-answering, so failures retain a retryable card.
@@ -294,11 +306,12 @@ pub async fn start_turn(
                 &owner,
                 interrupt_id,
                 kind,
+                file_edit(&approval_backend, payload),
                 responder.clone(),
                 destination.clone(),
             );
             destination.send(event.clone())?;
-            permissions.auto_answer(&owner, interrupt_id, kind);
+            permissions.auto_answer(&owner, interrupt_id);
             return Ok(());
         }
         destination.send(event)
@@ -417,6 +430,25 @@ pub async fn respond_approval(
 #[tauri::command]
 pub async fn set_auto_approve(enabled: bool, state: State<'_, AppState>) -> Result<(), AppError> {
     state.permissions.set_automatic(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_approval_mode(
+    mode: ApprovalMode,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if mode == ApprovalMode::Plan {
+        let turns = state.turns.lock().expect("turns mutex");
+        if !turns.is_empty() {
+            return Err(AppError::Agent(
+                "Stop the running turn before entering Plan mode".into(),
+            ));
+        }
+        state.permissions.enter_plan();
+        return Ok(());
+    }
+    state.permissions.set_mode(mode).await;
     Ok(())
 }
 

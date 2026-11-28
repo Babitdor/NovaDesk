@@ -1,3 +1,4 @@
+import { APPROVAL_MODES, type ApprovalMode } from '../lib/approval'
 import { useState, type FormEvent } from 'react'
 
 import type { WorkspaceInfo } from '../lib/events'
@@ -125,9 +126,12 @@ export function SchedulesSettings({ preferences: p, update, workspace }: Props) 
               agentLimit: Math.min(100, Math.max(1, Math.round(Number(event.target.value) || 1))),
             })} />
         </label>
-        <Toggle title="Auto-approve" checked={p.autoApprove}
-          onChange={(autoApprove) => update({ autoApprove })}
-          detail="Approve ordinary tool permissions and plans. Questions still require answers; harness restrictions remain in force." />
+        <label className="settings-row"><span>Approval mode<small>Plan mode requires Codex and applies to new turns. Questions always need answers.</small></span>
+          <select aria-label="Approval mode" value={p.approvalMode}
+            onChange={(event) => update({ approvalMode: event.target.value as ApprovalMode })}>
+            {APPROVAL_MODES.map(mode => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
+          </select>
+        </label>
 
       </Group>
 

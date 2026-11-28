@@ -685,7 +685,11 @@ fn decision(id: &str, frame: &Value) -> Option<(String, String, Value)> {
                 if kind == "question" {
                     json!({"questions": frame["params"]["questions"]})
                 } else {
-                    frame["params"].clone()
+                    let mut payload = frame["params"].clone();
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert("desktopMethod".into(), frame["method"].clone());
+                    }
+                    payload
                 },
             ))
         }
