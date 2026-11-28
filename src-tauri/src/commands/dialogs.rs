@@ -45,8 +45,24 @@ pub fn pick_file(
         });
 }
 
+/// The multi-select picker the composer's paperclip uses. A dismissed dialog is
+/// None; an emptied selection is an empty Vec, and both mean "nothing picked".
+#[cfg(not(test))]
+pub fn pick_files(app: &AppHandle, done: impl FnOnce(Option<Vec<PathBuf>>) + Send + 'static) {
+    use tauri_plugin_dialog::DialogExt as _;
+
+    app.dialog().file().pick_files(move |picked| {
+        done(picked.map(|paths| {
+            paths
+                .into_iter()
+                .filter_map(|path| path.into_path().ok())
+                .collect()
+        }));
+    });
+}
+
 #[cfg(test)]
-pub use test_stubs::{pick_file, pick_folder};
+pub use test_stubs::{pick_file, pick_files, pick_folder};
 
 /// Unit-test build: no native dialog is ever opened, so both pickers report a
 /// dismissal immediately and tauri-plugin-dialog stays out of the test link.
@@ -66,6 +82,10 @@ mod test_stubs {
         _extension: &str,
         done: impl FnOnce(Option<PathBuf>) + Send + 'static,
     ) {
+        done(None)
+    }
+
+    pub fn pick_files(_app: &AppHandle, done: impl FnOnce(Option<Vec<PathBuf>>) + Send + 'static) {
         done(None)
     }
 }

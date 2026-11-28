@@ -239,6 +239,7 @@ impl Default for AppState {
 pub fn run() {
     let main_commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         commands::workspace::pick_workspace,
+        commands::workspace::pick_attachments,
         commands::workspace::set_workspace,
         commands::workspace::list_dir,
         commands::workspace::read_file,

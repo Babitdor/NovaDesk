@@ -7,8 +7,9 @@ import { ModelPicker } from './ModelPicker'
 import { CREW, addressedCrew, crewRoles, crewTargets, type CrewMode } from '../lib/crew'
 import { CrewPortrait } from './CrewPortrait'
 import { VOICE_SHORTCUT_LABEL, MicRecorder, voiceInstalled, voiceTranscribe, voiceTranscribeService } from '../lib/voice'
-import { errorText } from '../lib/ipc'
+import { errorText, pickAttachments } from '../lib/ipc'
 import { loadDrafts, saveDraft } from '../lib/drafts'
+import { attachmentPrompt } from '../lib/attachments'
 
 type Props = {
   chatId: string
@@ -38,6 +39,47 @@ type Props = {
   onAutoApprove: (enabled: boolean) => void
   onSend: (prompt: string) => boolean
   onStop: () => void
+}
+
+/// The composer's own drawn icons, at the weight of the labels beside them and
+/// aria-hidden: each sits inside a control that is already named.
+function Glyph({ name }: { name: 'attach' | 'lock' | 'lock-open' | 'people' }) {
+  const shape = () => {
+    switch (name) {
+      case 'attach':
+        return <path d="M11.5 7.5 7 12a2.8 2.8 0 0 1-4-4l5-5a1.9 1.9 0 0 1 2.7 2.7l-5 5a1 1 0 0 1-1.4-1.4l4.4-4.4"
+          fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      case 'lock':
+        return (
+          <>
+            <rect x="3.5" y="7" width="9" height="6.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M5.75 7V5.2a2.25 2.25 0 0 1 4.5 0V7" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          </>
+        )
+      case 'lock-open':
+        return (
+          <>
+            <rect x="3.5" y="7" width="9" height="6.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M5.75 7V5.2a2.25 2.25 0 0 1 4.5 0" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          </>
+        )
+      case 'people':
+        return (
+          <>
+            <circle cx="6" cy="6" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M2 13c0-2.2 1.8-3.5 4-3.5s4 1.3 4 3.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M10.5 4.2a2 2 0 0 1 0 3.8M11.8 9.8c1.4.4 2.2 1.5 2.2 3.2"
+              fill="none" stroke="currentColor" strokeWidth="1.3" />
+          </>
+        )
+    }
+  }
+
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      {shape()}
+    </svg>
+  )
 }
 
 export function Composer({
@@ -82,6 +124,21 @@ export function Composer({
     const next = current.trim() ? current.trimEnd() + ' ' + text : text
     persistDraft(next)
     setDrafts((previous) => ({ ...previous, [chatId]: next }))
+  }
+  /// Attaching picks files and writes their paths into the draft, where they are
+  /// text the user can edit before sending: every harness already reads a path.
+  const [attachError, setAttachError] = useState('')
+  const attach = async () => {
+    setAttachError('')
+    try {
+      const paths = await pickAttachments()
+      if (paths.length) {
+        setDraft(attachmentPrompt(drafts[chatId] ?? '', paths))
+        input.current?.focus()
+      }
+    } catch (err) {
+      setAttachError(errorText(err))
+    }
   }
   const openMenu = (kind: 'slash' | 'mention' = 'slash') => setMenu({ chat: chatId, kind, highlighted: -1 })
   const closeMenu = () => setMenu(null)
@@ -342,6 +399,7 @@ export function Composer({
         {voiceError}
         <button type="button" className="ghost" onClick={() => { setVoiceError(''); onOpenVoice() }}>Voice settings</button>
       </p>}
+      {attachError && <p className="composer-voice-error" role="status">{attachError}</p>}
       {busy && <div className="composer-activity" data-waiting={waiting} role="status">
         <span className="activity-meter" aria-hidden="true"><i /><i /><i /></span>
         <span>{work}</span>
@@ -380,15 +438,17 @@ export function Composer({
             <span className="model-trigger-agent">{backend}</span>
             {model && <span className="model-trigger-name">{model}</span>}
           </button>}
-          <label className="crew-select" title="Applies to all tasks. Auto approval covers ordinary tools and plans; questions still require an answer and harness restrictions remain in force.">
+          <label className="crew-select" data-mode={autoApprove ? 'auto' : 'manual'}
+            title={autoApprove ? 'Auto approval: ordinary tools and plans run without asking; questions still require an answer and harness restrictions remain in force.' : 'Manual approval: every tool call waits for you. Click for auto approval.'}>
+            <Glyph name={autoApprove ? 'lock-open' : 'lock'} />
             <select aria-label="Permission mode" value={autoApprove ? 'auto' : 'manual'}
               onChange={(event) => onAutoApprove(event.target.value === 'auto')}>
               <option value="manual">Manual approval</option>
               <option value="auto">Auto approval</option>
             </select>
           </label>
-          <label className="crew-select">
-            {crew && crew !== 'team' && <CrewPortrait role={crew} />}
+          <label className="crew-select" data-mode={crew ?? 'none'}>
+            {crew && crew !== 'team' ? <CrewPortrait role={crew} /> : <Glyph name="people" />}
             <select aria-label="Agent personality" disabled={busy} value={crew ?? ''}
               onChange={(event) => onCrew(event.target.value as CrewMode || undefined)}>
               <option value="">Personality</option>
@@ -402,6 +462,10 @@ export function Composer({
             {usage.input.toLocaleString()} in · {usage.output.toLocaleString()} out
           </span>}
         </span>
+        <button type="button" className="ghost composer-attach" aria-label="Attach files"
+          title="Attach files — their paths are added to the prompt" onClick={() => void attach()}>
+          <Glyph name="attach" />
+        </button>
         {busy ? (
           <button type="button" className="stop" onClick={onStop}>Stop</button>
         ) : (

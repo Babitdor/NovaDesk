@@ -71,10 +71,51 @@ impl WorkspaceGuard {
     }
 }
 
+/// The label a picked attachment travels under: workspace-relative when a folder
+/// is open, otherwise the path itself with forward slashes. A harness reads
+/// either, and the UI never has to print a Windows separator.
+pub(crate) fn attachment_label(guard: Option<&WorkspaceGuard>, path: &Path) -> String {
+    let Some(guard) = guard else {
+        return path.to_string_lossy().replace('\\', "/");
+    };
+    // A picker hands back a plain host path while the guard holds a canonical one
+    // (verbatim, `\\?\C:\...` on Windows), so the forms have to be compared like
+    // with like — otherwise nothing inside the workspace ever looks inside it.
+    // A path outside keeps its own readable form rather than the verbatim one.
+    match std::fs::canonicalize(path) {
+        Ok(real) if real.starts_with(guard.root()) => guard.display_relative(&real),
+        _ => path.to_string_lossy().replace('\\', "/"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testtmp::TempDir;
+
+    #[test]
+    fn attachment_labels_are_relative_inside_and_absolute_outside() {
+        let tmp = TempDir::new("attach-label");
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/a.ts"), "x").unwrap();
+        let guard = WorkspaceGuard::new(tmp.path()).unwrap();
+
+        let inside = tmp.path().join("src/a.ts");
+        assert_eq!(attachment_label(Some(&guard), &inside), "src/a.ts");
+
+        let outside = TempDir::new("attach-outside");
+        let far = outside.path().join("b.ts");
+        assert_eq!(
+            attachment_label(Some(&guard), &far),
+            far.to_string_lossy().replace('\\', "/")
+        );
+
+        // No folder open: there is no relative form to offer.
+        assert_eq!(
+            attachment_label(None, &inside),
+            inside.to_string_lossy().replace('\\', "/")
+        );
+    }
 
     #[test]
     fn resolves_a_valid_nested_path() {

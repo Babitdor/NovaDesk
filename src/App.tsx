@@ -16,6 +16,7 @@ import { teamTools, type CrewControl } from './lib/teamTools'
 import { nextTeamBatch } from './lib/teamSchedule'
 import { TeamPipeline } from './components/TeamPipeline'
 import { ViewSwitcher } from './components/ViewSwitcher'
+import { RunningAgents } from './components/RunningAgents'
 import { appendUser } from './lib/chat'
 import {
   CREW, addressedCrew, crewPrompt, parseRetry, systemPrompt, teamOrder,
@@ -1128,6 +1129,8 @@ export default function App() {
         <div className="viewbar">
           <ViewSwitcher view={view} dock={dock} onSelect={selectView}
             onToggleDock={() => setDock((current) => current === 'closed' ? 'open' : 'closed')} />
+          <RunningAgents runs={activeRuns(running, chats)}
+            onSelect={(id) => withViewTransition(() => setActiveId(id))} />
         </div>
 
         <main className="main">

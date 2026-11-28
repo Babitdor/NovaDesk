@@ -1,6 +1,6 @@
 [package]
 name = "nova-tools"
-version = "0.10.3"
+version = "0.10.4"
 edition = "2021"
 description = "Nova Desktop's stdio MCP shim"
 publish = false

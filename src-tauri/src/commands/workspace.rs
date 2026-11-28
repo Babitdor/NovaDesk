@@ -64,6 +64,32 @@ pub async fn pick_workspace(
         .map(Some)
 }
 
+/// The composer's paperclip: paths, not contents. Every harness reads a file it
+/// is handed, so this only has to name it — in the workspace's own terms when
+/// there is one, in the host's when there is not.
+#[tauri::command]
+pub async fn pick_attachments(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    crate::commands::dialogs::pick_files(&app, move |picked| {
+        let _ = tx.send(picked);
+    });
+
+    let picked = rx
+        .await
+        .map_err(|_| AppError::Agent("file picker closed unexpectedly".to_string()))?;
+    // A dismissed dialog is an empty list, not an error: nothing to attach is
+    // the most ordinary outcome there is.
+    let guard = state.guard.read().await.clone();
+    Ok(picked
+        .unwrap_or_default()
+        .iter()
+        .map(|path| crate::workspace::attachment_label(guard.as_ref(), path))
+        .collect())
+}
+
 #[tauri::command]
 pub async fn set_workspace(
     path: String,
