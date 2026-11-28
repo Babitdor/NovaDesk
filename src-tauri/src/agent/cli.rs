@@ -267,22 +267,23 @@ fn uv_script_python(path: &Path) -> Option<PathBuf> {
     .then_some(interpreter)
 }
 
-pub fn nova_personality(profile: &super::Personality) -> Result<Command, AppError> {
-    nova_desktop(Some(profile))
-}
-
-pub fn nova_desktop(profile: Option<&super::Personality>) -> Result<Command, AppError> {
+pub fn nova_desktop(
+    profile: Option<&super::Personality>,
+    tools: bool,
+) -> Result<Command, AppError> {
     let checkout = nova_checkout();
     let source = (checkout.is_absolute() && checkout.join("novacode_cli/entrypoint.py").is_file())
         .then_some(checkout);
     let mut command = nova_python()?;
     command
         .args(["-I", "-B", "-c", include_str!("personality.py")])
-        .arg(source.as_deref().unwrap_or_else(|| Path::new("")));
+        .arg(source.as_deref().unwrap_or_else(|| Path::new("")))
+        .env(
+            "NOVA_DESKTOP_SYSTEM_PROMPT",
+            super::desktop_instructions(profile, tools, false),
+        );
     if let Some(profile) = profile {
-        command
-            .env("NOVA_DESKTOP_PERSONALITY", &profile.role)
-            .env("NOVA_DESKTOP_SYSTEM_PROMPT", &profile.system_prompt);
+        command.env("NOVA_DESKTOP_PERSONALITY", &profile.role);
     }
     Ok(command)
 }
@@ -505,7 +506,7 @@ pub(super) fn bridge_file(
 /// OpenCode takes one inline configuration document, so the personality and the
 /// tool server have to be merged instead of both setting the variable.
 fn opencode_config(
-    personality: Option<&super::Personality>,
+    system_prompt: &str,
     credentials: Option<&Path>,
     shim: Option<&Path>,
     v2: bool,
@@ -522,11 +523,9 @@ fn opencode_config(
             "Invalid OpenCode inline configuration".into(),
         ));
     }
-    if let Some(profile) = personality {
-        config["agent"]["nova-desktop-personality"] = json!({
-            "mode": "primary", "prompt": &profile.system_prompt
-        });
-    }
+    config["agent"]["nova-desktop-personality"] = json!({
+        "mode": "primary", "prompt": system_prompt
+    });
     if let Some(credentials) = credentials {
         let mut environment = serde_json::Map::new();
         environment.insert(
@@ -636,28 +635,26 @@ impl AgentBackend for CliAgent {
                 process.env(super::requests::ENV, path);
             }
             let mut prompt_mod = None;
-            if let Some(profile) = &req.personality {
-                match self.0 {
-                    "commandcode" => {
-                        let module = TurnFile::write(
-                            "personality",
-                            ".ts",
-                            include_bytes!("commandcode-personality.ts"),
-                        )?;
-                        process
-                            .arg("--mod")
-                            .arg(&module.0)
-                            .env("NOVA_DESKTOP_SYSTEM_PROMPT", &profile.system_prompt);
-                        prompt_mod = Some(module);
-                    }
-                    "hermes" => {
-                        process.env("HERMES_EPHEMERAL_SYSTEM_PROMPT", &profile.system_prompt);
-                    }
-                    // OpenCode personality and tools are one document, so both
-                    // are written below rather than fighting over the variable.
-                    "opencode" => {}
-                    _ => {}
+            match self.0 {
+                "commandcode" => {
+                    let module = TurnFile::write(
+                        "personality",
+                        ".ts",
+                        include_bytes!("commandcode-personality.ts"),
+                    )?;
+                    process
+                        .arg("--mod")
+                        .arg(&module.0)
+                        .env("NOVA_DESKTOP_SYSTEM_PROMPT", req.system_prompt());
+                    prompt_mod = Some(module);
                 }
+                "hermes" => {
+                    process.env("HERMES_EPHEMERAL_SYSTEM_PROMPT", req.system_prompt());
+                }
+                // OpenCode personality and tools are one document, so both
+                // are written below rather than fighting over the variable.
+                "opencode" => {}
+                _ => {}
             }
             if self.0 == "opencode" {
                 let v2 = opencode_v2().await;
@@ -667,7 +664,7 @@ impl AgentBackend for CliAgent {
                 process.env(
                     "OPENCODE_CONFIG_CONTENT",
                     opencode_config(
-                        req.personality.as_ref(),
+                        &req.system_prompt(),
                         credentials.as_ref().map(|file| file.0.as_path()),
                         req.tools.as_ref().map(|bridge| bridge.shim.as_path()),
                         v2,
@@ -886,19 +883,14 @@ pub(super) fn arguments(
     if let Some(model) = req.model.as_deref() {
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
-    if let Some(profile) = &req.personality {
-        match id {
-            "pi" | "claude" => args.extend([
-                "--append-system-prompt".into(),
-                profile.system_prompt.clone(),
-            ]),
-            "codex" => args.extend([
-                "-c".into(),
-                format!("developer_instructions={}", json!(profile.system_prompt)),
-            ]),
-            "opencode" => args.extend(["--agent".into(), "nova-desktop-personality".into()]),
-            _ => {}
-        }
+    match id {
+        "pi" | "claude" => args.extend(["--append-system-prompt".into(), req.system_prompt()]),
+        "codex" => args.extend([
+            "-c".into(),
+            format!("developer_instructions={}", json!(req.system_prompt())),
+        ]),
+        "opencode" => args.extend(["--agent".into(), "nova-desktop-personality".into()]),
+        _ => {}
     }
     if let Some(effort) = req.effort.as_deref() {
         match id {
@@ -1361,13 +1353,26 @@ mod tests {
         let (pi, _) = arguments("pi", &request, None);
         assert!(pi
             .windows(2)
-            .any(|pair| pair == ["--append-system-prompt", "Stay in scope."]));
+            .any(|pair| pair[0] == "--append-system-prompt" && pair[1] == request.system_prompt()));
+        assert!(request.system_prompt().contains("Nova Desktop"));
+        assert!(request.system_prompt().ends_with("Stay in scope."));
         assert_eq!(pi.last().unwrap(), "Find the caller");
         request.personality.as_mut().unwrap().role = "nora".into();
         let (codex, _) = arguments("codex", &request, None);
+        assert!(codex.windows(2).any(|pair| pair[0] == "-c"
+            && pair[1] == format!("developer_instructions={}", json!(request.system_prompt()))));
+        request.personality = None;
+        for backend in ["pi", "claude"] {
+            let (args, _) = arguments(backend, &request, None);
+            assert!(args
+                .windows(2)
+                .any(|pair| pair[0] == "--append-system-prompt"
+                    && pair[1].contains("You are running inside Nova Desktop")));
+        }
+        let (codex, _) = arguments("codex", &request, None);
         assert!(codex
-            .windows(2)
-            .any(|pair| pair == ["-c", "developer_instructions=\"Stay in scope.\""]));
+            .iter()
+            .any(|arg| arg.starts_with("developer_instructions=") && arg.contains("Nova Desktop")));
     }
 
     #[test]

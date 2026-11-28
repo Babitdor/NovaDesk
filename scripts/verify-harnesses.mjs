@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 import { createServer } from 'vite'
@@ -10,15 +10,24 @@ import { setTimeout as wait } from 'node:timers/promises'
 
 assert.equal(process.platform, 'win32')
 const root = await mkdtemp(join(tmpdir(), 'nova-harnesses-'))
+// A concurrent development build must not replace or lock the running fixture.
+const debug = resolve('src-tauri/target/debug')
+for (const name of ['novacode-desktop.exe', 'nova-tools.exe', ...(await readdir(debug)).filter((name) => name.endsWith('.dll'))]) {
+  await copyFile(join(debug, name), join(root, name === 'novacode-desktop.exe' ? 'desktop-probe.exe' : name))
+}
+
 const workspace = join(root, 'workspace')
 await mkdir(workspace)
 const probe = httpServer().listen(0, '127.0.0.1')
 await once(probe, 'listening')
 const port = probe.address().port
 await new Promise((resolve) => probe.close(resolve))
-const vite = await createServer({ server:{ host:'localhost', port:1420, strictPort:true, hmr:false } })
+const vite = await createServer({ cacheDir:join(root, 'vite-cache'), server:{ host:'localhost', port:1420, strictPort:true, hmr:false, watch:null } })
 let app
-const results = JSON.parse(await readFile('.temp/harness-results.json', 'utf8').catch((error) => { if (error.code === 'ENOENT') return '[]'; throw error }))
+let diagnostics = ''
+const awareness = process.argv.includes('--awareness')
+const resultPath = awareness ? '.temp/harness-awareness-results.json' : '.temp/harness-results.json'
+const results = JSON.parse(await readFile(resultPath, 'utf8').catch((error) => { if (error.code === 'ENOENT') return '[]'; throw error }))
 assert.ok(Array.isArray(results))
 const readOnly = process.argv.includes('--read-only')
 async function eventually(fn, timeout = 20_000) {
@@ -49,11 +58,10 @@ async function evaluate(url, expression) {
 }
 try {
   await vite.listen()
-  app = spawn(resolve('src-tauri/target/debug/novacode-desktop.exe'), [], { windowsHide:true,
+  app = spawn(join(root, 'desktop-probe.exe'), [], { windowsHide:true,
     env:{ ...process.env, APPDATA:join(root, 'appdata'),
       WEBVIEW2_USER_DATA_FOLDER:join(root, 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=' + port },
     stdio:['ignore','ignore','pipe'] })
-  let diagnostics = ''
   app.stderr.on('data', (bytes) => { diagnostics = (diagnostics + bytes).slice(-12000) })
   const debuggerUrl = await eventually(async () => {
     assert.equal(app.exitCode, null, diagnostics)
@@ -78,12 +86,16 @@ try {
     const row = { harness:harness.id, version:harness.version, runs:[] }
     let chatId = crypto.randomUUID()
     const title = 'Harness probe ' + harness.id
-    const prompt = readOnly ? 'Verify read-only enforcement by attempting a direct write of the text proof to read-only-proof.txt using your command execution tool. Do not request escalation. Report the actual denial. Do not use MCP tools.' : `Use the create_task tool from the nova-desktop MCP server to create a task titled "${title}". Then use rename_task from that same MCP server to change that task title to "Verified ${title}". The MCP taskId must be a UUID. Use these MCP tools for Desktop’s visible task list. Do not use the shell or edit files. Reply with one short sentence after the two tool calls succeed.`
-    for (const mode of readOnly ? ['read-only'] : ['cold', 'warm', 'cold', 'warm']) {
+    const prompt = readOnly ? 'Verify read-only enforcement by attempting a direct write of the text proof to read-only-proof.txt using your command execution tool. Do not request escalation. Report the actual denial. Do not use MCP tools.' : awareness ? `Create a task in this app titled "${title}", then change its title to "Verified ${title}". Do this in the app's visible task list, not a private checklist. Reply briefly when done.` : `Use the create_task tool from the nova-desktop MCP server to create a task titled "${title}". Then use rename_task from that same MCP server to change that task title to "Verified ${title}". The MCP taskId must be a UUID. Use these MCP tools for Desktop’s visible task list. Do not use the shell or edit files. Reply with one short sentence after the two tool calls succeed.`
+    for (const mode of readOnly ? ['read-only'] : awareness ? ['cold', 'warm'] : ['cold', 'warm', 'cold', 'warm']) {
       if (mode === 'cold') chatId = crypto.randomUUID()
       // Exercise both ACP injection and precedence of a saved local registration.
       if (harness.id === 'commandcode' && mode === 'cold' && row.runs.length) {
         await page(`window.__TAURI_INTERNALS__.invoke('register_commandcode_tools')`)
+      }
+      if (awareness && harness.id === 'nova' && mode === 'cold') {
+        await page(`window.__TAURI_INTERNALS__.invoke('prewarm_nova', { backend:'nova', chatId:${JSON.stringify(chatId)} })`)
+        await wait(150)
       }
       const turnId = crypto.randomUUID()
       const previous = mode === 'warm' ? row.runs.at(-1)?.session : undefined
@@ -140,10 +152,23 @@ try {
     if (previous >= 0) results[previous] = row
     else results.push(row)
     await mkdir('.temp', { recursive:true })
-    await writeFile('.temp/harness-results.json', JSON.stringify(results, null, 2) + '\n')
+    await writeFile(resultPath, JSON.stringify(results, null, 2) + '\n')
+    if (awareness) {
+      assert.equal(row.runs.length, 2, harness.id + ' did not complete both session checks')
+      for (const run of row.runs) {
+        assert.equal(run.finish, 'completed', harness.id + ' turn failed')
+        for (const name of ['create_task', 'rename_task']) {
+          assert.ok(run.calls.some((call) => call.name === name && call.ok), harness.id + ' did not choose ' + name + ' for the ordinary app request')
+        }
+        assert.equal(run.observableResult, true)
+      }
+    }
   }
+} catch (error) {
+  console.error('Desktop probe failure; process exit:', app?.exitCode, 'stderr:', diagnostics)
+  throw error
 } finally {
-  if (app && app.exitCode === null) { app.kill(); await once(app, 'exit') }
+  if (app && app.exitCode === null) { app.kill(); await Promise.race([once(app, 'exit').catch(() => {}), wait(5000)]) }
   await vite.close()
   assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep) && basename(root).startsWith('nova-harnesses-'))
   await rm(root, { recursive:true, force:true, maxRetries:6, retryDelay:250 }).catch((error) => console.error('Temporary workspace cleanup:', error.code))

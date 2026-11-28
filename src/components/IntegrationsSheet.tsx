@@ -1,3 +1,4 @@
+import { ActionButton } from './SettingsRows'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
@@ -160,7 +161,7 @@ export function IntegrationsSheet({ preferences, update, onSection, onClose }: {
       }} aria-labelledby="integrations-title">
       <header className="notices-head">
         <h1 id="integrations-title">Tools &amp; integrations</h1>
-        <button type="button" autoFocus onClick={() => dialog.current?.close()}>Close</button>
+        <ActionButton icon="close" type="button" autoFocus onClick={() => dialog.current?.close()}>Close</ActionButton>
       </header>
 
       <div className="integrations-scroll">
@@ -178,7 +179,7 @@ export function IntegrationsSheet({ preferences, update, onSection, onClose }: {
               replies aloud. Nothing is sent anywhere; the models run on this machine.
             </small>
           </span>
-          <button type="button" onClick={() => onSection('Voice')}>Set up</button>
+          <ActionButton icon="settings" type="button" onClick={() => onSection('Voice')}>Set up voice</ActionButton>
         </div>
 
         {section('tools', 'Nova tools', counts.tools, (
@@ -284,10 +285,10 @@ export function IntegrationsSheet({ preferences, update, onSection, onClose }: {
       </div>
 
       <footer className="integrations-foot">
-        <button type="button" onClick={() => onSection('Connections')}>MCP setup</button>
+        <ActionButton icon="settings" type="button" onClick={() => onSection('Connections')}>Configure MCP</ActionButton>
         <span className="settings-status" role="status">{status}</span>
-        <button type="button" onClick={() => void refresh()}>Refresh</button>
-        <button type="button" onClick={() => dialog.current?.close()}>Done</button>
+        <ActionButton icon="refresh" type="button" onClick={() => void refresh()}>Refresh</ActionButton>
+        <ActionButton icon="check" onClick={() => dialog.current?.close()}>Done</ActionButton>
       </footer>
     </dialog>
   )

@@ -5,7 +5,7 @@ import { describe as describeSchedule, MINUTE, nextRun } from '../lib/scheduler'
 import {
   AGENTS, type AgentId, type Preferences, type Schedule, type ScheduleSpec,
 } from '../lib/settings'
-import { Group, Toggle } from './SettingsRows'
+import { ActionButton, Group, Toggle } from './SettingsRows'
 
 type Props = {
   preferences: Preferences
@@ -178,7 +178,7 @@ export function SchedulesSettings({ preferences: p, update, workspace }: Props) 
             {agentIds.map((id) => <option key={id} value={id}>{AGENTS[id].name}</option>)}
           </select></label>
           <div className="settings-action">
-            <button type="submit" disabled={!root}>Save schedule</button>
+            <ActionButton icon="save" type="submit" disabled={!root}>Save schedule</ActionButton>
           </div>
         </form>
         <p className="settings-help">
@@ -195,7 +195,7 @@ export function SchedulesSettings({ preferences: p, update, workspace }: Props) 
             <span><strong>{schedulePromptLabel(schedule)}</strong>
               <small>{describeSchedule(schedule)} · {AGENTS[schedule.agent]?.name ?? schedule.agent}
                 {schedule.origin !== 'user' ? ' · from an agent' : ''}</small></span>
-            <button type="button" onClick={() => remove(schedule.id)}>Remove</button>
+            <ActionButton icon="trash" type="button" onClick={() => remove(schedule.id)}>Remove schedule</ActionButton>
           </div>
         ))}
       </Group>
@@ -209,7 +209,7 @@ export function SchedulesSettings({ preferences: p, update, workspace }: Props) 
           </div>
         ))}
         {p.scheduleActivity.length > 0 && <div className="settings-action">
-          <button type="button" onClick={() => update({ scheduleActivity: [] })}>Clear activity</button>
+          <ActionButton icon="trash" type="button" onClick={() => update({ scheduleActivity: [] })}>Clear activity</ActionButton>
         </div>}
       </Group>
 

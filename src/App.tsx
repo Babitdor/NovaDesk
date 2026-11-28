@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -36,7 +36,7 @@ import type { BrowserTarget } from './components/BrowserPane'
 import { setDisabledSkills } from './lib/tools'
 import { taskTools } from './lib/tasks'
 import { advance, dueAfterThread, dueSchedules, promptFor, withinLimit } from './lib/scheduler'
-import { turnSpeech, stopSpeaking } from './lib/speak'
+import { playbackSnapshot, subscribePlayback, turnSpeech, stopSpeaking } from './lib/speak'
 import {
   AGENTS, applyAppearance, clampInterfaceSize, loadPreferences, recommendedAgent, savePreferences,
   type AgentId, type ModelSelection, type Preferences, type ScheduleRun,
@@ -118,9 +118,14 @@ export default function App() {
   })
   const deferredSend = useRef<{ chatId: string; text: string; settle: (ok: boolean) => void } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [railWidth, setRailWidth] = useState(defaultRailWidth)
-  const [panelWidth, setPanelWidth] = useState(defaultPanelWidth)
-  const [dockHeight, setDockHeight] = useState<number | null>(null)
+  const [preferredRailWidth, setRailWidth] = useState(defaultRailWidth)
+  const [preferredPanelWidth, setPanelWidth] = useState(defaultPanelWidth)
+  const [preferredDockHeight, setDockHeight] = useState<number | null>(null)
+  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }))
+  // Fit the chrome without losing the sizes chosen before the window shrank.
+  const railWidth = clamp(preferredRailWidth, railMin, railMax(viewport.width))
+  const panelWidth = clamp(preferredPanelWidth, panelMin, panelMax(sidebarOpen ? railWidth : railCollapsed, viewport.width))
+  const dockHeight = preferredDockHeight === null ? null : clamp(preferredDockHeight, dockMin, dockMax(viewport.height))
   const [interrupts, setInterrupts] = useState<InterruptRequest[]>([])
   const [replyPending, setReplyPending] = useState(false)
   // Chat is the transcript with no panel, so one state answers both questions the
@@ -143,11 +148,7 @@ export default function App() {
     && !preferences.trustedWorkspaces.includes(workspace.root)
 
   useEffect(() => {
-    const resize = () => {
-      setRailWidth((width) => clamp(width, railMin, railMax()))
-      setPanelWidth((width) => clamp(width, panelMin, panelMax()))
-      setDockHeight((height) => height === null ? null : clamp(height, dockMin, dockMax()))
-    }
+    const resize = () => setViewport({ width: window.innerWidth, height: window.innerHeight })
     window.addEventListener('resize', resize)
     return () => window.removeEventListener('resize', resize)
   }, [])
@@ -376,6 +377,11 @@ export default function App() {
 
   const openFolder = async (path?: string) => {
     if (live.current || crewRun.current || folderBusy) return
+    const allowed = await new Promise<boolean>((resolve) => {
+      const request = new CustomEvent('nova:before-workspace-change', { cancelable:true, detail:resolve })
+      if (window.dispatchEvent(request)) resolve(true)
+    })
+    if (!allowed || live.current || crewRun.current) return
     setFolderBusy(true)
     try {
       const picked = await (path ? setWorkspace(path) : pickWorkspace())
@@ -1035,6 +1041,9 @@ export default function App() {
     }
   }, [])
   const bridge = bridgeQueue.find((request) => request.needsApproval)
+  /// Read only to keep the transport dock from repeating the buttons the reply
+  /// row is already showing; the row itself owns pause and stop.
+  const playback = useSyncExternalStore(subscribePlayback, playbackSnapshot)
   const busy = running?.chatId === active.id || (crewActive && active.state === 'running')
   const interrupt = busy ? interrupts[0] : undefined
   const work = interrupt ? 'Waiting for approval'
@@ -1180,7 +1189,10 @@ export default function App() {
           {active.teamRun && <TeamPipeline run={active.teamRun} busy={busy && crewActive}
             onDecision={(decision) => planGate.current?.resolve(decision)}
             onRetry={retryTeamStages} onCancel={(turnId) => void cancelTurn(turnId).catch((error) => setNotice(errorText(error)))} />}
-          <Playback />
+          {/* A reply that is not in this transcript (another chat, or scrolled away) keeps its
+              transport reachable here; when the row is on screen its own buttons are the ones shown. */}
+          {playback.id !== '' && !active.items.some((item) => 'id' in item && item.id === playback.id)
+            && <div className="playback-dock"><Playback /></div>}
           <Composer chatId={active.id} commands={commands} busy={busy} disabled={!workspace || folderBusy || wrongFolder || Boolean(running && !busy)}
             agent={agent} model={taskModel(active, preferences.models[agent])} effort={active.effort}
             recentModels={preferences.recentModels} configuredModels={preferences.models} onSelectModel={selectModel}
@@ -1193,6 +1205,7 @@ export default function App() {
             onConfigureCrew={() => openSettings('Agents', 'Agent teams')}
             voice={preferences.voice} onOpenVoice={() => openSettings('Voice')}
             usage={active.usage} workspace={workspace?.name ?? null}
+            autoApprove={preferences.autoApprove} onAutoApprove={(autoApprove) => update({ autoApprove })}
             keepDrafts={preferences.keepDrafts} onSend={submit} onStop={stopTurn} />
           <TerminalDock key={workspace?.root} dock={dock} height={dockHeight} onDock={setDock} onHeight={setDockHeight}
             workspaceReady={!!workspace} obscured={settings} spawn={shellToSpawn} />

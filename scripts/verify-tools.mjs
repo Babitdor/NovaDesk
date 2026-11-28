@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer as httpServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
@@ -47,6 +47,12 @@ async function evaluate(webSocketUrl, expression, method = 'Runtime.evaluate', p
 }
 
 const root = await mkdtemp(join(tmpdir(), 'nova-tools-smoke-'))
+// A concurrent development build must not replace or lock the running fixture.
+const debug = resolve('src-tauri/target/debug')
+for (const name of ['novacode-desktop.exe', 'nova-tools.exe', ...(await readdir(debug)).filter((name) => name.endsWith('.dll'))]) {
+  await copyFile(join(debug, name), join(root, name === 'novacode-desktop.exe' ? 'desktop-probe.exe' : name))
+}
+
 const workspace = join(root, 'workspace')
 const board = join(workspace, '.nova', 'moodboards', 'fixture')
 const skill = join(workspace, '.nova', 'skills', 'fixture')
@@ -56,6 +62,7 @@ await mkdir(join(root, 'profile'))
 await mkdir(join(root, 'appdata'))
 await mkdir(join(root, 'localappdata'))
 await writeFile(join(workspace, 'fixture.txt'), 'desktop fixture needle\n')
+await writeFile(join(workspace, 'editor.ts'), 'const greeting: string = "hello";\r\nconsole.log(greeting);\r\n')
 await writeFile(join(board, 'board.json'), '{"name":"Fixture board"}')
 const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK9sAAAAASUVORK5CYII='
 await writeFile(join(board, 'one.png'), Buffer.from(pixel, 'base64'))
@@ -120,11 +127,11 @@ const portProbe = httpServer().listen(0, '127.0.0.1')
 await once(portProbe, 'listening')
 const debugPort = portProbe.address().port
 await new Promise((resolve) => portProbe.close(resolve))
-const vite = await createServer({ server: { host: 'localhost', port: 1420, strictPort: true, hmr: false } })
+const vite = await createServer({ cacheDir:join(root, 'vite-cache'), server: { host: 'localhost', port: 1420, strictPort: true, hmr: false, watch:null } })
 let app, shim, motionSession
 try {
   await vite.listen()
-  app = spawn(resolve('src-tauri/target/debug/novacode-desktop.exe'), [], {
+  app = spawn(join(root, 'desktop-probe.exe'), [], {
     windowsHide: true,
     env: {
       ...process.env,
@@ -243,6 +250,47 @@ try {
   await call('archive_task', { taskId })
   await call('open_file', { path: 'fixture.txt' })
   await waitFor('document.body.innerText.includes("desktop fixture needle")', 'File preview did not open')
+  await call('open_file', { path:'editor.ts' })
+  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const greeting')`, 'Editable source did not open')
+  await waitFor(`document.querySelector('.source-status')?.textContent.includes('TypeScript') && document.querySelector('.cm-line span')`, 'Syntax highlighting did not load')
+  assert.ok(await pageEval(`document.querySelector('.cm-lineNumbers').textContent.includes('1')`), 'Line numbers are missing')
+  async function editSource(text) {
+    await pageEval(`(() => { const content = document.querySelector('.cm-content'); content.focus(); document.execCommand('selectAll'); document.execCommand('insertText', false, ${JSON.stringify(text)}) })()`)
+    await waitFor(`document.querySelector('.source-status')?.textContent.includes('Unsaved')`, 'Edits were not tracked')
+  }
+  await editSource('const greeting: string = "edited";\nconsole.log(greeting);\n')
+  await pageEval(`document.querySelector('.source-save').click()`)
+  await waitFor(`document.querySelector('.source-status')?.textContent.startsWith('Saved')`, 'File did not save')
+  assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const greeting: string = "edited";\r\nconsole.log(greeting);\r\n', 'Save did not preserve CRLF')
+  await editSource('const greeting = "local draft";\n')
+  await writeFile(join(workspace, 'editor.ts'), 'const greeting = "external edit";\r\n')
+  await waitFor(`document.querySelector('.source-message')?.textContent.includes('changed on disk')`, 'Disk edits were not detected')
+  assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('local draft')`), 'Refresh destroyed unsaved edits')
+  await pageEval(`document.querySelector('.source-save').click()`)
+  await waitFor(`document.querySelector('.source-message.is-error')?.textContent.includes('changed on disk')`, 'Conflicting save was not refused')
+  assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const greeting = "external edit";\r\n')
+  await call('open_file', { path:'fixture.txt' })
+  await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Navigation did not protect unsaved changes')
+  await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Keep editing').click()`)
+  assert.ok(await pageEval(`document.querySelector('.cm-content').textContent.includes('local draft')`))
+  // Repeating the same tool navigation after cancelling must still prompt.
+  await call('open_file', { path:'fixture.txt' })
+  await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Repeated navigation bypassed the draft guard')
+  await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Discard changes').click()`)
+  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('desktop fixture needle')`, 'Discard did not navigate')
+  await call('open_file', { path:'editor.ts' })
+  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('external edit')`, 'Discarded draft came back')
+  await editSource('const recovered = true;\n')
+  await pageEval(`location.reload()`)
+  await waitFor(`Boolean(document.querySelector('.rail-settings'))`, 'App did not reload')
+  await wait(500)
+  await call('open_file', { path:'editor.ts' })
+  await waitFor(`document.querySelector('.cm-content')?.textContent.includes('const recovered')`, 'Unsaved draft did not survive reload')
+  await pageEval(`document.querySelector('[aria-label="Close preview"]').click()`)
+  await waitFor(`Boolean(document.querySelector('.unsaved-dialog:modal'))`, 'Close did not protect the recovered draft')
+  await pageEval(`Array.from(document.querySelectorAll('.unsaved-dialog button')).find((button) => button.textContent === 'Save and continue').click()`)
+  await waitFor(`!document.querySelector('.preview')`, 'Save and continue did not close the file')
+  assert.equal(await readFile(join(workspace, 'editor.ts'), 'utf8'), 'const recovered = true;\r\n')
   await call('open_terminal', { shell: 'cmd' })
   await waitFor(`Array.from(document.querySelectorAll('.dock-terminal-tab button')).some(
     (button) => button.textContent === 'Command Prompt 1' && button.getAttribute('aria-pressed') === 'true'
@@ -297,7 +345,11 @@ try {
   assert.equal(await pageEval(`window.__approvalEvents.some((event) => event.type === 'turnFinished')`), false)
   const competing = { turnId:crypto.randomUUID(), chatId:crypto.randomUUID(), backend:'local', prompt:'competing writer', trustWorkspace:true, teamId }
   assert.match(await pageEval(`(async () => { const { startTurn } = await import('/src/lib/ipc.ts'); try { await startTurn(${JSON.stringify(competing)}, () => {}); return 'unexpected success' } catch (error) { return error.message } })()`), /single-writer/)
-  await pageEval(`window.__TAURI_INTERNALS__.invoke('set_auto_approve', { enabled:true })`)
+  assert.equal(await pageEval(`document.querySelector('select[aria-label="Permission mode"]').value`), 'manual')
+  assert.equal(await pageEval(`document.querySelector('select[aria-label="Permission mode"]').disabled`), false, 'Approval mode must remain usable during a pending decision')
+  assert.ok(await pageEval(`(() => { const mode = document.querySelector('select[aria-label="Permission mode"]'); const rect = mode.getBoundingClientRect(); return mode.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)) })()`), 'Approval mode is clipped or covered in the composer')
+  await pageEval(`(() => { const mode = document.querySelector('select[aria-label="Permission mode"]'); mode.value = 'auto'; mode.dispatchEvent(new Event('change', { bubbles:true })) })()`)
+  await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).autoApprove === true`, 'Composer approval preference was not saved')
   await waitFor(`window.__approvalEvents.some((event) => event.type === 'turnFinished')`, 'Toggle did not release the pending permission')
   assert.ok(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`))
   const questionTurn = crypto.randomUUID()
@@ -309,7 +361,8 @@ try {
   await waitFor(`window.__approvalEvents.some((event) => event.type === 'turnFinished' && event.reason === 'cancelled')`, 'Cancellation while waiting did not finish')
   assert.ok(await pageEval(`window.__approvalEvents.some((event) => event.type === 'approvalResolved')`))
   await pageEval(`window.__TAURI_INTERNALS__.invoke('finish_team', { id:${JSON.stringify(teamId)} })`)
-  await pageEval(`window.__TAURI_INTERNALS__.invoke('set_auto_approve', { enabled:false })`)
+  await pageEval(`(() => { const mode = document.querySelector('select[aria-label="Permission mode"]'); mode.value = 'manual'; mode.dispatchEvent(new Event('change', { bubbles:true })) })()`)
+  await waitFor(`JSON.parse(localStorage.getItem('nova.desktop.settings.v1')).autoApprove === false`, 'Manual approval was not saved')
   const scrollTask = (await call('create_task', { title:'Scroll preservation fixture' })).taskId
   await call('open_task', { taskId:scrollTask })
   await call('start_task', { taskId:scrollTask, prompt:'scroll fixture\n'.repeat(120) })
@@ -328,20 +381,26 @@ try {
   await call('archive_task', { taskId:scrollTask })
   await pageEval(`document.querySelector('.rail-settings').click()` )
   await waitFor(`Boolean(document.querySelector('.settings-nav'))`, 'Settings did not open')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-nav button')).find((button) => button.textContent.includes('Schedules'))?.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('.settings-row')).some((row) => row.querySelector('strong')?.textContent === 'Auto-approve')`, 'Schedules approval setting did not open')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-row')).find((row) => row.querySelector('strong')?.textContent === 'Auto-approve').querySelector('input').click()`)
+  await waitFor(`document.querySelector('select[aria-label="Permission mode"]').value === 'auto'`, 'Schedules did not update the composer approval mode')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-row')).find((row) => row.querySelector('strong')?.textContent === 'Auto-approve').querySelector('input').click()`)
+  await waitFor(`document.querySelector('select[aria-label="Permission mode"]').value === 'manual'`, 'Composer did not return to manual approval')
   await pageEval(`Array.from(document.querySelectorAll('.settings-nav button')).find((button) => button.textContent.includes('Tools'))?.click()` )
   await waitFor(`Boolean(document.querySelector('.settings-stage[aria-label=Tools]'))`, 'Tools settings did not open')
   assert.equal(await pageEval(`Boolean(document.querySelector('#nova-integrations[open]'))`), false, 'Tools automatically opened the integrations sheet')
-  await pageEval(`(() => { const button = Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'Manage'); button?.focus(); button?.click() })()` )
+  await pageEval(`(() => { const button = Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'Manage integrations'); button?.focus(); button?.click() })()` )
   await waitFor(`Boolean(document.querySelector('#nova-integrations:modal'))`, 'Manage did not open a modal sheet')
   await pageEval(`document.querySelector('#nova-integrations button').click()` )
   await waitFor(`!document.querySelector('#nova-integrations')`, 'Sheet did not dismiss')
-  await waitFor(`document.activeElement?.textContent === 'Manage'`, 'Dismissal did not return focus')
-  await pageEval(`Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'Manage')?.click()`)
+  await waitFor(`document.activeElement?.textContent === 'Manage integrations'`, 'Dismissal did not return focus')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'Manage integrations')?.click()`)
   await waitFor(`Boolean(document.querySelector('#nova-integrations:modal'))`, 'Sheet did not reopen')
   await evaluate(webview, null, 'Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 })
   await evaluate(webview, null, 'Input.dispatchKeyEvent', { type:'keyUp', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 })
   await waitFor(`!document.querySelector('#nova-integrations')`, 'Escape did not dismiss the sheet')
-  await waitFor(`document.activeElement?.textContent === 'Manage'`, 'Escape did not return focus')
+  await waitFor(`document.activeElement?.textContent === 'Manage integrations'`, 'Escape did not return focus')
   // Emulation overrides belong to the debugger connection that sets them.
   motionSession = new WebSocket(webview)
   await once(motionSession, 'open', { signal:AbortSignal.timeout(5000) })
@@ -349,18 +408,110 @@ try {
   motionSession.send(JSON.stringify({ id:1, method:'Emulation.setEmulatedMedia', params:{ features:[{ name:'prefers-reduced-motion', value:'reduce' }] } }))
   assert.ok(!JSON.parse((await motionReply)[0].data).error)
   await waitFor(`matchMedia('(prefers-reduced-motion: reduce)').matches`, 'Reduced-motion emulation did not take effect')
+  async function debugCommand(id, method, params) {
+    const next = once(motionSession, 'message', { signal:AbortSignal.timeout(10000) })
+    motionSession.send(JSON.stringify({ id, method, params }))
+    const reply = JSON.parse((await next)[0].data)
+    assert.equal(reply.id, id)
+    assert.ok(!reply.error, JSON.stringify(reply.error))
+    return reply.result
+  }
+  for (const section of ['General', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About']) {
+    await pageEval(`Array.from(document.querySelectorAll('.settings-nav nav button')).find((button) => button.textContent.trim() === ${JSON.stringify(section)}).click()`)
+    await waitFor(`document.querySelector('.settings-stage')?.getAttribute('aria-label') === ${JSON.stringify(section)}`, section + ' settings did not open')
+    const controls = await pageEval(`Array.from(document.querySelectorAll('.settings-view button')).filter((button) => button.getClientRects().length).map((button) => ({ label:button.textContent.trim() || button.getAttribute('aria-label'), height:button.getBoundingClientRect().height, width:button.getBoundingClientRect().width, action:button.classList.contains('settings-button'), icon:!!button.querySelector('svg[aria-hidden="true"]') }))`)
+    assert.ok(controls.length)
+    for (const control of controls) {
+      assert.ok(control.height >= 44 && control.width >= 44, section + ': undersized button ' + control.label)
+      assert.ok(control.label, section + ': unnamed button')
+      if (control.action) assert.ok(control.icon, section + ': missing action icon for ' + control.label)
+    }
+  }
+  await pageEval(`Array.from(document.querySelectorAll('.settings-nav nav button')).find((button) => button.textContent.trim() === 'About').click()`)
+  await pageEval(`Array.from(document.querySelectorAll('.settings-stage button')).find((button) => button.textContent === 'View notices').click()`)
+  await waitFor(`Boolean(document.querySelector('#nova-notices:popover-open'))`, 'View notices did not open')
+  await pageEval(`document.querySelector('#nova-notices button').click()`)
+  await waitFor(`!document.querySelector('#nova-notices:popover-open')`, 'Notices close did not work')
+  await pageEval(`Array.from(document.querySelectorAll('.settings-nav nav button')).find((button) => button.textContent.trim() === 'General').click()`)
+  await waitFor(`document.querySelector('.settings-stage')?.getAttribute('aria-label') === 'General'`, 'General settings did not open')
+  await writeFile('.temp/settings-buttons-desktop.png', Buffer.from((await debugCommand(2, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+  await debugCommand(3, 'Emulation.setDeviceMetricsOverride', { width:900, height:820, deviceScaleFactor:1, mobile:false })
+  await waitFor(`innerWidth === 900`, 'Minimum window width did not apply')
+  assert.ok(await pageEval(`(() => { const stage = document.querySelector('.settings-stage'); return stage.scrollWidth <= stage.clientWidth + 1 })()`), 'Settings overflow at the minimum window width')
+  await writeFile('.temp/settings-buttons-compact.png', Buffer.from((await debugCommand(4, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+  await pageEval(`document.querySelector('.settings-back').click()`)
+  await waitFor(`!document.querySelector('.settings-view')`, 'Back to workspace did not work')
+  let resizeCommand = 20
+  await debugCommand(resizeCommand++, 'Emulation.setDeviceMetricsOverride', { width:1600, height:1000, deviceScaleFactor:1, mobile:false })
+  await pageEval(`Array.from(document.querySelectorAll('.view-tab[role="tab"]')).find((button) => button.textContent.trim() === 'Files').click()`)
+  await pageEval(`(() => {
+    for (const [label, key, count] of [['Resize the task list', 'ArrowRight', 2], ['Resize the panel', 'ArrowLeft', 4], ['Resize the terminal', 'ArrowUp', 3]]) {
+      for (let i = 0; i < count; i++) document.querySelector('[aria-label="' + label + '"]').dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey:true, bubbles:true }));
+    }
+    const prompt = document.querySelector('textarea[aria-label="Prompt"]');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(prompt, 'A long draft to test a short window.\\n'.repeat(14));
+    prompt.dispatchEvent(new Event('input', { bubbles:true }));
+  })()`)
+  const preferredSizes = await pageEval(`['.rail', '.right', '.dock'].map((selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return selector === '.dock' ? r.height : r.width })`)
+  for (const [width, height] of [[900, 600], [1100, 700], [1600, 1000], [900, 820], [1280, 820]]) {
+    await debugCommand(resizeCommand++, 'Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor:1, mobile:false })
+    await waitFor(`innerWidth === ${width} && innerHeight === ${height}`, 'Window resize did not apply')
+    for (const view of ['Chat', 'Files', 'Board', 'GitHub', 'Preview']) {
+      await pageEval(`Array.from(document.querySelectorAll('.view-tab[role="tab"]')).find((button) => button.textContent.trim() === ${JSON.stringify(view)}).click()`)
+      await waitFor(`document.querySelector('.view-tab.is-on')?.textContent.trim() === ${JSON.stringify(view)}`, 'View did not change')
+      const bounds = await pageEval(`(() => {
+        const main = document.querySelector('.main'); const composer = document.querySelector('.composer');
+        return { main:main.clientWidth, verticalOverflow:main.scrollHeight > main.clientHeight + 1, overflow:main.scrollWidth > main.clientWidth + 1,
+          composer:composer.getBoundingClientRect().toJSON(),
+          clipped:Array.from(composer.querySelectorAll('button, select, textarea')).filter((el) => el.getClientRects().length).filter((el) => {
+            const r = el.getBoundingClientRect(); return r.left < 0 || r.right > innerWidth || r.top < 0 || r.bottom > innerHeight || !el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+          }).map((el) => el.getAttribute('aria-label') || el.textContent.trim()) }
+      })()`)
+      assert.equal(bounds.verticalOverflow, false, `${width}x${height} ${view}: workspace exceeds window height`)
+      assert.equal(bounds.overflow, false, `${width}x${height} ${view}: transcript overflows ${JSON.stringify(bounds)}`)
+      assert.deepEqual(bounds.clipped, [], `${width}x${height} ${view}: composer controls clipped`)
+    }
+    await pageEval(`document.querySelector('[aria-label="Maximize the terminal"]').click()`)
+    await waitFor(`Boolean(document.querySelector('.dock.is-max'))`, 'Terminal did not maximize')
+    assert.ok(await pageEval(`(() => { const main = document.querySelector('.main'); return main.scrollHeight <= main.clientHeight + 1 })()`), `${width}x${height}: maximized terminal pushes composer out of the window`)
+    await pageEval(`document.querySelector('[aria-label="Restore terminal size"]').click()`)
+    await waitFor(`!document.querySelector('.dock.is-max')`, 'Terminal did not restore')
+    if (width === 1600) {
+      const restored = await pageEval(`['.rail', '.right', '.dock'].map((selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return selector === '.dock' ? r.height : r.width })`)
+      assert.deepEqual(restored, preferredSizes, 'Panel sizes were lost after shrinking and growing the window')
+    }
+    await pageEval(`Array.from(document.querySelectorAll('.view-tab[role="tab"]')).find((button) => button.textContent.trim() === 'Board').click()`)
+    await writeFile(`.temp/responsive-${width}x${height}.png`, Buffer.from((await debugCommand(resizeCommand++, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+  }
+  await waitFor(`Array.from(document.querySelectorAll('.splitter')).every((el) => { const rect = el.parentElement.getBoundingClientRect(); const size = el.classList.contains('splitter-x') ? rect.width : rect.height; return Math.abs(Number(el.getAttribute('aria-valuenow')) - size) <= 1 })`, 'Resize handles do not report the visible pane sizes')
+  const fittedDockHeight = await pageEval(`document.querySelector('.dock').getBoundingClientRect().height`)
+  await pageEval(`document.querySelector('[aria-label="Resize the terminal"]').dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowDown', bubbles:true }))`)
+  await waitFor(`document.querySelector('.dock').getBoundingClientRect().height < ${fittedDockHeight - 10}`, 'Keyboard resize did not start from the visible terminal height')
+  await pageEval(`(() => { const prompt = document.querySelector('textarea[aria-label="Prompt"]'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(prompt, ''); prompt.dispatchEvent(new Event('input', { bubbles:true })); document.querySelector('[aria-label="Settings"]').click() })()`)
+  await waitFor(`Boolean(document.querySelector('.settings-view'))`, 'Settings did not open for resize checks')
+  for (const [width, height] of [[900, 600], [1280, 820]]) {
+    await debugCommand(resizeCommand++, 'Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor:1, mobile:false })
+    for (const section of ['Recommended', 'General', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About']) {
+      await pageEval(`Array.from(document.querySelectorAll('.settings-nav nav button')).find((button) => button.textContent.trim() === ${JSON.stringify(section)}).click()`)
+      await waitFor(`document.querySelector('.settings-stage')?.getAttribute('aria-label') === ${JSON.stringify(section)}`, 'Settings did not change')
+      const overflow = await pageEval(`Array.from(document.querySelectorAll('.settings-stage, .settings-group, .settings-row')).filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.className + ': ' + el.textContent.trim().slice(0, 90))`)
+      assert.deepEqual(overflow, [], `${width}x${height} ${section}: settings content clipped`)
+    }
+    await writeFile(`.temp/responsive-settings-${width}x${height}.png`, Buffer.from((await debugCommand(resizeCommand++, 'Page.captureScreenshot', { format:'png', captureBeyondViewport:false })).data, 'base64'))
+  }
+  await pageEval(`document.querySelector('.settings-back').click()`)
   await pageEval(`Array.from(document.querySelectorAll('.sidebar button, .new-task')).find((button) => button.textContent.includes('Teams'))?.click()`)
   await waitFor(`Boolean(document.querySelector('[aria-label="Teams workspace"]'))`, 'Teams workspace did not open')
   await pageEval(`document.querySelector('.teams-workspace summary').click()`)
   await waitFor(`Boolean(document.querySelector('.teams-workspace .crew-profile'))`, 'Team configuration did not expand')
   assert.ok(await pageEval(`Boolean(document.querySelector('textarea'))`), 'Teams composer is missing')
-  console.log(`Called and checked all ${tested.size} advertised tools through the Windows app and MCP shim.`)
+  console.log(`Called and checked all ${tested.size} advertised tools through the Windows app and MCP shim; resize checks passed across five window sizes, five workspace views and nine Settings sections.`)
 } finally {
   motionSession?.close()
   shim?.stdin.end()
   if (app && app.exitCode === null) {
     app.kill()
-    await once(app, 'exit')
+    await Promise.race([once(app, 'exit').catch(() => {}), wait(5000)])
   }
   await rm(join(tmpdir(), `nova-desktop-tools-${app?.pid}.json`), { force: true })
   await vite.close()

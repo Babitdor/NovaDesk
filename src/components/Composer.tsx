@@ -34,6 +34,8 @@ type Props = {
   onOpenVoice: () => void
   /// "Keep unsent drafts": the store is only touched while the preference is on.
   keepDrafts: boolean
+  autoApprove: boolean
+  onAutoApprove: (enabled: boolean) => void
   onSend: (prompt: string) => boolean
   onStop: () => void
 }
@@ -41,7 +43,7 @@ type Props = {
 export function Composer({
   chatId, commands, busy, disabled, agent, model, effort, recentModels, configuredModels, onSelectModel,
   hasHistory, work, waiting, obscured, crew, onCrew, onConfigureCrew, usage, workspace, voice,
-  onOpenVoice, keepDrafts, onSend, onStop,
+  onOpenVoice, keepDrafts, autoApprove, onAutoApprove, onSend, onStop,
 }: Props) {
   const composer = useRef<HTMLDivElement>(null)
   const modelButton = useRef<HTMLButtonElement>(null)
@@ -377,8 +379,14 @@ export function Composer({
             <AgentMark id={agent} />
             <span className="model-trigger-agent">{backend}</span>
             {model && <span className="model-trigger-name">{model}</span>}
-            <span aria-hidden="true">⌄</span>
           </button>}
+          <label className="crew-select" title="Applies to all tasks. Auto approval covers ordinary tools and plans; questions still require an answer and harness restrictions remain in force.">
+            <select aria-label="Permission mode" value={autoApprove ? 'auto' : 'manual'}
+              onChange={(event) => onAutoApprove(event.target.value === 'auto')}>
+              <option value="manual">Manual approval</option>
+              <option value="auto">Auto approval</option>
+            </select>
+          </label>
           <label className="crew-select">
             {crew && crew !== 'team' && <CrewPortrait role={crew} />}
             <select aria-label="Agent personality" disabled={busy} value={crew ?? ''}

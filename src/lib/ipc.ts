@@ -10,7 +10,24 @@ export const setWorkspace = (path: string) => invoke<WorkspaceInfo>('set_workspa
 
 export const listDir = (path: string) => invoke<DirEntry[]>('list_dir', { path })
 
+export const saveFile = (path: string, root: string, expected: string, content: string) =>
+  invoke<void>('save_file', { path, root, expected, content })
+
 export const readFile = (path: string) => invoke<string>('read_file', { path })
+
+/// Images come back as data URLs: the app's CSP already allows `img-src data:`,
+/// so a picture needs no loopback request and no extra capability.
+export const readFileDataUrl = (path: string) => invoke<string>('read_file_data_url', { path })
+
+/// Mirrors `FileStamp` in src-tauri/src/commands/workspace.rs: length and mtime
+/// only, which is all the preview polls to notice an edit on disk.
+export type FileStamp = { len: number; modified: number }
+
+export const fileStamp = (path: string) => invoke<FileStamp>('file_stamp', { path })
+
+/// The loopback URL a previewed page is framed from, so its own CSS, scripts and
+/// relative images resolve; see src-tauri/src/commands/preview.rs for the rules.
+export const previewOpen = (path: string) => invoke<string>('preview_open', { path })
 
 /// The handler must be attached before the invoke, or deltas that arrive while
 /// the command starts are dropped.

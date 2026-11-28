@@ -76,6 +76,7 @@ struct Session {
     id: Option<String>,
     root: std::path::PathBuf,
     model_override: Option<String>,
+    system_prompt: String,
     supports_steer: bool,
     tools_file: Option<PathBuf>,
     startup_ms: u64,
@@ -108,12 +109,10 @@ impl Session {
         // Debug builds time the boot: "slow to reply" is a number, and this is
         // the half of it the app can act on.
         let booted_at = std::time::Instant::now();
-        let mut command = match personality {
-            Some(profile) => super::cli::nova_personality(profile)?,
-            None if tools.is_some() && std::env::var_os("NOVA_BIN").is_none() => {
-                super::cli::nova_desktop(None)?
-            }
-            None => super::cli::command("nova")?,
+        let mut command = if std::env::var_os("NOVA_BIN").is_none() || personality.is_some() {
+            super::cli::nova_desktop(personality, tools.is_some())?
+        } else {
+            super::cli::command("nova")?
         };
         command.args(["--mode", "pipe"]).env("NO_COLOR", "1");
         if let Some(bridge) = tools {
@@ -214,6 +213,7 @@ impl Session {
             id: None,
             root: root.to_path_buf(),
             model_override: model,
+            system_prompt: super::desktop_instructions(personality, tools.is_some(), false),
             supports_steer: false,
             tools_file: crate::tools::nova_entry::workspace_credentials(root),
             startup_ms,
@@ -547,6 +547,7 @@ impl AgentBackend for NovaAgent {
     ) -> BoxFut<'a, Result<FinishReason, AppError>> {
         Box::pin(async move {
             let turn_started = std::time::Instant::now();
+            let system_prompt = req.system_prompt();
             let slash = req.prompt.trim_start().starts_with('/');
             let pid = req.turn_id;
             let prompt = json!({ "type": "prompt", "id": pid, "content": req.prompt });
@@ -606,6 +607,7 @@ impl AgentBackend for NovaAgent {
                 .filter(|session| {
                     session.root == root
                         && session.model_override == req.model
+                        && session.system_prompt == system_prompt
                         && session.tools_file == tools_file
                         && session.requests_file == req.requests_file
                 });
@@ -628,6 +630,7 @@ impl AgentBackend for NovaAgent {
                 if let Some(index) = guard.iter().position(|(id, _)| *id == prewarm_key) {
                     let (_, mut candidate) = guard.remove(index).expect("position was valid");
                     if candidate.root == root
+                        && candidate.system_prompt == system_prompt
                         && candidate.tools_file == tools_file
                         && candidate.requests_file == req.requests_file
                         && matches!(candidate.child.try_wait(), Ok(None))
@@ -793,6 +796,7 @@ impl AgentBackend for NovaAgent {
 
     fn prewarm<'a>(&'a self, req: TurnRequest) -> BoxFut<'a, Result<(), AppError>> {
         Box::pin(async move {
+            let system_prompt = req.system_prompt();
             let mut guard = self.session.lock().await;
             let root = req.workspace.as_ref().ok_or(AppError::NoWorkspace)?.root();
             if let Some(bridge) = &req.tools {
@@ -808,6 +812,7 @@ impl AgentBackend for NovaAgent {
                 (id == &req.chat_id || id == &key)
                     && session.root == root
                     && session.model_override == req.model
+                    && session.system_prompt == system_prompt
                     && session.tools_file == tools_file
                     && session.requests_file == req.requests_file
             }) {

@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { addMcpServer, errorText } from '../lib/ipc'
 import { AGENTS, type AgentId } from '../lib/settings'
 import { mcpServers, registerCommandCodeTools, toolsCatalog, type McpDiscovery } from '../lib/tools'
-import { Group } from './SettingsRows'
+import { ActionButton, Group } from './SettingsRows'
 
 export function ConnectionsSettings({ workspaceReady }: { workspaceReady: boolean }) {
   const [selected, select] = useState<AgentId>('nova')
@@ -70,9 +70,9 @@ export function ConnectionsSettings({ workspaceReady }: { workspaceReady: boolea
         }}>
           {Object.entries(AGENTS).map(([id, agent]) => <option key={id} value={id}>{agent.name}</option>)}
         </select>
-        <button type="button" disabled={loading || saving} onClick={() => { setStatus(''); void refresh() }}>
+        <ActionButton icon="refresh" type="button" disabled={loading || saving} onClick={() => { setStatus(''); void refresh() }}>
           {loading ? 'Checking…' : 'Refresh'}
-        </button>
+        </ActionButton>
       </div>
       {listed.includes(selected) && <p className="settings-help">{harness} listed Nova Desktop tools this launch.</p>}
       {servers.map((server, index) => <div className="settings-row" key={server.name + ':' + index}>
@@ -99,19 +99,19 @@ export function ConnectionsSettings({ workspaceReady }: { workspaceReady: boolea
           <input id={id + '-endpoint'} name="endpoint" type="url" pattern="https?://.+" required
             placeholder="https://server.example/mcp" maxLength={2048} disabled={!workspaceReady || saving} />
         </label>
-        <div className="settings-action"><button type="submit" disabled={!workspaceReady || saving}>
+        <div className="settings-action"><ActionButton icon="plus" type="submit" disabled={!workspaceReady || saving}>
           {saving ? 'Saving…' : 'Add server'}
-        </button></div>
+        </ActionButton></div>
       </form>
     </Group>}
     {selected === 'commandcode' && <Group title="Nova Desktop tools">
       <p className="settings-help">{workspaceReady
         ? 'Register the shim in CommandCode’s private configuration for this project.'
         : 'Open a workspace to register the shim.'}</p>
-      <div className="settings-action"><button type="button"
+      <div className="settings-action"><ActionButton icon={registered ? 'check' : 'plus'} type="button"
         disabled={!workspaceReady || loading || saving || registered} onClick={() => {
           void save(registerCommandCodeTools, 'Registered for this project. Start a CommandCode turn to check the connection.')
-        }}>{registered ? 'Registered' : saving ? 'Registering…' : 'Register for this project'}</button></div>
+        }}>{registered ? 'Registered' : saving ? 'Registering…' : 'Register for this project'}</ActionButton></div>
     </Group>}
     {selected === 'hermes' && <Group title="Hermes configuration">
       <p className="settings-help">Manage servers in your Hermes profile with <code>hermes mcp</code>.</p>

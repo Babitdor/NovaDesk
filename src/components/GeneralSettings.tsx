@@ -8,7 +8,7 @@ import {
 import { clampInterfaceSize, INTERFACE_MAX, INTERFACE_MIN, type Preferences } from '../lib/settings'
 import { markdownify } from '../lib/ipc'
 import { Markdown } from './Markdown'
-import { Group, Toggle } from './SettingsRows'
+import { ActionButton, Group, Toggle } from './SettingsRows'
 import { ShortcutInput } from './ShortcutInput'
 
 type Props = {
@@ -89,7 +89,7 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
             <output aria-live="polite">{p.interfaceSize}%</output>
             <button type="button" aria-label="Larger interface" disabled={p.interfaceSize >= INTERFACE_MAX}
               onClick={() => resize(10)}>A+</button>
-            <button type="button" disabled={p.interfaceSize === 100} onClick={() => update({ interfaceSize: 100 })}>Reset</button>
+            <ActionButton icon="refresh" type="button" disabled={p.interfaceSize === 100} onClick={() => update({ interfaceSize: 100 })}>Reset size</ActionButton>
           </span>
         </div>
         <Toggle title="Compact conversation"
@@ -108,11 +108,11 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
           <span><strong>Shortcut</strong><small>Record a chord, then save it. Escape cancels.</small></span>
           <span className="settings-row-controls">
             <ShortcutInput value={shortcut} onChange={setShortcut} />
-            <button type="button" disabled={!shortcut || shortcut === p.quickLauncherShortcut}
-              onClick={() => void saveShortcut()}>Save</button>
-            <button type="button" onClick={() => void openLauncher().catch((err) => setStatus(errorText(err)))}>
-              Open
-            </button>
+            <ActionButton icon="save" type="button" disabled={!shortcut || shortcut === p.quickLauncherShortcut}
+              onClick={() => void saveShortcut()}>Save shortcut</ActionButton>
+            <ActionButton icon="external" type="button" onClick={() => void openLauncher().catch((err) => setStatus(errorText(err)))}>
+              Open launcher
+            </ActionButton>
           </span>
         </div>
         <p className="settings-help">
@@ -143,10 +143,10 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
           detail="Write a report next to the app data, including errors reported by the page."
           checked={p.crashReports} onChange={(enabled) => update({ crashReports: enabled })} />
         <div className="settings-action">
-          <button type="button" onClick={() => void showReports()}>Show latest crash report</button>
-          <button type="button" onClick={() => void clearCrashReports().then(
+          <ActionButton icon="file" type="button" onClick={() => void showReports()}>Show latest crash report</ActionButton>
+          <ActionButton icon="trash" type="button" onClick={() => void clearCrashReports().then(
             () => { setLatest(null); setStatus('Crash reports cleared.') },
-            (err) => setStatus(errorText(err)))}>Clear reports</button>
+            (err) => setStatus(errorText(err)))}>Clear reports</ActionButton>
         </div>
         <p className="settings-help">
           Auto-restart covers a panic in Nova itself and errors reported by the page. A killed process,
@@ -163,9 +163,9 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
           }} />
         <div className="settings-row">
           <span><strong>Saved drafts</strong><small>{drafts ? `${drafts} saved` : 'Nothing saved yet.'}</small></span>
-          <button type="button" disabled={!drafts} onClick={() => { clearAllDrafts(); setDrafts(0); setStatus('Saved drafts cleared.') }}>
+          <ActionButton icon="trash" type="button" disabled={!drafts} onClick={() => { clearAllDrafts(); setDrafts(0); setStatus('Saved drafts cleared.') }}>
             Clear saved drafts
-          </button>
+          </ActionButton>
         </div>
       </Group>
 
@@ -174,9 +174,9 @@ export function GeneralSettings({ preferences: p, update, workspace }: Props) {
         {p.projects.map((project) => (
           <div key={project.root} className="settings-row">
             <span><strong>{project.name}</strong><small>{project.root}</small></span>
-            <button type="button" onClick={() => update({
+            <ActionButton icon="trash" type="button" onClick={() => update({
               projects: p.projects.filter(({ root: entry }) => entry !== project.root),
-            })}>Remove</button>
+            })}>Remove project</ActionButton>
           </div>
         ))}
         <p className="settings-help">
@@ -229,9 +229,9 @@ function Markdownify() {
       }}>
         <label>HTML<textarea value={html} onChange={(event) => setHtml(event.target.value)} rows={5} required
           placeholder="<h1>Hello</h1>" maxLength={512 * 1024} /></label>
-        <div className="settings-action"><button type="submit" disabled={converting}>
+        <div className="settings-action"><ActionButton icon="file" type="submit" disabled={converting}>
           {converting ? 'Converting…' : 'Convert to Markdown'}
-        </button></div>
+        </ActionButton></div>
         {failure && <p className="settings-help">{failure}</p>}
         {converted && <>
           <label>Markdown<textarea value={converted} readOnly rows={5} /></label>
@@ -260,18 +260,18 @@ function CrashDialog({ report, onClose, onClear }: {
       <div className="crash-card">
         <header>
           <h2>{report.source === 'webview' ? 'Page error' : 'Crash'} · {new Date(report.at).toLocaleString()}</h2>
-          <button type="button" className="ghost" onClick={onClose} aria-label="Close crash report">×</button>
+          <ActionButton icon="close" type="button" className="ghost" onClick={onClose} aria-label="Close crash report"></ActionButton>
         </header>
         <p className="crash-message">{report.message}</p>
         {report.location && <pre className="crash-location">{report.location}</pre>}
         {report.backtrace && <pre className="crash-backtrace">{report.backtrace}</pre>}
         <div className="settings-action">
-          <button type="button" onClick={() => {
+          <ActionButton icon="copy" type="button" onClick={() => {
             void navigator.clipboard?.writeText(report.path)
               .then(() => setCopy('Copied'), () => setCopy('Copy failed'))
-          }}>{copy || 'Copy path'}</button>
-          <button type="button" onClick={onClear}>Clear reports</button>
-          <button type="button" onClick={onClose}>Close</button>
+          }}>{copy || 'Copy path'}</ActionButton>
+          <ActionButton icon="trash" type="button" onClick={onClear}>Clear reports</ActionButton>
+          <ActionButton icon="close" type="button" onClick={onClose}>Close</ActionButton>
         </div>
       </div>
     </dialog>

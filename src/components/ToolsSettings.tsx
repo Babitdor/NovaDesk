@@ -9,7 +9,7 @@ import {
 } from '../lib/skills'
 import { INJECTION_LABELS, setToolsEnabled, toolsCatalog, type Catalog } from '../lib/tools'
 import { IntegrationsSheet } from './IntegrationsSheet'
-import { Group, Toggle } from './SettingsRows'
+import { ActionButton, Group, Toggle } from './SettingsRows'
 
 /// One pane, two questions. Add-ons answers "what can this window offer a
 /// harness" — the switch, the endpoint, the harnesses it reaches — and hands the
@@ -100,7 +100,7 @@ export function ToolsSettings({ extras, preferences, update, onChangeSection }: 
             </span>
             {/* toggle, not show: a second click on Manage has to dismiss the sheet,
                 or the one control that opened it cannot close it. */}
-            <button type="button" onClick={() => setSheetOpen(true)}>Manage</button>
+            <ActionButton icon="settings" type="button" onClick={() => setSheetOpen(true)}>Manage integrations</ActionButton>
           </div>
           <Toggle
             title="Offer the tool server to agents"
@@ -147,7 +147,7 @@ export function ToolsSettings({ extras, preferences, update, onChangeSection }: 
         <Group title="Recent Desktop tool calls">
           {catalog?.activity?.slice(-10).reverse().map((call, index) => <div className="settings-row" key={index}><span><strong>{call.name}</strong><small>{call.harness || "Unattributed client"} · {call.turnId.slice(0,8)} · {call.durationMs} ms</small></span><span className="tools-badge">{call.ok ? "Succeeded" : "Failed"}</span></div>)}
           {!catalog?.activity?.length && <p className="settings-help">No Desktop tool has been invoked this launch. Configuration and discovery alone do not verify a call.</p>}
-          <button type="button" onClick={() => void load()}>Refresh activity</button>
+          <ActionButton icon="refresh" type="button" onClick={() => void load()}>Refresh activity</ActionButton>
         </Group>
         {sheetOpen && <IntegrationsSheet preferences={preferences} update={update} onClose={() => setSheetOpen(false)}
           onSection={(section) => { setSheetOpen(false); onChangeSection(section) }} />}

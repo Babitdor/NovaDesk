@@ -1,3 +1,4 @@
+import { ActionButton } from './SettingsRows'
 import { useEffect, useEffectEvent, useState } from 'react'
 
 import { NOTICES } from '../data/notices'
@@ -190,26 +191,26 @@ export function AboutPane({ preferences, update }: Props) {
         </div>
         <div className="settings-row">
           <span><strong>License</strong><small>This repository declares no licence, so it grants no rights beyond the host's terms.</small></span>
-          <button type="button" onClick={() => void openLink(REPOSITORY)}>Repository</button>
+          <ActionButton icon="external" type="button" onClick={() => void openLink(REPOSITORY)}>Repository</ActionButton>
         </div>
         <div className="settings-row">
           <span><strong>Third-party notices</strong><small>{NOTICES.length} packages from this build's lockfiles{unknown ? `, ${unknown} without a declared licence` : ''}.</small></span>
-          <button type="button" {...{ popovertarget: 'nova-notices' }}>View notices</button>
+          <ActionButton icon="file" type="button" popoverTarget="nova-notices">View notices</ActionButton>
         </div>
         <div className="settings-row">
           <span><strong>Updates</strong><small>{updateState}</small></span>
           <span className="about-buttons">
             {checked?.available ? (
-              <button type="button" className="primary" disabled={checking || installing}
+              <ActionButton icon="download" type="button" className="primary" disabled={checking || installing}
                 onClick={() => void runInstall()}>
                 {installing ? 'Updating…' : 'Update & restart'}
-              </button>
+              </ActionButton>
             ) : null}
-            <button type="button" disabled={checking || installing || preferences.updateMode === 'off'}
-              onClick={() => void runCheck()}>{checking ? 'Checking…' : 'Check now'}</button>
-            <button type="button" onClick={() => void openLink(checked?.available && checked.url ? checked.url : RELEASES)}>
+            <ActionButton icon="refresh" type="button" disabled={checking || installing || preferences.updateMode === 'off'}
+              onClick={() => void runCheck()}>{checking ? 'Checking…' : 'Check for updates'}</ActionButton>
+            <ActionButton icon="external" type="button" onClick={() => void openLink(checked?.available && checked.url ? checked.url : RELEASES)}>
               {checked?.available ? `v${checked.latest}` : 'Releases'}
-            </button>
+            </ActionButton>
           </span>
         </div>
         <label className="settings-row">
@@ -225,8 +226,8 @@ export function AboutPane({ preferences, update }: Props) {
         <div className="settings-row">
           <span><strong>Source code</strong><small>Issues and releases live on GitHub.</small></span>
           <span className="about-buttons">
-            <button type="button" onClick={() => void openLink(REPOSITORY)}>GitHub repository</button>
-            <button type="button" onClick={() => void openLink(ISSUES)}>Issues</button>
+            <ActionButton icon="external" type="button" onClick={() => void openLink(REPOSITORY)}>GitHub repository</ActionButton>
+            <ActionButton icon="external" type="button" onClick={() => void openLink(ISSUES)}>Issues</ActionButton>
           </span>
         </div>
       </section>
@@ -250,7 +251,7 @@ export function AboutPane({ preferences, update }: Props) {
           <span className="about-value">{formatBytes(database)}</span>
         </div>
         <div className="settings-action">
-          <button type="button" onClick={() => void refresh()}>Refresh</button>
+          <ActionButton icon="refresh" type="button" onClick={() => void refresh()}>Refresh diagnostics</ActionButton>
           {report && <small className="about-note">
             Uptime {formatUptime(report.uptimeSecs)}. The WebView and agent child processes run separately and are not counted here.
           </small>}
@@ -262,15 +263,15 @@ export function AboutPane({ preferences, update }: Props) {
         <h2>Help &amp; support</h2>
         <div className="settings-row">
           <span><strong>Report a problem</strong><small>Open an issue with the details below.</small></span>
-          <button type="button" onClick={() => void openLink(ISSUES)}>Open issues</button>
+          <ActionButton icon="external" type="button" onClick={() => void openLink(ISSUES)}>Open issues</ActionButton>
         </div>
         <div className="settings-row">
           <span><strong>App details for support</strong><small>Paste this with a bug report.</small></span>
           <span className="about-buttons">
-            <button type="button" aria-expanded={details} onClick={() => setDetails(!details)}>
+            <ActionButton icon="file" type="button" aria-expanded={details} onClick={() => setDetails(!details)}>
               {details ? 'Hide details' : 'Show details'}
-            </button>
-            <button type="button" onClick={() => void copy()}>Copy</button>
+            </ActionButton>
+            <ActionButton icon="copy" type="button" onClick={() => void copy()}>Copy report</ActionButton>
           </span>
         </div>
         {details && <pre id="nova-support-details" className="about-details">{support}</pre>}
@@ -282,7 +283,7 @@ export function AboutPane({ preferences, update }: Props) {
           <h2>Third-party notices</h2>
           <input aria-label="Filter notices" placeholder="Filter by name or licence" value={filter}
             onChange={(event) => setFilter(event.target.value)} />
-          <button type="button" {...{ popovertarget: 'nova-notices', popovertargetaction: 'hide' }}>Close</button>
+          <ActionButton icon="close" type="button" popoverTarget="nova-notices" popoverTargetAction="hide">Close</ActionButton>
         </header>
         <p className="notices-summary">
           {matches.length} of {NOTICES.length} packages · generated from this build&apos;s lockfiles by <code>npm run notices</code>

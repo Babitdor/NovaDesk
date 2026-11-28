@@ -1,3 +1,4 @@
+import { ActionButton } from './SettingsRows'
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import { errorText } from '../lib/ipc'
@@ -270,8 +271,8 @@ export function SpeakSettings({ preferences: p, update }: Props) {
             <small>Reads one short sentence with the settings above, here and now.</small>
           </span>
           <div className="voice-row-controls">
-            <button type="button" onClick={() => void preview()} disabled={busy}>{busy ? 'Reading…' : 'Preview voice'}</button>
-            <button type="button" onClick={() => { stopSpeaking(); setStatus('') }}>Stop</button>
+            <ActionButton icon="play" type="button" onClick={() => void preview()} disabled={busy}>{busy ? 'Reading…' : 'Preview voice'}</ActionButton>
+            <ActionButton icon="stop" type="button" onClick={() => { stopSpeaking(); setStatus('') }}>Stop</ActionButton>
           </div>
         </div>
       </Group>
@@ -301,7 +302,7 @@ export function SpeakSettings({ preferences: p, update }: Props) {
                 <option key={entry.id} value={entry.id}>{entry.name + ' · ' + providerInfo(entry.provider).name}</option>
               ))}
             </select>
-            <button type="button" onClick={() => setDraft(newProfile())}>New profile</button>
+            <ActionButton icon="plus" type="button" onClick={() => setDraft(newProfile())}>New profile</ActionButton>
           </div>
         </label>
 
@@ -316,15 +317,15 @@ export function SpeakSettings({ preferences: p, update }: Props) {
                 <p>{providerInfo(entry.provider).note}</p>
                 <small className="voice-meta">{entry.model || 'no model'} · {entry.voice || 'no voice'}{entry.key ? '' : ' · no key'}</small>
                 <div className="voice-actions">
-                  <button type="button" onClick={() => setDraft({ ...entry })}>Edit</button>
-                  <button type="button" onClick={() => {
+                  <ActionButton icon="edit" type="button" onClick={() => setDraft({ ...entry })}>Edit</ActionButton>
+                  <ActionButton icon="trash" type="button" onClick={() => {
                     const kept = profiles.filter((other) => other.id !== entry.id)
                     setSpeech({
                       profiles: kept,
                       profileId: speech.profileId === entry.id ? (kept[0]?.id ?? '') : speech.profileId,
                       destination: speech.profileId === entry.id && speech.destination === 'service' ? 'system' : speech.destination,
                     })
-                  }}>Delete</button>
+                  }}>Delete</ActionButton>
                 </div>
               </article>
             ))}
@@ -410,9 +411,9 @@ export function SpeakSettings({ preferences: p, update }: Props) {
             )}
 
             <div className="speech-actions">
-              <button type="button" onClick={() => setDraft(null)}>Cancel</button>
-              <button type="button" onClick={() => saveProfile(false)}>Save profile</button>
-              <button type="button" onClick={() => saveProfile(true)}>Save and use</button>
+              <ActionButton icon="close" type="button" onClick={() => setDraft(null)}>Cancel</ActionButton>
+              <ActionButton icon="save" type="button" onClick={() => saveProfile(false)}>Save profile</ActionButton>
+              <ActionButton icon="save" type="button" onClick={() => saveProfile(true)}>Save and use</ActionButton>
             </div>
           </section>
         )}
@@ -478,17 +479,17 @@ export function SpeakSettings({ preferences: p, update }: Props) {
                         <i style={{ width: (running.total ? Math.round((running.received / running.total) * 100) : 0) + '%' }} />
                       </div>
                       <small>{PHASE_LABELS[running.phase] + ': ' + formatBytes(running.received) + ' of ' + formatBytes(running.total)}</small>
-                      <button type="button" onClick={() => void cancel(voice)}>Cancel</button>
+                      <ActionButton icon="close" type="button" onClick={() => void cancel(voice)}>Cancel</ActionButton>
                     </>
                   )}
                   {voice.supported && !running && !present && (
-                    <button type="button" onClick={() => void download(voice)}
-                      title={'Download ' + voice.name + ' (' + formatBytes(voice.bytes) + ')'}>Download</button>
+                    <ActionButton icon="download" type="button" onClick={() => void download(voice)}
+                      title={'Download ' + voice.name + ' (' + formatBytes(voice.bytes) + ')'}>Download</ActionButton>
                   )}
                   {voice.supported && !running && present && (
                     <>
                       <span className="voice-installed">{'Installed · ' + formatBytes(voice.bytes)}</span>
-                      <button type="button" onClick={() => void remove(voice)}>Delete</button>
+                      <ActionButton icon="trash" type="button" onClick={() => void remove(voice)}>Delete</ActionButton>
                     </>
                   )}
                 </div>

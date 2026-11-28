@@ -343,9 +343,7 @@ impl Session {
                 if let Some(effort) = &req.effort {
                     command.args(["--thinking", effort]);
                 }
-                if let Some(profile) = &req.personality {
-                    command.args(["--append-system-prompt", &profile.system_prompt]);
-                }
+                command.args(["--append-system-prompt", &req.system_prompt()]);
                 let extension =
                     cli::TurnFile::write("pi-desktop", ".mjs", include_bytes!("pi-desktop.mjs"))?;
                 command.arg("--extension").arg(&extension.0);
@@ -386,7 +384,7 @@ impl Session {
                     command.env(cli::TOOLS_FILE_ENV, &file.0);
                 }
                 command.arg("--no-auto-update");
-                if let Some(profile) = &req.personality {
+                {
                     let module = cli::TurnFile::write(
                         "personality",
                         ".ts",
@@ -395,7 +393,7 @@ impl Session {
                     command
                         .arg("--mod")
                         .arg(&module.0)
-                        .env("NOVA_DESKTOP_SYSTEM_PROMPT", &profile.system_prompt);
+                        .env("NOVA_DESKTOP_SYSTEM_PROMPT", req.system_prompt());
                     files.push(module);
                 }
                 command.arg("acp");
@@ -415,9 +413,7 @@ impl Session {
                     .arg("--mod")
                     .arg(&module.0)
                     .env("NOVA_DESKTOP_DECISIONS", &directory);
-                if let Some(profile) = &req.personality {
-                    command.env("NOVA_DESKTOP_SYSTEM_PROMPT", &profile.system_prompt);
-                }
+                command.env("NOVA_DESKTOP_SYSTEM_PROMPT", req.system_prompt());
                 if let Some(file) = &credentials {
                     command.env(cli::TOOLS_FILE_ENV, &file.0);
                 }
@@ -526,7 +522,7 @@ impl Session {
                 session.write(json!({"method": "initialized"})).await?;
                 let mut params = json!({ "cwd": req.workspace.as_ref().unwrap().root(), "model": req.model,
                     "approvalPolicy": "on-request", "sandbox": if req.read_only { "read-only" } else { "workspace-write" },
-                    "developerInstructions": req.personality.as_ref().map(|p| &p.system_prompt) });
+                    "developerInstructions": req.system_prompt() });
                 let method = if let Some(thread) = &req.session {
                     params["threadId"] = json!(thread);
                     "thread/resume"
@@ -899,7 +895,7 @@ impl AgentBackend for InteractiveAgent {
                 "pi" => json!({"id":"prompt","type":"prompt","message":req.prompt}),
                 "claude" => json!({"type":"user","message":{"role":"user","content":req.prompt}}),
                 "opencode" | "hermes" => {
-                    json!({"jsonrpc":"2.0","id":"prompt","method":"session/prompt","params":{"sessionId":session.thread,"prompt":[{"type":"text","text": if let Some(profile) = &req.personality {format!("{}\n\n{}",profile.system_prompt,req.prompt)} else {req.prompt.clone()}}]}})
+                    json!({"jsonrpc":"2.0","id":"prompt","method":"session/prompt","params":{"sessionId":session.thread,"prompt":[{"type":"text","text": format!("{}\n\n{}",req.system_prompt(),req.prompt)}]}})
                 }
                 _ => Value::Null,
             };

@@ -28,7 +28,7 @@ export function FilesPane({ workspace, open }: {
 
   if (selected) {
     return (
-      <PreviewPanel key={selected} path={selected} onClose={() => setSelected(null)} />
+      <PreviewPanel path={selected} root={workspace.root} nonce={seen} onClose={() => setSelected(null)} />
     )
   }
 

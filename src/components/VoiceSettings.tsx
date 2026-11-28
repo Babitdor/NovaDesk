@@ -1,3 +1,4 @@
+import { ActionButton } from './SettingsRows'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import { errorText } from '../lib/ipc'
@@ -246,11 +247,11 @@ export function VoiceSettings({ preferences: p, update }: Props) {
             <small>System default follows the OS. Test microphone records a 10-second test and plays it back here. Test audio stays on this device and is never transcribed.</small>
           </span>
           <div className="voice-row-controls">
-            <button type="button" onClick={() => void (testing ? stopTest() : startTest())}>
+            <ActionButton icon={testing ? 'stop' : 'microphone'} type="button" onClick={() => void (testing ? stopTest() : startTest())}>
               {testing ? 'Stop recording' : 'Test microphone'}
-            </button>
-            <button type="button" className="voice-icon" aria-label="Refresh microphones"
-              title="Refresh the microphone list" onClick={() => void refreshDevices()}>↻</button>
+            </ActionButton>
+            <ActionButton icon="refresh" type="button" className="voice-icon" aria-label="Refresh microphones"
+              title="Refresh the microphone list" onClick={() => void refreshDevices()}>Refresh</ActionButton>
           </div>
         </div>
         <label className="settings-row">
@@ -290,7 +291,7 @@ export function VoiceSettings({ preferences: p, update }: Props) {
               : voice.profiles.length === 1 ? '1 saved.' : voice.profiles.length + ' saved.'}</small>
           </span>
           <div className="voice-row-controls">
-            <button type="button" onClick={() => setDraft(newProfile())}>New profile</button>
+            <ActionButton icon="plus" type="button" onClick={() => setDraft(newProfile())}>New profile</ActionButton>
           </div>
         </div>
         {voice.profiles.length > 0 && (
@@ -304,10 +305,10 @@ export function VoiceSettings({ preferences: p, update }: Props) {
                 <p>{profileInfo(entry.provider)?.note ?? 'A saved transcription service.'}</p>
                 <small className="voice-meta">{entry.model || 'no model'}{entry.key ? '' : ' · no key'}</small>
                 <div className="voice-actions">
-                  <button type="button" onClick={() => setDraft({ ...entry })}>Edit</button>
-                  <button type="button" onClick={() => removeProfile(entry)}>Delete</button>
+                  <ActionButton icon="edit" type="button" onClick={() => setDraft({ ...entry })}>Edit</ActionButton>
+                  <ActionButton icon="trash" type="button" onClick={() => removeProfile(entry)}>Delete</ActionButton>
                   {entry.id !== voice.profileId && (
-                    <button type="button" onClick={() => setVoice({ profileId: entry.id, destination: 'service' })}>Use</button>
+                    <ActionButton icon="check" onClick={() => setVoice({ profileId: entry.id, destination: 'service' })}>Use profile</ActionButton>
                   )}
                 </div>
               </article>
@@ -379,9 +380,9 @@ export function VoiceSettings({ preferences: p, update }: Props) {
               </div>
             </details>
             <div className="voice-row-controls speech-actions">
-              <button type="button" onClick={() => setDraft(null)}>Cancel</button>
-              <button type="button" onClick={() => saveProfile(false)}>Save profile</button>
-              <button type="button" onClick={() => saveProfile(true)}>Save and use profile</button>
+              <ActionButton icon="close" type="button" onClick={() => setDraft(null)}>Cancel</ActionButton>
+              <ActionButton icon="save" type="button" onClick={() => saveProfile(false)}>Save profile</ActionButton>
+              <ActionButton icon="save" type="button" onClick={() => saveProfile(true)}>Save and use profile</ActionButton>
             </div>
           </section>
         )}
@@ -472,16 +473,16 @@ export function VoiceSettings({ preferences: p, update }: Props) {
                             <i style={{ width: (running.total ? Math.round((running.received / running.total) * 100) : 0) + '%' }} />
                           </div>
                           <small>{formatBytes(running.received) + ' of ' + formatBytes(running.total)}</small>
-                          <button type="button" onClick={() => void cancel(model)}>Cancel</button>
+                          <ActionButton icon="close" type="button" onClick={() => void cancel(model)}>Cancel</ActionButton>
                         </>
                       )}
                       {model.supported && !running && !present && (
-                        <button type="button" onClick={() => void startDownload(model)} title={'Download ' + model.name + ' (' + formatBytes(model.bytes) + ')'}>Download</button>
+                        <ActionButton icon="download" type="button" onClick={() => void startDownload(model)} title={'Download ' + model.name + ' (' + formatBytes(model.bytes) + ')'}>Download</ActionButton>
                       )}
                       {model.supported && !running && present && (
                         <>
                           <span className="voice-installed">{'Installed · ' + formatBytes(model.bytes)}</span>
-                          <button type="button" onClick={() => void remove(model)}>Delete</button>
+                          <ActionButton icon="trash" type="button" onClick={() => void remove(model)}>Delete</ActionButton>
                         </>
                       )}
                     </div>

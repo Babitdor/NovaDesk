@@ -8,6 +8,8 @@
   "permissions": [
     "core:app:default",
     "core:event:default",
-    "core:path:default"
+    "core:path:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
   ]
 }

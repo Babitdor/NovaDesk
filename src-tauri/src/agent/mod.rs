@@ -51,6 +51,36 @@ pub struct TurnRequest {
     pub tools: Option<crate::tools::Bridge>,
 }
 
+impl TurnRequest {
+    pub fn system_prompt(&self) -> String {
+        desktop_instructions(
+            self.personality.as_ref(),
+            self.tools.is_some(),
+            self.read_only,
+        )
+    }
+}
+
+pub(super) fn desktop_instructions(
+    profile: Option<&Personality>,
+    tools: bool,
+    read_only: bool,
+) -> String {
+    let mut text = String::from("You are running inside Nova Desktop, a graphical desktop app. The user is chatting in its task conversation, not a standalone CLI. References to this app, its tasks, board, files, terminal, or browser mean Nova Desktop's visible interface. Answer the user in this conversation.");
+    if read_only {
+        text.push_str(" This is an enforced read-only investigation. Desktop tools are withheld. Return findings without editing files or attempting Desktop actions.");
+    } else if tools {
+        text.push_str(" Desktop integration is configured through the nova-desktop MCP server (displayed as nova_desktop in some harnesses). For requested Desktop actions, discover its tools through your harness's tool-discovery mechanism and use the advertised names and schemas. Use list_tasks/read_task for the app's task list and conversations, create_task/rename_task/set_task_stage for its visible tasks and board, open_file/open_terminal for its panes, and open_browser/read_browser/browser_click/browser_type for its embedded browser. Your built-in task checklist is not the Desktop task list. Use the Desktop tools for these actions rather than suggesting CLI slash commands, editing the app's storage, or opening a separate browser. Do not ask the user to configure or enable tools that are already exposed. If discovery or a call fails, report the actual limitation; never claim a UI change without a successful tool result. Use tools when the requested action calls for them, not for ordinary conversational answers.");
+    } else {
+        text.push_str(" No Desktop tool bridge is provided for this session. Do not claim access to the app's tasks, board, or browser. If asked to act on them, explain that Desktop tools are unavailable and point to Settings > Tools.");
+    }
+    if let Some(profile) = profile {
+        text.push_str("\n\nRole instructions:\n");
+        text.push_str(&profile.system_prompt);
+    }
+    text
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Personality {
@@ -195,5 +225,45 @@ impl AgentRegistry {
             .get(id)
             .cloned()
             .ok_or_else(|| AppError::Agent(format!("Unknown agent: {id}")))
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_chats_get_host_context_and_concrete_desktop_actions() {
+        let prompt = desktop_instructions(None, true, false);
+        assert!(prompt.starts_with("You are running inside Nova Desktop"));
+        assert!(prompt.contains("create_task/rename_task"));
+        assert!(prompt.contains("embedded browser"));
+        assert!(prompt.contains("built-in task checklist is not the Desktop task list"));
+        assert!(prompt.contains("never claim a UI change without a successful tool result"));
+    }
+
+    #[test]
+    fn unavailable_and_read_only_sessions_do_not_advertise_desktop_actions() {
+        for (tools, read_only) in [(false, false), (false, true), (true, true)] {
+            let prompt = desktop_instructions(None, tools, read_only);
+            assert!(prompt.contains("Nova Desktop"));
+            assert!(!prompt.contains("create_task"));
+            assert!(!prompt.contains("discover its tools"));
+            assert_eq!(prompt.contains("enforced read-only"), read_only);
+        }
+    }
+
+    #[test]
+    fn role_instructions_extend_host_context_and_invalidate_cached_context() {
+        let mut profile = Personality {
+            role: "serena".into(),
+            system_prompt: "Inspect the project.".into(),
+        };
+        let first = desktop_instructions(Some(&profile), true, false);
+        assert!(first.starts_with("You are running inside Nova Desktop"));
+        assert!(first.ends_with("Inspect the project."));
+        profile.system_prompt = "Inspect a different scope.".into();
+        assert_ne!(first, desktop_instructions(Some(&profile), true, false));
+        assert_ne!(first, desktop_instructions(Some(&profile), false, false));
     }
 }

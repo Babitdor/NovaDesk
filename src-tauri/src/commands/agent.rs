@@ -301,14 +301,16 @@ pub async fn start_turn(
         }
         destination.send(event)
     });
+    prompt.push_str(&format!("\n\nDesktop session: You are running inside Nova Desktop. Current task {chat_id}, turn {turn_id}, harness {backend}. "));
     if read_only {
-        prompt.push_str(&format!("\n\nDesktop session: task {chat_id}, turn {turn_id}, harness {backend}. This is an enforced read-only investigation. Desktop tools and other MCP servers are withheld; return findings and evidence without editing the project."));
-    }
-    if tools.is_some() {
-        prompt.push_str(&format!("\n\nDesktop session: task {chat_id}, turn {turn_id}, harness {backend}. Use Desktop tools to manage visible tasks, files, browser panes and team activity when the user request calls for those actions. Tool discovery is not proof of invocation. "));
+        prompt.push_str("This is an enforced read-only investigation. Desktop tools and other MCP servers are withheld; return findings and evidence without editing the project.");
+    } else if tools.is_some() {
+        prompt.push_str("Desktop integration is configured through the nova-desktop MCP server. Discover its advertised tools and use them for requested changes to this app's tasks, files, terminal or embedded browser. Built-in task checklists do not change Desktop tasks. Report success only after a tool confirms the action. ");
         if team_id.is_some() {
             prompt.push_str("This is an active team run. Nova may use team_delegate, team_follow_up, team_message and team_status to assign bounded work, address teammates and inspect outcomes. Delegated assignments execute after this coordinator turn returns. Return promptly after delegation; do not poll for work that cannot start yet. Workers send findings via handoffs or team_message. Only adapters enforcing read-only may investigate in parallel; other work runs with one editing turn at a time.");
         }
+    } else {
+        prompt.push_str("No Desktop tool bridge is provided for this turn. Do not claim Desktop actions succeeded; direct requests for unavailable Desktop actions to Settings > Tools.");
     }
     let req = TurnRequest {
         turn_id: turn_id.clone(),

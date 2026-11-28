@@ -10,10 +10,10 @@ export const panelLimit = 860
 export const panelClearance = 390
 export const dockMin = 96
 
-export const railMax = () => Math.max(railMin, Math.min(360, window.innerWidth - panelMin - panelClearance))
-export const panelMax = (sidebarWidth = railMin) =>
-  clamp(window.innerWidth - sidebarWidth - panelClearance, panelMin, panelLimit)
-export const dockMax = () => window.innerHeight * 0.6
+export const railMax = (viewportWidth = window.innerWidth) => Math.max(railMin, Math.min(360, viewportWidth - panelMin - panelClearance))
+export const panelMax = (sidebarWidth = railMin, viewportWidth = window.innerWidth) =>
+  clamp(viewportWidth - sidebarWidth - panelClearance, panelMin, panelLimit)
+export const dockMax = (viewportHeight = window.innerHeight) => viewportHeight * 0.6
 
 export const defaultRailWidth = () => clamp(window.innerWidth * 0.18, railMin, railMax())
 export const defaultPanelWidth = () => clamp(window.innerWidth * 0.39, panelMin, panelMax(defaultRailWidth()))

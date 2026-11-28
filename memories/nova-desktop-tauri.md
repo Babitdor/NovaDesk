@@ -58,3 +58,29 @@ system curl; anonymous calls are 60/h per address, a spent quota answers 403, an
 command did not complete successfully". `settings::download_response` now keeps the status
 (`--write-out "\n%{http_code}"`, no `--fail`), and 403/429/5xx fall back to
 `github.com/Babitdor/NovaDesk/releases/latest`, whose redirect names the tag with no quota.
+
+
+---
+
+
+## Driving the built app over WebView2 CDP (GUI probes)
+Launch the debug exe with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=N`, a
+throwaway `WEBVIEW2_USER_DATA_FOLDER`, and APPDATA/LOCALAPPDATA/USERPROFILE pointed into a temp dir;
+then `fetch http://127.0.0.1:N/json/list` for the page target and speak `Runtime.evaluate`
+(`awaitPromise`, `returnByValue`) on its websocket. Two traps cost real time (2026-11-28):
+
+* **The boot curtain blocks hit-testing.** `#boot` in `index.html` is lifted by `main.tsx` only after
+  two `requestAnimationFrame`s + `document.fonts.ready` (1.5 s timeout) + 380 ms. Any
+  `location.reload()` — which a probe needs after writing the workspace into localStorage — puts it
+  back for ~2 s. `elementFromPoint` then returns `DIV#boot`, so **real** CDP mouse clicks go nowhere
+  while `.click()` from `Runtime.evaluate` still works: DOM-only assertions pass while the window is
+  unusable. Wait for `!document.getElementById('boot')` after every reload.
+* **A packaged-mode debug binary serves `http://tauri.localhost/`**, not the vite devUrl. `tauri build
+  --debug --no-bundle` leaves that variant behind, so a probe that matches `http://localhost:1420/`
+  finds no page target; match any `type === 'page'` target instead. A later plain `cargo build` does
+  **not** restore the dev-mode binary (cargo sees it as up to date).
+
+Typing into a CodeMirror editor needs a real click (`Input.dispatchMouseEvent`) for focus, then
+`Input.insertText`; Ctrl+S is `Input.dispatchKeyEvent` `keyDown`/`keyUp` with `modifiers: 2`.
+Judge layout with `getBoundingClientRect()` — reading `textContent` proves nothing about whether a
+pane has width (a closed `.right.is-closed` column still renders its whole subtree at 0 px).

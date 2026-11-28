@@ -74,6 +74,10 @@ pub struct AppState {
     speak_downloads: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// The tool endpoint, its per-launch token and the message queue.
     pub tools: tools::ToolsState,
+    /// The loopback static server the Files pane frames an `.html` preview in.
+    /// Empty until the first preview asks for it, because most sessions never
+    /// open one.
+    pub preview: commands::preview::PreviewSlot,
 }
 
 impl AppState {
@@ -104,6 +108,7 @@ impl AppState {
             speech_jobs: Arc::new(Mutex::new(HashMap::new())),
             speak_downloads: Arc::new(Mutex::new(HashMap::new())),
             tools: tools::ToolsState::default(),
+            preview: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -237,6 +242,10 @@ pub fn run() {
         commands::workspace::set_workspace,
         commands::workspace::list_dir,
         commands::workspace::read_file,
+        commands::workspace::save_file,
+        commands::workspace::read_file_data_url,
+        commands::workspace::file_stamp,
+        commands::preview::preview_open,
         commands::agent::start_turn,
         commands::agent::cancel_turn,
         commands::agent::respond_approval,

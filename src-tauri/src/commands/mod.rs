@@ -4,6 +4,7 @@ pub mod browser;
 pub mod dialogs;
 pub mod github;
 pub mod launcher;
+pub mod preview;
 pub mod process;
 pub mod recovery;
 pub mod settings;

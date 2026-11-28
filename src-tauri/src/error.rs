@@ -21,6 +21,8 @@ pub enum AppError {
     NotAFile(String),
     #[error("file is too large to display: {0}")]
     TooLarge(String),
+    #[error("file changed on disk; reload it before saving: {0}")]
+    FileConflict(String),
     #[error("io error: {0}")]
     Io(String),
     #[error("could not start process: {0}")]
@@ -55,6 +57,7 @@ impl AppError {
             AppError::NotADirectory(_) => "notADirectory",
             AppError::NotAFile(_) => "notAFile",
             AppError::TooLarge(_) => "tooLarge",
+            AppError::FileConflict(_) => "fileConflict",
             AppError::Io(_) => "io",
             AppError::Spawn(_) => "spawn",
             AppError::Cancelled => "cancelled",

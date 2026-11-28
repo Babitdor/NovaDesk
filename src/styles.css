@@ -718,6 +718,7 @@ button.stop:hover:not(:disabled) {
 
 /* right panel ------------------------------------------------------ */
 .right {
+  container: workspace-panel / inline-size;
   grid-area: panel;
   position: relative;
   display: flex;
@@ -863,6 +864,7 @@ button.stop:hover:not(:disabled) {
   --conversation-size: min(calc(100cqw - 2 * var(--conversation-gutter)), var(--conversation-width));
   --conversation-control: 34px;
   container-type: inline-size;
+  container-name: conversation;
   background: color-mix(in srgb, var(--panel) 35%, var(--ground));
 }
 
@@ -875,7 +877,7 @@ button.stop:hover:not(:disabled) {
 
 .chat-area {
   flex: 1;
-  min-height: 0;
+  min-height: 64px;
   min-width: 0;
   position: relative;
 }
@@ -990,6 +992,7 @@ code {
 .crew-portrait[data-portrait='ralph'] { --portrait-x: 66.667%; }
 .crew-portrait[data-portrait='nora'] { --portrait-x: 100%; }
 .crew-select {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -997,12 +1000,29 @@ code {
   --portrait-size: 34px;
 }
 .crew-select select {
+  appearance: none;
   min-height: var(--conversation-control);
-  padding: 3px 5px;
+  padding: 3px 25px 3px 8px;
   color: var(--ink);
   background: var(--panel);
   border: 1px solid var(--line);
   font: 11px var(--f-mono);
+}
+/* One chevron for the harness button and both native composer selects. */
+.composer .model-trigger::after, .crew-select::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+  pointer-events: none;
+}
+.crew-select::after { position: absolute; right: 10px; }
+@media (forced-colors: active) {
+  .crew-select select { appearance: auto; padding-right: 5px; }
+  .crew-select::after { display: none; }
 }
 .crew-profile {
   display: grid;
@@ -1156,7 +1176,8 @@ code {
 .dock {
   position: relative;
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 96px;
   flex-direction: column;
   height: clamp(148px, 35%, 360px);
   max-height: 60%;
@@ -1170,8 +1191,8 @@ code {
 }
 
 .dock.is-max {
-  flex: 0 0 64%;
-  min-height: 0;
+  flex: 0 1 64%;
+  min-height: 96px;
   max-height: none;
 }
 
@@ -1271,17 +1292,21 @@ code {
    not a label the frontend invented. */
 .composer-meta {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 10px;
 }
 
+.composer-meta > .send, .composer-meta > .stop { margin-left: auto; }
+
 .composer-tags {
   display: flex;
+  flex: 1 1 0;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  overflow: hidden;
+  flex-wrap: wrap;
 }
 
 .composer-workspace {
@@ -1304,7 +1329,7 @@ code {
   flex: 0 1 auto;
   gap: 7px;
   min-width: 0;
-  max-width: 42ch;
+  max-width: min(42ch, 100%);
   border-color: var(--line);
   color: var(--accent);
   font-size: 11px;
@@ -2252,6 +2277,37 @@ code {
   color: var(--proof-ink);
 }
 
+/* Image previews scale into the plate rather than scrolling a canvas wider than
+   the pane, and a framed page gets a white sheet because most HTML assumes a
+   light background. */
+.preview-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.preview-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #fff;
+  color-scheme: light;
+}
+
+/* A GFM task item puts a checkbox where its bullet would be; the bullet goes. */
+.markdown li:has(> input[type='checkbox']) {
+  list-style: none;
+}
+
+.markdown li > input[type='checkbox'] {
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
+
 /* The plate states it has nothing yet rather than sitting blank. */
 .console-idle {
   color: var(--muted);
@@ -2556,6 +2612,8 @@ code {
   --settings-surface: color-mix(in srgb, var(--ground) 82%, var(--panel));
   --settings-field: color-mix(in srgb, var(--ground) 84%, var(--ink));
   --settings-rule: color-mix(in srgb, var(--ink) 20%, transparent);
+  --settings-control-height: 44px;
+  --settings-control-padding: 10px 14px;
   --settings-type: 'Segoe UI', system-ui, sans-serif;
   display: grid;
   grid-template-columns: clamp(190px, 21vw, 258px) minmax(0, 1fr);
@@ -2575,7 +2633,18 @@ code {
   color: var(--ink);
   background: var(--settings-field);
 }
-.settings-view button { min-height: 34px; white-space: nowrap; }
+.settings-view button {
+  min-height: var(--settings-control-height);
+  min-width: var(--settings-control-height);
+  max-inline-size: 100%;
+  padding: var(--settings-control-padding);
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+}
+.settings-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.settings-icon { display: block; flex: none; }
+.settings-view :is(.settings-row-controls, .voice-row-controls) { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
 .settings-view button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .settings-view :is(input, textarea, select) { min-width: 0; }
 .settings-view textarea { resize: vertical; }
@@ -2586,7 +2655,9 @@ code {
   overflow-y: auto;
 }
 .settings-nav .settings-back {
-  padding: 5px 8px;
+  width: 100%;
+  justify-content: flex-start;
+  padding: var(--settings-control-padding);
   background: transparent;
   border-color: transparent;
   color: var(--muted);
@@ -2609,19 +2680,19 @@ code {
   align-items: center;
   gap: 11px;
 }
-.settings-nav nav button span {
+.settings-nav nav .settings-icon {
   display: inline-flex;
   justify-content: center;
   width: 18px;
   color: var(--accent);
-  font: 15px var(--f-mono);
+  height: 18px;
 }
 .settings-nav nav [aria-current] {
   background: color-mix(in srgb, var(--accent) 12%, var(--ground));
   border-color: var(--settings-rule);
   border-left: 2px solid var(--accent);
 }
-.settings-stage { overflow: auto; padding: 40px clamp(20px, 6vw, 90px) 36px; background: var(--settings-surface); }
+.settings-stage { container: settings / inline-size; min-width: 0; min-height: 0; overflow: auto; padding: 40px clamp(20px, 6vw, 90px) 36px; background: var(--settings-surface); }
 .settings-content { max-width: 720px; margin: 0 auto; }
 .settings-heading { margin-bottom: 25px; }
 .settings-heading h1 { margin: 0; font: 400 clamp(40px, 5vw, 62px)/.95 var(--f-disp); }
@@ -2701,7 +2772,7 @@ code {
   background: color-mix(in srgb, var(--accent) 12%, var(--ground));
 }
 .settings-swatches button, .settings-custom { display: inline-flex; align-items: center; gap: 6px; }
-.settings-swatches button { padding-inline: 6px; font-size: 13px; }
+.settings-swatches button { padding: var(--settings-control-padding); }
 .settings-swatch {
   width: 12px;
   height: 12px;
@@ -2718,7 +2789,7 @@ code {
   align-items: center;
   gap: 11px;
   text-align: left;
-  padding: 8px 11px;
+  padding: var(--settings-control-padding);
 }
 .settings-theme-sample { width: 38px; height: 25px; border-radius: 4px; border: 1px solid var(--settings-rule); }
 .settings-theme small { color: var(--muted); margin-top: 0; }
@@ -2726,7 +2797,7 @@ code {
 .settings-import input { flex: 1 1 170px; }
 .settings-help { margin: 11px 15px; color: var(--muted); font-size: 12px; }
 .settings-status { min-height: 1.45em; color: var(--accent); }
-.settings-action { display: flex; gap: 8px; padding: 0 15px 12px; }
+.settings-action { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 15px 12px; }
 .settings-row + .settings-action { padding-top: 2px; }
 
 /* --- About pane and presets ---------------------------------------- */
@@ -2740,8 +2811,9 @@ code {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: var(--settings-control-padding);
   text-align: left;
+  white-space: normal;
 }
 .settings-presets button:hover { border-color: var(--accent-line); }
 .settings-preset-chips { display: inline-flex; flex: 0 0 auto; }
@@ -3204,7 +3276,7 @@ code {
   flex-shrink: 0;
 }
 .voice-row-controls .voice-icon {
-  padding: 5px 9px;
+  padding: var(--settings-control-padding);
   letter-spacing: 0;
 }
 .voice-level {
@@ -3276,12 +3348,12 @@ code {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  min-height: 30px;
-  padding: 5px 9px;
+  min-height: var(--settings-control-height);
+  padding: var(--settings-control-padding);
   border: 0;
   border-radius: 6px;
   background: transparent;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
@@ -3484,8 +3556,23 @@ code {
   .view-tab { padding: 5px 7px; }
 }
 
-@media (max-width: 980px) {
+@container settings (max-width: 580px) {
+  .settings-row { flex-wrap: wrap; }
+  .settings-row > span:first-child { flex: 1 1 180px; }
+  .settings-row :is(input:not([type='checkbox']), select) { max-width: 100%; }
+  .settings-row-controls, .voice-row-controls { flex-wrap: wrap; }
   .voice-panes { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container workspace-panel (max-width: 480px) {
+  .board { grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(140px, auto); align-content: start; }
+  .board-list { flex: none; overflow: visible; }
+}
+
+@container conversation (max-width: 480px) {
+  .crew-profile-fields { grid-template-columns: minmax(0, 1fr); }
+  .composer-tags { gap: 6px; }
+  .approval { flex-wrap: wrap; }
 }
 
 /* --- General, Schedules, launcher and widget ---------------------------- */
@@ -3869,9 +3956,57 @@ dialog::backdrop { overflow: hidden; overscroll-behavior: contain; }
 .teams-workspace summary { cursor: pointer; padding: 4px 0; }
 .teams-workspace .crew-profile { padding: 12px; }
 .team-stage-name small { display: block; color: var(--muted); font-size: 10px; }
-.playback { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.playback { display: inline-flex; gap: 2px; align-items: center; flex-wrap: wrap; }
+/* Icon buttons: the glyph is the whole label, so the box stays square instead of
+   taking the text buttons' padding. */
+.playback button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 5px; }
+.playback button svg { display: block; }
+/* The transport for a reply that is not on screen: centered over the composer,
+   never a bare span in the .main column. */
+.playback-dock {
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--conversation-gutter) 6px;
+}
 .approval-owner { padding: 8px 16px 0; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) {
   .teams-workspace, .team-plan { animation: team-enter 140ms ease-out; }
   @keyframes team-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 }
+
+/* File editing stays inside the panel; CodeMirror owns text and search behavior. */
+.source-editor { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; background:var(--screen); color:var(--screen-ink); }
+.source-editor[hidden] { display:none; }
+.source-toolbar, .source-status { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:6px 8px; border-bottom:1px solid var(--line); }
+.source-toolbar button { min-height:30px; font-size:11px; letter-spacing:0; text-transform:none; }
+.source-toolbar .source-save { margin-left:auto; }
+.source-status { border-bottom:0; border-top:1px solid var(--line); color:var(--muted); font-size:10px; gap:6px 12px; }
+.source-message, .preview-dirty { margin:0; padding:6px 10px; font-size:11px; overflow-wrap:anywhere; color:var(--accent); border-bottom:1px solid var(--line); }
+.source-message.is-error { color:var(--proof-ink); }
+.code-editor { flex:1; min-height:0; min-width:0; overflow:hidden; --code-keyword:#c6a0f6; --code-string:#a6da95; --code-number:#f5a97f; --code-function:#eed49f; --code-type:#8bd5ca; --code-property:#91d7e3; }
+:root[data-appearance="light"] .code-editor { --code-keyword:#7c278e; --code-string:#287334; --code-number:#9c4215; --code-function:#795716; --code-type:#006b60; --code-property:#155d9c; }
+.code-editor .cm-editor { height:100%; font:12px/1.65 var(--f-mono); background:var(--screen); color:var(--screen-ink); }
+.code-editor .cm-scroller { overflow:auto; font-family:var(--f-mono); }
+.code-editor .cm-content { caret-color:var(--accent); }
+.code-editor .cm-gutters { background:var(--ground); color:var(--muted); border-right:1px solid var(--line); }
+.code-editor .cm-activeLine, .code-editor .cm-activeLineGutter { background:var(--wash); }
+.code-editor .cm-cursor { border-left-color:var(--accent); }
+.code-editor .cm-editor.cm-focused { outline:1px solid var(--accent-line); outline-offset:-1px; }
+.code-editor .cm-editor .cm-selectionBackground, .code-editor .cm-editor.cm-focused .cm-selectionBackground { background:color-mix(in srgb, var(--accent) 28%, transparent); }
+.code-editor .cm-panels, .code-editor .cm-tooltip { background:var(--panel); color:var(--ink); border-color:var(--line); }
+.code-editor .cm-search { display:flex; flex-wrap:wrap; gap:4px; }
+.code-editor .cm-textfield { background:var(--screen); color:var(--ink); border:1px solid var(--line); max-width:100%; min-width:0; }
+.code-editor .cm-button { color:var(--ink); background:var(--panel); border:1px solid var(--line); text-transform:none; letter-spacing:0; }
+.code-editor .cm-foldPlaceholder { background:var(--panel); color:var(--muted); border-color:var(--line); }
+.unsaved-dialog { max-width:min(480px, 90vw); padding:20px; background:var(--panel); color:var(--ink); border:1px solid var(--accent); }
+.unsaved-dialog::backdrop { background:#0009; }
+.unsaved-dialog h2 { margin-top:0; font:24px var(--f-disp); }
+.unsaved-dialog p { overflow-wrap:anywhere; }
+.unsaved-dialog > div { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.unsaved-dialog button { min-height:36px; text-transform:none; letter-spacing:0; }
+
+.preview-head { flex-wrap:wrap; overflow:visible; letter-spacing:0; }
+.preview-head .preview-path { flex:1 1 100%; min-width:0; }
+.preview-head button { min-height:30px; font-size:11px; text-transform:none; letter-spacing:0; }
+.preview-head button:last-child { margin-left:auto; }
+.code-editor .cm-search label { font:11px var(--f-mono); }

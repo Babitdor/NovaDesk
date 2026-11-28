@@ -11,15 +11,15 @@ import { SpeakSettings } from './SpeakSettings'
 import { VoiceSettings } from './VoiceSettings'
 import { GeneralSettings } from './GeneralSettings'
 import { SchedulesSettings } from './SchedulesSettings'
-import { Group, Toggle } from './SettingsRows'
+import { ActionButton, SettingsIcon, Group, Toggle } from './SettingsRows'
 import { ToolsSettings } from './ToolsSettings'
 import { TeamMembers } from './TeamMembers'
 import { ConnectionsSettings } from './ConnectionsSettings'
 
 const SECTIONS = [
-  ['Recommended', '✧'], ['General', '◈'], ['Appearance', '◐'],
-  ['Voice', '◉'], ['Agents', '◇'], ['Schedules', '◷'],
-  ['Tools', '›_'], ['Connections', '◎'], ['About', 'ⓘ'],
+  ['Recommended', 'sparkles'], ['General', 'settings'], ['Appearance', 'palette'],
+  ['Voice', 'microphone'], ['Agents', 'agents'], ['Schedules', 'clock'],
+  ['Tools', 'tools'], ['Connections', 'plug'], ['About', 'info'],
 ] as const
 export type Section = typeof SECTIONS[number][0]
 
@@ -117,7 +117,7 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
           <input name="command" value={checkInput} disabled={!root} maxLength={4000} onChange={(event) => setCheckInput(event.target.value)}
             placeholder={'["cargo", "test"]'} />
         </label>
-        <div className="settings-action"><button type="submit" disabled={!root}>Save command</button></div>
+        <div className="settings-action"><ActionButton icon="save" type="submit" disabled={!root}>Save command</ActionButton></div>
       </form>
     </Group>
   )
@@ -125,13 +125,13 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
   return (
     <div className="settings-view">
       <aside className="settings-nav">
-        <button type="button" className="settings-back" onClick={onClose} autoFocus>← <span>Back to workspace</span></button>
+        <ActionButton icon="back" type="button" className="settings-back" onClick={onClose} autoFocus> <span>Back to workspace</span></ActionButton>
         <p className="settings-brand"><img src="/nova.webp" alt="" /> Nova Desktop</p>
         <nav aria-label="Settings sections">
-          {SECTIONS.map(([item, glyph]) => (
+          {SECTIONS.map(([item, icon]) => (
             <button type="button" key={item} aria-current={section === item ? 'page' : undefined}
               onClick={() => changeSection(item)}>
-              <span aria-hidden="true">{glyph}</span>{item}
+              <SettingsIcon name={icon} />{item}
             </button>
           ))}
         </nav>
@@ -173,7 +173,7 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                 <button type="button" aria-pressed={p.themeId === ''} onClick={() => update({ themeId: '' })}>
                   Shipped look
                 </button>
-                <button type="button" onClick={() => update(resetAppearance(p))}>Reset appearance</button>
+                <ActionButton icon="refresh" type="button" onClick={() => update(resetAppearance(p))}>Reset appearance</ActionButton>
               </div>
               <p className="settings-help">
                 A preset repaints the sidebar, chat ground, panels, dock and scrollbars together.
@@ -223,9 +223,9 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                       <span className="settings-theme-sample" style={{ background: theme.colors['editor.background'] ?? 'var(--accent)' }} />
                       <span>{theme.title}<small>{theme.mode}</small></span>
                     </button>
-                    {theme.id && <button type="button" aria-label={`Remove ${theme.title}`} onClick={() => update({
+                    {theme.id && <ActionButton icon="trash" type="button" aria-label={`Remove ${theme.title}`} onClick={() => update({
                       themes: p.themes.filter(({ id }) => id !== theme.id), themeId: p.themeId === theme.id ? '' : p.themeId,
-                    })}>Remove</button>}
+                    })}>Remove theme</ActionButton>}
                   </div>
                 ))}
               </div>
@@ -233,10 +233,10 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                 event.preventDefault()
                 if (themeId.trim() && !themeBusy) void applyTheme(() => installTheme(themeId.trim()))
               }}>
-                <button type="button" disabled={themeBusy} onClick={() => void applyTheme(importTheme)}>Import .vsix</button>
+                <ActionButton icon="upload" type="button" disabled={themeBusy} onClick={() => void applyTheme(importTheme)}>Import .vsix</ActionButton>
                 <input name="extension" aria-label="Open VSX extension ID" placeholder="publisher.extension" maxLength={160} required
                   value={themeId} onChange={(event) => setThemeId(event.target.value)} />
-                <button type="submit" disabled={themeBusy || !themeId.trim()}>{themeBusy ? 'Loading…' : 'Install'}</button>
+                <ActionButton icon="download" type="submit" disabled={themeBusy || !themeId.trim()}>{themeBusy ? 'Loading…' : 'Install'}</ActionButton>
               </form>
               <p className="settings-help">Install from Open VSX or import a theme archive. Nova reads its workbench colors.</p>
             </Group>
@@ -258,9 +258,9 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                 {modelRow(p.defaultAgent, 'Default model')}
                 <div className="settings-row">
                   <span><strong>Agent updates</strong><small>Compare local versions with published releases.</small></span>
-                  <button type="button" disabled={checking} onClick={() => void checkAgents()}>
+                  <ActionButton icon="refresh" type="button" disabled={checking} onClick={() => void checkAgents()}>
                     {checking ? 'Checking…' : 'Check updates'}
-                  </button>
+                  </ActionButton>
                 </div>
                 <Toggle title="Project checks after turns" detail={root ? 'Runs the saved command after a successful turn.' : 'Open a workspace to configure checks.'}
                   checked={!!root && Boolean(p.checks[root]?.length)}
@@ -293,7 +293,7 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
                           {found?.capabilities?.readOnly && ' Enforced read-only investigation available.'}
                           {found?.capabilities?.sessionReuse && ' Sessions can be reused.'}</p>
                         {found?.latest && <p>Latest published version <code>{found.latest}</code></p>}
-                        <button type="button" onClick={() => update({ defaultAgent: id })}>Use as default</button>
+                        <ActionButton icon="check" type="button" onClick={() => update({ defaultAgent: id })}>Use as default</ActionButton>
                       </div>}
                     </div>
                   )
@@ -305,10 +305,10 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
               {agentIds.map((id) => <div className="settings-row" key={id}>
                 <span className="agent-title"><AgentMark id={id} />
                   <span><strong>{AGENTS[id].name}</strong><small>{AGENTS[id].setup}</small></span></span>
-                <button type="button" onClick={async () => {
+                <ActionButton icon="settings" type="button" onClick={async () => {
                   try { await openProviderSetup(id); setStatus('Complete setup in the terminal window.') }
                   catch (err) { setStatus(errorText(err)) }
-                }}>Open setup</button>
+                }}>Open setup</ActionButton>
               </div>)}
             </Group>}
             {tab === 'Agent teams' && <TeamMembers preferences={p} update={update} />}
@@ -353,9 +353,9 @@ export function Settings({ preferences: p, update, workspace, onClose, initialSe
           {section === 'Schedules' && <SchedulesSettings preferences={p} update={update} workspace={workspace} />}
           {section === 'Recommended' && <Group title="Set up your workspace">
             <div className="settings-row"><span><strong>Choose your default agent</strong><small>Configure the harness and model used for new tasks.</small></span>
-              <button type="button" onClick={() => changeSection('Agents')}>Open Agents</button></div>
+              <ActionButton icon="external" type="button" onClick={() => changeSection('Agents')}>Open Agents</ActionButton></div>
             <div className="settings-row"><span><strong>Check your tool connections</strong><small>Review the MCP servers configured for Nova.</small></span>
-              <button type="button" onClick={() => changeSection('Connections')}>Open Connections</button></div>
+              <ActionButton icon="external" type="button" onClick={() => changeSection('Connections')}>Open Connections</ActionButton></div>
           </Group>}
           {section === 'About' && <AboutPane preferences={p} update={update} />}
           <p className="settings-status" role="status">{status}</p>

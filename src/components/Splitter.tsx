@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 
 type Props = {
   axis: 'x' | 'y'
@@ -18,7 +18,19 @@ type Props = {
 /// A drag handle pinned to one edge of the pane it sizes. It measures its own
 /// parent, so a pane can stay content-sized until someone drags it.
 export function Splitter({ axis, dir = 1, value, min, max, label, onChange }: Props) {
+  const handle = useRef<HTMLDivElement>(null)
+  const [measured, setMeasured] = useState<number | null>(null)
   const from = useRef({ pos: 0, size: 0 })
+  useLayoutEffect(() => {
+    const parent = handle.current?.parentElement
+    if (!parent) return
+    const observer = new ResizeObserver(() => {
+      const rect = parent.getBoundingClientRect()
+      setMeasured(axis === 'x' ? rect.width : rect.height)
+    })
+    observer.observe(parent)
+    return () => observer.disconnect()
+  }, [axis])
   const limit = (size: number) => Math.min(max(), Math.max(min, size))
 
   const measure = (node: HTMLElement) => {
@@ -29,12 +41,13 @@ export function Splitter({ axis, dir = 1, value, min, max, label, onChange }: Pr
 
   return (
     <div
+      ref={handle}
       role="separator"
       aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
       aria-label={label}
       aria-valuemin={min}
       aria-valuemax={Math.round(max())}
-      aria-valuenow={value === null ? undefined : Math.round(value)}
+      aria-valuenow={measured === null ? (value === null ? undefined : Math.round(value)) : Math.round(measured)}
       tabIndex={0}
       className={axis === 'x' ? 'splitter splitter-x' : 'splitter splitter-y'}
       onPointerDown={(event) => {
@@ -65,7 +78,7 @@ export function Splitter({ axis, dir = 1, value, min, max, label, onChange }: Pr
         const forward = axis === 'x' ? 'ArrowRight' : 'ArrowDown'
         if (event.key !== back && event.key !== forward) return
         event.preventDefault()
-        const base = value === null ? measure(event.currentTarget) : value
+        const base = measure(event.currentTarget)
         onChange(limit(base + dir * (event.key === forward ? step : -step)))
       }}
     />
